@@ -194,7 +194,50 @@ navBtns.forEach(btn => {
         const text = btn.textContent.trim();
         pageTitle.textContent = text;
         if (targetId === 'mensagens-section') loadRegras();
+        if (targetId === 'ia-section') loadIaConfig();
     });
+});
+
+// =====================================
+// INTELIGÊNCIA ARTIFICIAL (OpenAI)
+// =====================================
+const iaStatus = document.getElementById('ia-status');
+const iaApikey = document.getElementById('ia-apikey');
+const iaModelo = document.getElementById('ia-modelo');
+const iaTreinamento = document.getElementById('ia-treinamento');
+const btnSalvarIa = document.getElementById('btn-salvar-ia');
+
+async function loadIaConfig() {
+    try {
+        const res = await fetch('/api/configuracoes');
+        const config = await res.json();
+        if (iaStatus) iaStatus.checked = config.openai_status === 'true';
+        if (iaApikey) iaApikey.value = config.openai_api_key || '';
+        if (iaModelo) iaModelo.value = config.openai_modelo || 'gpt-3.5-turbo';
+        if (iaTreinamento) iaTreinamento.value = config.openai_treinamento || '';
+    } catch (e) {
+        console.error('Erro ao carregar configs de IA', e);
+    }
+}
+
+btnSalvarIa?.addEventListener('click', async () => {
+    const payload = {
+        openai_status: iaStatus.checked ? 'true' : 'false',
+        openai_api_key: iaApikey.value.trim(),
+        openai_modelo: iaModelo.value,
+        openai_treinamento: iaTreinamento.value.trim()
+    };
+    try {
+        await fetch('/api/configuracoes', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+        showToast('IA Configurad!', 'As configurações da inteligência artificial foram salvas.', 'success');
+        addActivity('🧠', 'Configurações de IA salvas', new Date().toLocaleString('pt-BR'));
+    } catch (e) {
+        showToast('Erro', 'Não foi possível salvar as configurações da IA', 'error');
+    }
 });
 
 // =====================================

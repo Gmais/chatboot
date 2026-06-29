@@ -34,6 +34,10 @@
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
                 Disparos
             </a>
+            <a href="#" class="nav-btn" data-target="ia-section">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+                Inteligência Artificial
+            </a>
             <a href="#" class="nav-btn" data-target="configuracoes-section">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
                 Configurações
@@ -195,6 +199,49 @@
                         </div>
                     </div>
                     <p id="broadcast-status-msg" style="margin-top:1.5rem;text-align:center;color:var(--text-3);font-size:.85rem">Aguardando início...</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- ===================== INTELIGÊNCIA ARTIFICIAL ===================== -->
+        <div id="ia-section" class="page-section hidden">
+            <div style="display:grid;grid-template-columns:1fr;gap:1.5rem">
+                <div class="card glass">
+                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1.5rem">
+                        <h3>🤖 Assistente de Inteligência Artificial</h3>
+                        <label style="display:flex;align-items:center;gap:.5rem;cursor:pointer">
+                            <input type="checkbox" id="ia-status" style="accent-color:var(--green);width:18px;height:18px">
+                            <strong style="color:var(--text-1)">Ativar IA</strong>
+                        </label>
+                    </div>
+
+                    <div class="form-group">
+                        <label>OpenAI API Key <a href="https://platform.openai.com/api-keys" target="_blank" style="color:var(--green);font-size:.75rem;margin-left:.5rem">Pegar minha chave</a></label>
+                        <input type="password" id="ia-apikey" placeholder="sk-proj-xxxxxxxxxxxxxxxxxxxxxxxxx">
+                        <span class="hint">Sua chave é armazenada com segurança no banco local.</span>
+                    </div>
+
+                    <div class="form-group">
+                        <label>Modelo de Linguagem</label>
+                        <select id="ia-modelo" style="width:100%;background:var(--input-bg);border:1px solid rgba(255,255,255,0.1);border-radius:var(--radius-sm);padding:.7rem 1rem;color:var(--text-1);font-family:'Inter',sans-serif">
+                            <option value="gpt-3.5-turbo">GPT-3.5 Turbo (Mais Rápido e Barato)</option>
+                            <option value="gpt-4o">GPT-4o (Mais Inteligente, Maior Custo)</option>
+                        </select>
+                    </div>
+
+                    <div class="form-group">
+                        <label>Instruções do Robô (System Prompt)</label>
+                        <textarea id="ia-treinamento" style="min-height:200px" placeholder="Você é o assistente virtual da Academia GymBot.
+Seja simpático e use emojis.
+Nossos horários: Segunda a Sexta 6h as 22h.
+Preços: Plano Mensal R$ 99, Anual R$ 899.
+Sempre tente agendar uma aula experimental."></textarea>
+                        <span class="hint">Escreva as regras que a IA deve seguir. Ela usará isso para responder perguntas que não estão nas suas Regras Exatas.</span>
+                    </div>
+
+                    <div style="display:flex;justify-content:flex-end;margin-top:1rem">
+                        <button class="btn-primary" id="btn-salvar-ia">💾 Salvar Configurações da IA</button>
+                    </div>
                 </div>
             </div>
         </div>

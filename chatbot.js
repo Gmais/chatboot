@@ -11,6 +11,7 @@ const sqlite3 = require('sqlite3');
 const { open } = require('sqlite');
 const multer = require('multer');
 const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
+const OpenAI = require('openai');
 
 // =====================================
 // CONFIGURAÇÃO DO SERVIDOR WEB E SOCKET.IO
@@ -63,6 +64,10 @@ async function initDB() {
             enviar_audio INTEGER DEFAULT 0,
             media_path TEXT DEFAULT NULL,
             media_tipo TEXT DEFAULT NULL
+        );
+        CREATE TABLE IF NOT EXISTS configuracoes (
+            chave TEXT PRIMARY KEY,
+            valor TEXT
         );
     `);
 
@@ -148,6 +153,24 @@ app.delete('/api/respostas/:id', async (req, res) => {
     }
     await db.run('DELETE FROM respostas WHERE id = ?', id);
     io.emit('respostas_updated');
+    res.json({ success: true });
+});
+
+// =====================================
+// API REST — CONFIGURAÇÕES (IA)
+// =====================================
+app.get('/api/configuracoes', async (req, res) => {
+    const rows = await db.all('SELECT * FROM configuracoes');
+    const config = {};
+    rows.forEach(r => config[r.chave] = r.valor);
+    res.json(config);
+});
+
+app.put('/api/configuracoes', async (req, res) => {
+    const keys = Object.keys(req.body);
+    for (const key of keys) {
+        await db.run('INSERT OR REPLACE INTO configuracoes (chave, valor) VALUES (?, ?)', [key, String(req.body[key])]);
+    }
     res.json({ success: true });
 });
 
@@ -329,7 +352,52 @@ client.on('message', async (msg) => {
             const keywords = regra.keywords.split(',').map(k => k.trim().toLowerCase());
             if (keywords.some(kw => texto.includes(kw))) { regraAtiva = regra; break; }
         }
-        if (!regraAtiva) return;
+
+        if (!regraAtiva) {
+            // Se não encontrou regra, tenta a IA
+            const confRows = await db.all('SELECT * FROM configuracoes');
+            const config = {};
+            confRows.forEach(r => config[r.chave] = r.valor);
+
+            if (config.openai_status === 'true' && config.openai_api_key) {
+                await chat.sendStateTyping();
+                
+                if (!global.chatHistory) global.chatHistory = new Map();
+                const history = global.chatHistory.get(msg.from) || [];
+                
+                if (history.length === 0 && config.openai_treinamento) {
+                    history.push({ role: 'system', content: config.openai_treinamento });
+                }
+                
+                history.push({ role: 'user', content: texto });
+                
+                try {
+                    const openai = new OpenAI({ apiKey: config.openai_api_key });
+                    const completion = await openai.chat.completions.create({
+                        messages: history,
+                        model: config.openai_modelo || 'gpt-3.5-turbo',
+                        max_tokens: 300
+                    });
+                    
+                    const respostaIA = completion.choices[0].message.content;
+                    history.push({ role: 'assistant', content: respostaIA });
+                    
+                    if (history.length > 7) {
+                        const sys = history.shift(); // remove system
+                        history.shift(); // remove older
+                        history.shift();
+                        history.unshift(sys); // put system back
+                    }
+                    global.chatHistory.set(msg.from, history);
+                    
+                    await client.sendMessage(msg.from, respostaIA);
+                    await updateStats(true);
+                } catch (e) {
+                    console.error('❌ Erro na API da OpenAI:', e.message);
+                }
+            }
+            return;
+        }
 
         await delay(1500);
         await chat.sendStateTyping();
