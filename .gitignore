@@ -1,0 +1,29 @@
+# Dependências
+node_modules/
+
+# Banco de dados (dados locais, não vão para o servidor)
+database.sqlite
+
+# Autenticação WhatsApp (sessão local)
+.wwebjs_auth/
+.wwebjs_cache/
+
+# Uploads de usuários
+public/uploads/*
+!public/uploads/.gitkeep
+
+# Logs
+*.log
+npm-debug.log*
+
+# Variáveis de ambiente
+.env
+.env.local
+
+# Sistema operacional
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/

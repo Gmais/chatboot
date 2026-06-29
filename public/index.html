@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BotPro — Painel Profissional WhatsApp</title>
+    <meta name="description" content="Painel profissional de automação para WhatsApp. Gerencie respostas, leads e disparos em massa.">
+    <link rel="stylesheet" href="style.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+</head>
+<body>
+
+    <!-- SIDEBAR -->
+    <aside class="sidebar">
+        <div class="logo">
+            <div class="logo-icon">🤖</div>
+            <h2>Bot<span>Pro</span></h2>
+        </div>
+
+        <nav class="menu">
+            <a href="#" class="nav-btn active" data-target="dashboard-section">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
+                Dashboard
+            </a>
+            <a href="#" class="nav-btn" data-target="mensagens-section">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+                Mensagens
+            </a>
+            <a href="#" class="nav-btn" data-target="leads-section">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+                Leads
+            </a>
+            <a href="#" class="nav-btn" data-target="disparos-section">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+                Disparos
+            </a>
+            <a href="#" class="nav-btn" data-target="configuracoes-section">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+                Configurações
+            </a>
+        </nav>
+
+        <div class="sidebar-footer">
+            <div class="connection-pill">
+                <span class="dot" id="sidebar-dot"></span>
+                <span id="sidebar-status">Verificando...</span>
+            </div>
+        </div>
+    </aside>
+
+    <!-- MAIN CONTENT -->
+    <main class="content">
+        <header>
+            <h1 id="page-title">Dashboard</h1>
+            <span class="status-badge" id="status-badge">● Aguardando...</span>
+        </header>
+
+        <!-- ===================== DASHBOARD ===================== -->
+        <div id="dashboard-section" class="page-section">
+
+            <!-- Métricas -->
+            <div class="metric-grid">
+                <div class="metric-card">
+                    <div class="metric-icon green">📥</div>
+                    <div class="metric-info">
+                        <span class="metric-label">Mensagens Recebidas</span>
+                        <span class="metric-value" id="msg-received">0</span>
+                    </div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-icon blue">📤</div>
+                    <div class="metric-info">
+                        <span class="metric-label">Mensagens Enviadas</span>
+                        <span class="metric-value" id="msg-sent">0</span>
+                    </div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-icon amber">👥</div>
+                    <div class="metric-info">
+                        <span class="metric-label">Leads Capturados</span>
+                        <span class="metric-value" id="leads-count">0</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- QR Code -->
+            <div class="cards-grid">
+                <div class="card glass">
+                    <h3>Status de Conexão</h3>
+                    <div class="connection-status">
+                        <div id="qr-container" class="qr-box">
+                            <span>⏳ Iniciando...</span>
+                        </div>
+                        <p id="status-text" class="status-text">Iniciando sistema...</p>
+                    </div>
+                </div>
+
+                <div class="card glass">
+                    <h3>Atividade Recente</h3>
+                    <div id="activity-feed" style="display:flex;flex-direction:column;gap:.6rem">
+                        <p style="color:var(--text-3);font-size:.85rem;text-align:center;padding:2rem 0">Nenhuma atividade ainda...</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ===================== MENSAGENS ===================== -->
+        <div id="mensagens-section" class="page-section hidden">
+            <div class="card glass">
+                <div class="section-header">
+                    <h3>Regras de Resposta Automática</h3>
+                    <button class="btn-primary" id="btn-nova-regra">＋ Nova Regra</button>
+                </div>
+                <div id="regras-lista">
+                    <p style="color:var(--text-3);text-align:center;padding:2rem">Carregando regras...</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- ===================== LEADS ===================== -->
+        <div id="leads-section" class="page-section hidden">
+            <div class="card glass">
+                <div class="section-header">
+                    <h3>Leads Capturados</h3>
+                    <a href="/api/leads/export" class="btn-primary" download="leads.csv">⬇️ Exportar CSV</a>
+                </div>
+                <table class="leads-table">
+                    <thead>
+                        <tr>
+                            <th>Número</th>
+                            <th>Data de Captura</th>
+                            <th style="text-align:right">Mensagens</th>
+                        </tr>
+                    </thead>
+                    <tbody id="leads-table-body">
+                        <tr><td colspan="3" style="padding:2rem;text-align:center;color:var(--text-3)">Nenhum lead ainda.</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- ===================== DISPAROS ===================== -->
+        <div id="disparos-section" class="page-section hidden">
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:1.5rem">
+                <div class="card glass">
+                    <h3>Configurar Disparo</h3>
+                    <div class="form-group">
+                        <label>Números <span style="color:var(--text-3);font-size:.75rem">(um por linha, com DDD)</span></label>
+                        <textarea id="broadcast-numeros" style="min-height:140px" placeholder="11999990001&#10;11999990002&#10;21988880003"></textarea>
+                    </div>
+                    <div class="form-group">
+                        <label>Mensagem</label>
+                        <textarea id="broadcast-mensagem" style="min-height:90px" placeholder="Olá! Temos uma oferta especial..."></textarea>
+                    </div>
+                    <div class="form-group">
+                        <label>Mídia opcional</label>
+                        <div class="upload-area" id="broadcast-upload-area">
+                            <span>📎 Clique ou arraste um arquivo</span>
+                            <input type="file" id="broadcast-file" style="display:none" accept="image/*,video/*,.pdf,.doc,.docx">
+                        </div>
+                        <span id="broadcast-file-name" style="font-size:.75rem;color:var(--text-3);margin-top:.3rem;display:block"></span>
+                    </div>
+                    <div class="form-group">
+                        <label>Delay entre envios (segundos)</label>
+                        <input type="number" id="broadcast-delay" value="6" min="3" max="60">
+                        <span class="hint">⚠️ Mínimo 3s para não ser banido.</span>
+                    </div>
+                    <div style="display:flex;gap:.8rem;margin-top:.5rem">
+                        <button class="btn-primary" id="btn-disparar" style="flex:1">🚀 Iniciar Disparo</button>
+                        <button class="btn-danger" id="btn-parar" style="display:none">⏹ Parar</button>
+                    </div>
+                </div>
+
+                <div class="card glass">
+                    <h3>Progresso em Tempo Real</h3>
+                    <div class="progress-stat">
+                        <span style="color:var(--text-2)">Total</span>
+                        <span id="prog-total" class="prog-val" style="color:var(--text-1)">0</span>
+                    </div>
+                    <div class="progress-stat">
+                        <span style="color:var(--text-2)">Enviados</span>
+                        <span id="prog-sent" class="prog-val" style="color:var(--green)">0</span>
+                    </div>
+                    <div class="progress-stat">
+                        <span style="color:var(--text-2)">Falhas</span>
+                        <span id="prog-failed" class="prog-val" style="color:var(--red)">0</span>
+                    </div>
+                    <div style="margin-top:1.5rem">
+                        <div style="display:flex;justify-content:space-between;margin-bottom:.4rem">
+                            <span style="font-size:.8rem;color:var(--text-3)">Progresso</span>
+                            <span id="prog-percent" style="font-size:.8rem;color:var(--green);font-weight:600">0%</span>
+                        </div>
+                        <div class="progress-bar-track">
+                            <div class="progress-bar-fill" id="prog-bar"></div>
+                        </div>
+                    </div>
+                    <p id="broadcast-status-msg" style="margin-top:1.5rem;text-align:center;color:var(--text-3);font-size:.85rem">Aguardando início...</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- ===================== CONFIGURAÇÕES ===================== -->
+        <div id="configuracoes-section" class="page-section hidden">
+            <div style="display:flex;flex-direction:column;gap:1.5rem">
+                <div class="card glass">
+                    <h3>Comportamento do Robô</h3>
+                    <div style="display:flex;flex-direction:column;gap:1.2rem;margin-top:.5rem">
+                        <label style="display:flex;align-items:center;gap:.8rem;cursor:pointer">
+                            <input type="checkbox" id="cfg-typing" checked style="accent-color:var(--green);width:16px;height:16px">
+                            <div>
+                                <strong style="font-size:.9rem">Simular "digitando..."</strong><br>
+                                <span style="color:var(--text-2);font-size:.8rem">O robô aparece digitando antes de enviar a resposta</span>
+                            </div>
+                        </label>
+                        <label style="display:flex;align-items:center;gap:.8rem;cursor:pointer">
+                            <input type="checkbox" id="cfg-recording" checked style="accent-color:var(--green);width:16px;height:16px">
+                            <div>
+                                <strong style="font-size:.9rem">Áudios como "gravado na hora"</strong><br>
+                                <span style="color:var(--text-2);font-size:.8rem">Ícone de microfone azul, igual a uma voz real gravada</span>
+                            </div>
+                        </label>
+                    </div>
+                </div>
+
+                <div class="card glass">
+                    <h3>🚀 Rodando 24/7 — Sem precisar do PC</h3>
+                    <p style="color:var(--text-2);font-size:.88rem;margin-bottom:1.5rem">Siga o passo a passo para hospedar no <strong style="color:var(--text-1)">Railway.app</strong> gratuitamente:</p>
+                    <div class="deploy-steps">
+                        <div class="deploy-step">
+                            <span class="step-num">1</span>
+                            <div><strong>Suba seu projeto no GitHub</strong><br><span>Crie um repositório e envie os arquivos (sem a pasta <code>node_modules</code>)</span></div>
+                        </div>
+                        <div class="deploy-step">
+                            <span class="step-num">2</span>
+                            <div><strong>Acesse <a href="https://railway.app" target="_blank" style="color:var(--green)">railway.app</a> e crie uma conta</strong><br><span>Entre com sua conta do GitHub. É gratuito para começar.</span></div>
+                        </div>
+                        <div class="deploy-step">
+                            <span class="step-num">3</span>
+                            <div><strong>Clique em "New Project" → "Deploy from GitHub"</strong><br><span>Selecione o repositório do seu robô.</span></div>
+                        </div>
+                        <div class="deploy-step">
+                            <span class="step-num">4</span>
+                            <div><strong>Configure <code>PORT=3000</code> nas variáveis de ambiente</strong><br><span>Vá em Variables no painel do Railway e adicione essa variável.</span></div>
+                        </div>
+                        <div class="deploy-step">
+                            <span class="step-num">5</span>
+                            <div><strong>Acesse a URL pública e escaneie o QR Code</strong><br><span>Railway gera um link tipo <code>seubot.railway.app</code>. Abra, escaneie e pronto! 🎉</span></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <!-- MODAL: CRIAR / EDITAR REGRA -->
+    <div class="modal-overlay" id="modal-overlay">
+        <div class="modal">
+            <h3 id="modal-title">✨ Nova Regra de Resposta</h3>
+            <input type="hidden" id="modal-edit-id">
+            <div class="form-group">
+                <label>Palavras-chave (separe por vírgula)</label>
+                <input type="text" id="modal-keywords" placeholder="oi, olá, ola, menu, bom dia">
+                <span class="hint">Qualquer uma dessas palavras ativa esta regra.</span>
+            </div>
+            <div class="form-group">
+                <label>Resposta do Robô</label>
+                <textarea id="modal-resposta" placeholder="Mensagem que o robô vai enviar...&#10;&#10;Use {saudacao} para saudação automática por horário!"></textarea>
+            </div>
+            <div class="form-group">
+                <label>Mídia (imagem, vídeo ou arquivo)</label>
+                <div class="upload-area" id="upload-area">
+                    <span id="upload-area-text">📎 Clique ou arraste um arquivo aqui</span>
+                    <input type="file" id="modal-file" style="display:none" accept="image/*,video/*,.pdf,.doc,.docx,.ogg,.mp3">
+                </div>
+                <input type="hidden" id="modal-media-path">
+                <input type="hidden" id="modal-media-tipo">
+                <div id="upload-preview" style="display:none;margin-top:.5rem"></div>
+            </div>
+            <div class="form-group">
+                <label>Prioridade (menor = maior prioridade)</label>
+                <input type="number" id="modal-ordem" value="99" min="1" max="99">
+            </div>
+            <div class="form-group">
+                <div class="checkbox-row">
+                    <input type="checkbox" id="modal-audio" style="accent-color:var(--green)">
+                    <label for="modal-audio">🎙️ Enviar audio_vendas.ogg como voz</label>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-cancel" id="modal-cancelar">Cancelar</button>
+                <button class="btn-primary" id="modal-salvar">💾 Salvar Regra</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- TOAST CONTAINER -->
+    <div id="toast-container"></div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="app.js"></script>
+</body>
+</html>
