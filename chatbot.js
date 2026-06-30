@@ -220,7 +220,7 @@ app.get('/api/leads', async (req, res) => {
 app.get('/api/leads/export', async (req, res) => {
     const leads = await db.all('SELECT telefone, data_captura, mensagens_recebidas FROM leads ORDER BY data_captura DESC');
     const csv = ['Telefone,Data de Captura,Mensagens Recebidas',
-        ...leads.map(l => `${l.telefone.replace('@c.us','')},${l.data_captura},${l.mensagens_recebidas}`)
+        ...leads.map(l => `${l.telefone.replace('@c.us','').replace('@lid','')},${l.data_captura},${l.mensagens_recebidas}`)
     ].join('\n');
     res.setHeader('Content-Type', 'text/csv');
     res.setHeader('Content-Disposition', 'attachment; filename="leads.csv"');
@@ -586,13 +586,24 @@ async function handleCadastroFlow(telefone, texto, textoOriginal) {
 // =====================================
 const delay = (ms) => new Promise((res) => setTimeout(res, ms));
 
+// Quando o WhatsApp usa @lid (privacidade), tenta obter o número real do contato.
+async function resolvePhone(msg) {
+    if (!msg.from.endsWith('@lid')) return msg.from;
+    try {
+        const contact = await msg.getContact();
+        if (contact.number) return `${contact.number}@c.us`;
+    } catch (_) {}
+    return msg.from;
+}
+
 client.on('message', async (msg) => {
     try {
         if (!msg.from || msg.from.endsWith('@g.us')) return;
         const chat = await msg.getChat();
         if (chat.isGroup) return;
 
-        await registerLead(msg.from);
+        const telefoneReal = await resolvePhone(msg);
+        await registerLead(telefoneReal);
         const texto = msg.body ? msg.body.trim().toLowerCase() : '';
 
         if (await handleCadastroFlow(msg.from, texto, msg.body || '')) {
