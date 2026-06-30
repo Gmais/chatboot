@@ -606,12 +606,14 @@ client.on('message', async (msg) => {
         await registerLead(telefoneReal);
         const texto = msg.body ? msg.body.trim().toLowerCase() : '';
 
-        if (await handleCadastroFlow(msg.from, texto, msg.body || '')) {
+        console.log(`📨 Mensagem de ${telefoneReal}: "${msg.body}"`);
+
+        if (await handleCadastroFlow(telefoneReal, texto, msg.body || '')) {
             await updateStats(true);
             return;
         }
 
-        if (await handlePactoFlow(msg.from, texto)) {
+        if (await handlePactoFlow(telefoneReal, texto)) {
             await updateStats(true);
             return;
         }
@@ -631,16 +633,16 @@ client.on('message', async (msg) => {
 
             if (config.openai_status === 'true' && config.openai_api_key) {
                 await chat.sendStateTyping();
-                
+
                 if (!global.chatHistory) global.chatHistory = new Map();
-                const history = global.chatHistory.get(msg.from) || [];
-                
+                const history = global.chatHistory.get(telefoneReal) || [];
+
                 if (history.length === 0 && config.openai_treinamento) {
                     history.push({ role: 'system', content: config.openai_treinamento });
                 }
-                
+
                 history.push({ role: 'user', content: texto });
-                
+
                 try {
                     const openai = new OpenAI({ apiKey: config.openai_api_key });
                     const completion = await openai.chat.completions.create({
@@ -648,19 +650,20 @@ client.on('message', async (msg) => {
                         model: config.openai_modelo || 'gpt-3.5-turbo',
                         max_tokens: 300
                     });
-                    
+
                     const respostaIA = completion.choices[0].message.content;
                     history.push({ role: 'assistant', content: respostaIA });
-                    
+
                     if (history.length > 7) {
-                        const sys = history.shift(); // remove system
-                        history.shift(); // remove older
+                        const sys = history.shift();
                         history.shift();
-                        history.unshift(sys); // put system back
+                        history.shift();
+                        history.unshift(sys);
                     }
-                    global.chatHistory.set(msg.from, history);
-                    
-                    await client.sendMessage(msg.from, respostaIA);
+                    global.chatHistory.set(telefoneReal, history);
+
+                    console.log(`🤖 IA respondendo para ${telefoneReal}`);
+                    await client.sendMessage(telefoneReal, respostaIA);
                     await updateStats(true);
                 } catch (e) {
                     console.error('❌ Erro na API da OpenAI:', e.message);
@@ -680,7 +683,8 @@ client.on('message', async (msg) => {
         else saudacao = 'Boa noite';
 
         const textoFinal = regraAtiva.resposta.replace(/{saudacao}/g, saudacao);
-        await client.sendMessage(msg.from, textoFinal);
+        console.log(`📤 Regra #${regraAtiva.id} ativada → respondendo para ${telefoneReal}`);
+        await client.sendMessage(telefoneReal, textoFinal);
 
         // Envia Áudio de Voz (audio_vendas.ogg)
         if (regraAtiva.enviar_audio) {
@@ -689,7 +693,7 @@ client.on('message', async (msg) => {
                 await chat.sendStateRecording();
                 await delay(3000);
                 const audioMedia = MessageMedia.fromFilePath(audioPath);
-                await client.sendMessage(msg.from, audioMedia, { sendAudioAsVoice: true });
+                await client.sendMessage(telefoneReal, audioMedia, { sendAudioAsVoice: true });
             }
         }
 
@@ -699,7 +703,7 @@ client.on('message', async (msg) => {
             if (fs.existsSync(mediaFullPath)) {
                 await delay(500);
                 const media = MessageMedia.fromFilePath(mediaFullPath);
-                await client.sendMessage(msg.from, media);
+                await client.sendMessage(telefoneReal, media);
             }
         }
 
