@@ -88,6 +88,7 @@ const sidebarStatus   = document.getElementById('sidebar-status');
 const msgReceivedEl   = document.getElementById('msg-received');
 const msgSentEl       = document.getElementById('msg-sent');
 const leadsCountEl    = document.getElementById('leads-count');
+const btnDisconnect   = document.getElementById('btn-disconnect');
 
 // =====================================
 // WHATSAPP SOCKET EVENTS
@@ -133,6 +134,10 @@ function setBadge(state) {
     statusBadge.className = `status-badge ${s.cls}`;
     if (sidebarDot) sidebarDot.className = `dot ${s.dot}`;
     if (sidebarStatus) sidebarStatus.textContent = s.label;
+
+    if (btnDisconnect) {
+        btnDisconnect.style.display = state === 'online' ? 'block' : 'none';
+    }
 }
 
 socket.on('stats', (stats) => {
@@ -173,6 +178,30 @@ socket.on('new_lead', (lead) => {
     addActivity('👥', `Novo lead: ${num}`, new Date(lead.data_captura).toLocaleString('pt-BR'));
     showToast('🎯 Novo Lead Capturado!', `Número: ${num}`, 'success', 5000);
 });
+
+// =====================================
+// BOTÃO DESCONECTAR
+// =====================================
+if (btnDisconnect) {
+    btnDisconnect.addEventListener('click', async () => {
+        if (confirm('Tem certeza que deseja desconectar o WhatsApp? Você precisará escanear o QR Code novamente para conectar.')) {
+            const originalText = btnDisconnect.textContent;
+            btnDisconnect.disabled = true;
+            btnDisconnect.textContent = 'Desconectando...';
+            try {
+                const res = await fetch('/api/disconnect', { method: 'POST' });
+                if (!res.ok) throw new Error('Erro ao desconectar');
+                showToast('Desconectando', 'Aguarde...', 'info');
+            } catch (err) {
+                console.error(err);
+                alert('Erro ao desconectar.');
+            } finally {
+                btnDisconnect.disabled = false;
+                btnDisconnect.textContent = originalText;
+            }
+        }
+    });
+}
 
 // =====================================
 // NAVEGAÇÃO SPA

@@ -56,7 +56,10 @@
     <main class="content">
         <header>
             <h1 id="page-title">Dashboard</h1>
-            <span class="status-badge" id="status-badge">● Aguardando...</span>
+            <div style="display: flex; align-items: center; gap: 1rem;">
+                <span class="status-badge" id="status-badge">● Aguardando...</span>
+                <button id="btn-disconnect" class="btn-danger" style="display: none; padding: 0.3rem 0.8rem; font-size: 0.8rem;">Desconectar</button>
+            </div>
         </header>
 
         <!-- ===================== DASHBOARD ===================== -->

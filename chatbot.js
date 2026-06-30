@@ -1,6 +1,7 @@
 // =====================================
 // IMPORTAÇÕES
 // =====================================
+require('dotenv').config();
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
@@ -12,6 +13,7 @@ const { open } = require('sqlite');
 const multer = require('multer');
 const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
 const OpenAI = require('openai');
+const { buscarAlunoPorMatricula, buscarAlunoPorCodigo, obterParcelasEmAberto, criarCliente, matricularAluno } = require('./pacto');
 
 // =====================================
 // CONFIGURAÇÃO DO SERVIDOR WEB E SOCKET.IO
@@ -68,6 +70,14 @@ async function initDB() {
         CREATE TABLE IF NOT EXISTS configuracoes (
             chave TEXT PRIMARY KEY,
             valor TEXT
+        );
+        CREATE TABLE IF NOT EXISTS vinculo_pacto (
+            telefone TEXT PRIMARY KEY,
+            codigo_cliente INTEGER NOT NULL,
+            codigo_pessoa INTEGER NOT NULL,
+            matricula TEXT,
+            nome TEXT,
+            data_vinculo DATETIME DEFAULT CURRENT_TIMESTAMP
         );
     `);
 
@@ -275,6 +285,23 @@ app.post('/api/broadcast/stop', (req, res) => {
     res.json({ success: true });
 });
 
+app.post('/api/disconnect', async (req, res) => {
+    if (client) {
+        try {
+            await client.logout();
+            isConnected = false;
+            currentQR = null;
+            io.emit('disconnected', 'Desconectado manualmente');
+            res.json({ success: true });
+        } catch (err) {
+            console.error('Erro ao desconectar:', err);
+            res.status(500).json({ error: 'Erro ao desconectar' });
+        }
+    } else {
+        res.status(400).json({ error: 'Cliente WhatsApp não encontrado' });
+    }
+});
+
 // =====================================
 // CONFIGURAÇÃO DO CLIENTE WHATSAPP
 // =====================================
@@ -333,6 +360,223 @@ client.on('disconnected', (reason) => {
 });
 
 // =====================================
+// INTEGRAÇÃO PACTO — VÍNCULO TELEFONE x ALUNO
+// =====================================
+async function getVinculo(telefone) {
+    return db.get('SELECT * FROM vinculo_pacto WHERE telefone = ?', telefone);
+}
+
+async function saveVinculo(telefone, aluno) {
+    await db.run(
+        `INSERT INTO vinculo_pacto (telefone, codigo_cliente, codigo_pessoa, matricula, nome)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(telefone) DO UPDATE SET
+            codigo_cliente = excluded.codigo_cliente,
+            codigo_pessoa = excluded.codigo_pessoa,
+            matricula = excluded.matricula,
+            nome = excluded.nome`,
+        [telefone, aluno.codigo, aluno.pessoa.codigo, aluno.matricula, aluno.pessoa.nome]
+    );
+}
+
+const PACTO_PALAVRAS_CHAVE = [
+    'débito', 'debito', 'boleto', 'pendência', 'pendencia', 'mensalidade', 'fatura', '2ª via', '2via',
+    'matrícula', 'matricula', 'minha situação', 'situação', 'situacao', 'meus dados'
+];
+
+function ehIntencaoPacto(texto) {
+    return PACTO_PALAVRAS_CHAVE.some(p => texto.includes(p));
+}
+
+// Envia a situação do aluno e as parcelas em aberto sempre juntas: quem pergunta
+// "minha situação" também quer saber se está devendo, e vice-versa.
+async function enviarRespostaPacto(telefone, aluno) {
+    const nome = aluno.pessoa?.nome || 'Aluno';
+    const situacao = aluno.situacao?.descricao || 'Não informada';
+    let texto = `📋 *${nome}*\nMatrícula: ${aluno.matricula}\nSituação: *${situacao}*\n\n`;
+
+    try {
+        const parcelas = await obterParcelasEmAberto(aluno.pessoa.codigo);
+        if (parcelas.length === 0) {
+            texto += '✅ Você não possui nenhuma parcela em aberto.';
+        } else {
+            const linhas = parcelas.map(p => `• ${p.descricao || 'Parcela'} — R$ ${p.valor ?? '?'} — vence em ${p.dataVencimento || '?'}`);
+            texto += `💰 Você tem ${parcelas.length} parcela(s) em aberto:\n${linhas.join('\n')}`;
+        }
+    } catch (err) {
+        console.error('❌ Erro ao consultar parcelas na Pacto:', err.message);
+        texto += '⚠️ Não consegui consultar seus débitos agora. Tente novamente em alguns minutos.';
+    }
+
+    await client.sendMessage(telefone, texto);
+}
+
+async function identificarERresponder(telefone, matricula) {
+    try {
+        const aluno = await buscarAlunoPorMatricula(matricula);
+        if (!aluno) {
+            await client.sendMessage(telefone, `❌ Não encontrei nenhum aluno com a matrícula ${matricula}. Confira o número e tente de novo.`);
+            return;
+        }
+        await saveVinculo(telefone, aluno);
+        await enviarRespostaPacto(telefone, aluno);
+    } catch (err) {
+        console.error('❌ Erro ao consultar aluno na Pacto:', err.message);
+        await client.sendMessage(telefone, '⚠️ Não consegui consultar seus dados agora. Tente novamente em alguns minutos.');
+    }
+}
+
+if (!global.pactoFlow) global.pactoFlow = new Map();
+
+// Trata intents de academia (situação, débitos). Retorna true se a mensagem foi tratada
+// por esse fluxo, sinalizando ao handler principal que não deve seguir para regras/IA.
+async function handlePactoFlow(telefone, texto) {
+    const aguardandoMatricula = global.pactoFlow.get(telefone);
+
+    if (aguardandoMatricula) {
+        global.pactoFlow.delete(telefone);
+        const matricula = texto.replace(/\D/g, '');
+        if (!matricula) {
+            await client.sendMessage(telefone, '❌ Não entendi. Envie apenas o número da sua matrícula.');
+            return true;
+        }
+        await identificarERresponder(telefone, matricula);
+        return true;
+    }
+
+    if (!ehIntencaoPacto(texto)) return false;
+
+    const vinculo = await getVinculo(telefone);
+    if (vinculo) {
+        try {
+            const aluno = await buscarAlunoPorCodigo(vinculo.codigo_cliente);
+            await enviarRespostaPacto(telefone, aluno);
+        } catch (err) {
+            console.error('❌ Erro ao consultar aluno vinculado na Pacto:', err.message);
+            await client.sendMessage(telefone, '⚠️ Não consegui consultar seus dados agora. Tente novamente em alguns minutos.');
+        }
+        return true;
+    }
+
+    global.pactoFlow.set(telefone, true);
+    await client.sendMessage(telefone, '👋 Para te ajudar, me informe o número da sua matrícula na academia:');
+    return true;
+}
+
+// =====================================
+// INTEGRAÇÃO PACTO — AUTOATENDIMENTO DE MATRÍCULA
+// =====================================
+const PACTO_PALAVRAS_MATRICULAR = ['quero matricular', 'quero me matricular', 'quero me cadastrar', 'novo aluno', 'quero ser aluno', 'fazer cadastro', 'quero treinar'];
+
+function ehIntencaoMatricular(texto) {
+    return PACTO_PALAVRAS_MATRICULAR.some(p => texto.includes(p));
+}
+
+function formatarDataBR(date) {
+    return date.toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' });
+}
+
+function extrairCelular(telefone) {
+    let digitos = telefone.replace('@c.us', '').replace(/\D/g, '');
+    if (digitos.startsWith('55') && digitos.length > 11) digitos = digitos.slice(2);
+    return digitos;
+}
+
+if (!global.pactoCadastro) global.pactoCadastro = new Map();
+
+async function finalizarCadastro(telefone, dados) {
+    try {
+        const cliente = await criarCliente({
+            nome: dados.nome,
+            celular: extrairCelular(telefone),
+            cpf: dados.cpf,
+            email: dados.email
+        });
+
+        const hoje = new Date();
+        const fim = new Date(hoje);
+        const duracao = Number(process.env.PACTO_PLANO_DURACAO_MESES || 1);
+        fim.setMonth(fim.getMonth() + duracao);
+
+        await matricularAluno({
+            codigoMatricula: parseInt(cliente.matricula, 10),
+            consultor: process.env.PACTO_CONSULTOR_PADRAO,
+            dataCadastro: formatarDataBR(hoje),
+            dataInicio: formatarDataBR(hoje),
+            dataFinal: formatarDataBR(fim),
+            duracao,
+            modalidades: [{
+                nome: process.env.PACTO_PLANO_MODALIDADE,
+                vezesPorSemana: Number(process.env.PACTO_PLANO_VEZES_SEMANA || 7)
+            }],
+            valorContrato: Number(process.env.PACTO_PLANO_VALOR_CONTRATO),
+            valorMatricula: Number(process.env.PACTO_PLANO_VALOR_MATRICULA)
+        });
+
+        await saveVinculo(telefone, cliente);
+        await client.sendMessage(telefone, `✅ Matrícula realizada com sucesso! Sua matrícula é *${cliente.matricula}*. Bem-vindo(a)!`);
+    } catch (err) {
+        console.error('❌ Erro ao matricular novo aluno na Pacto:', err.message);
+        await client.sendMessage(telefone, '⚠️ Não consegui concluir sua matrícula agora. Por favor, fale com a recepção da academia.');
+    }
+}
+
+// Conduz a conversa de cadastro+matrícula passo a passo. "textoOriginal" preserva
+// maiúsculas/acentos do que o aluno digitou (nome e e-mail não devem ser lowercased).
+async function handleCadastroFlow(telefone, texto, textoOriginal) {
+    const estado = global.pactoCadastro.get(telefone);
+
+    if (!estado) {
+        if (!ehIntencaoMatricular(texto)) return false;
+        global.pactoCadastro.set(telefone, { etapa: 'nome' });
+        await client.sendMessage(telefone, '🏋️ Que ótimo que você quer treinar com a gente! Pra começar, me diga seu *nome completo*:');
+        return true;
+    }
+
+    if (estado.etapa === 'nome') {
+        estado.nome = textoOriginal.trim();
+        estado.etapa = 'cpf';
+        await client.sendMessage(telefone, 'Agora me informe seu *CPF* (somente números):');
+        return true;
+    }
+
+    if (estado.etapa === 'cpf') {
+        const cpf = texto.replace(/\D/g, '');
+        if (cpf.length !== 11) {
+            await client.sendMessage(telefone, '❌ CPF inválido. Envie os 11 números do seu CPF:');
+            return true;
+        }
+        estado.cpf = cpf;
+        estado.etapa = 'email';
+        await client.sendMessage(telefone, 'Qual o seu *e-mail*? (ou digite *pular* se não quiser informar)');
+        return true;
+    }
+
+    if (estado.etapa === 'email') {
+        estado.email = texto === 'pular' ? '' : textoOriginal.trim();
+        estado.etapa = 'confirmar';
+        await client.sendMessage(telefone,
+            `📋 Confere os seus dados:\n\nNome: ${estado.nome}\nCPF: ${estado.cpf}\nE-mail: ${estado.email || '(não informado)'}\n\n` +
+            `Plano: Mensal — R$ ${process.env.PACTO_PLANO_VALOR_CONTRATO} + R$ ${process.env.PACTO_PLANO_VALOR_MATRICULA} de matrícula\n\n` +
+            `Digite *CONFIRMAR* para finalizar ou *CANCELAR* para desistir.`
+        );
+        return true;
+    }
+
+    if (estado.etapa === 'confirmar') {
+        global.pactoCadastro.delete(telefone);
+        if (texto !== 'confirmar') {
+            await client.sendMessage(telefone, '❌ Cadastro cancelado. Se quiser tentar de novo, é só me chamar.');
+            return true;
+        }
+        await finalizarCadastro(telefone, estado);
+        return true;
+    }
+
+    return false;
+}
+
+// =====================================
 // FUNIL DE MENSAGENS — DINÂMICO
 // =====================================
 const delay = (ms) => new Promise((res) => setTimeout(res, ms));
@@ -345,6 +589,16 @@ client.on('message', async (msg) => {
 
         await registerLead(msg.from);
         const texto = msg.body ? msg.body.trim().toLowerCase() : '';
+
+        if (await handleCadastroFlow(msg.from, texto, msg.body || '')) {
+            await updateStats(true);
+            return;
+        }
+
+        if (await handlePactoFlow(msg.from, texto)) {
+            await updateStats(true);
+            return;
+        }
 
         const regras = await db.all('SELECT * FROM respostas WHERE ativo = 1 ORDER BY ordem ASC');
         let regraAtiva = null;
