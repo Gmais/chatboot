@@ -191,11 +191,12 @@ if (btnDisconnect) {
             try {
                 const res = await fetch('/api/disconnect', { method: 'POST' });
                 if (!res.ok) throw new Error('Erro ao desconectar');
-                showToast('Desconectando', 'Aguarde...', 'info');
+                btnDisconnect.textContent = '✅ Desconectado';
+                showToast('Desconectado', 'O servidor vai reiniciar e gerar um novo QR Code. Recarregando em 6s...', 'info', 6000);
+                setTimeout(() => location.reload(), 6000);
             } catch (err) {
                 console.error(err);
-                alert('Erro ao desconectar.');
-            } finally {
+                showToast('Erro', 'Não foi possível desconectar.', 'error');
                 btnDisconnect.disabled = false;
                 btnDisconnect.textContent = originalText;
             }

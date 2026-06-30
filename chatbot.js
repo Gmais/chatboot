@@ -291,25 +291,29 @@ app.post('/api/broadcast/stop', (req, res) => {
 });
 
 app.post('/api/disconnect', async (req, res) => {
-    if (client) {
-        try {
-            await client.logout();
-        } catch (err) {
-            console.error('logout() falhou, forçando destroy():', err.message);
-            try { await client.destroy(); } catch (_) {}
-        }
-        // Remove sessão salva no volume para forçar novo QR Code
-        try {
-            const authDir = path.join(DATA_DIR, '.wwebjs_auth');
-            if (fs.existsSync(authDir)) fs.rmSync(authDir, { recursive: true, force: true });
-        } catch (_) {}
-        isConnected = false;
-        currentQR = null;
-        io.emit('disconnected', 'Desconectado manualmente');
-        res.json({ success: true });
-    } else {
-        res.status(400).json({ error: 'Cliente WhatsApp não encontrado' });
+    // Responde imediatamente para não travar o frontend
+    res.json({ success: true });
+    io.emit('disconnected', 'Desconectado manualmente');
+
+    // Remove sessão do volume para forçar novo QR Code no próximo start
+    try {
+        const authDir = path.join(DATA_DIR, '.wwebjs_auth');
+        if (fs.existsSync(authDir)) fs.rmSync(authDir, { recursive: true, force: true });
+    } catch (_) {}
+
+    // Tenta logout suave com timeout de 5s, depois força destroy e reinicia processo
+    const exitClean = () => { console.log('🔄 Reiniciando para gerar novo QR Code...'); process.exit(0); };
+    const timer = setTimeout(exitClean, 5000);
+    try {
+        await Promise.race([
+            client.logout(),
+            new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 4000))
+        ]);
+    } catch (_) {
+        try { await client.destroy(); } catch (__) {}
     }
+    clearTimeout(timer);
+    exitClean();
 });
 
 // =====================================
