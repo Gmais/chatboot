@@ -42,10 +42,14 @@ let db;
 let stats = { received: 0, sent: 0, leads: 0 };
 const leadsSet = new Set();
 
+// Em produção (Railway), aponta para o volume persistente; localmente, usa a pasta do projeto.
+const DATA_DIR = process.env.RAILWAY_VOLUME_MOUNT_PATH || __dirname;
+const DB_PATH = path.join(DATA_DIR, 'database.sqlite');
+
 const DEFAULT_RESPONSE_TEXT = `{saudacao}! 👋\n\nEssa mensagem foi enviada automaticamente pelo robô 🤖\n\nNa versão PRO você vai além: desbloqueie tudo!.\n\n✍️ Envio de textos\n🎙️ Áudios\n🖼️ Imagens\n🎥 Vídeos\n📂 Arquivos\n\n💡 Simulação de "digitando..." e "gravando áudio"\n🚀 Envio de mensagens em massa\n📇 Captura automática de contatos\n💻 Aprenda como deixar o robô funcionando 24 hrs, com o PC desligado\n✅ E 3 Bônus exclusivos\n\n🔥 Adquira a versão PRO agora: https://pay.kiwify.com.br/FkTOhRZ?src=pro`;
 
 async function initDB() {
-    db = await open({ filename: './database.sqlite', driver: sqlite3.Database });
+    db = await open({ filename: DB_PATH, driver: sqlite3.Database });
 
     await db.exec(`
         CREATE TABLE IF NOT EXISTS leads (
@@ -306,7 +310,7 @@ app.post('/api/disconnect', async (req, res) => {
 // CONFIGURAÇÃO DO CLIENTE WHATSAPP
 // =====================================
 const client = new Client({
-    authStrategy: new LocalAuth(),
+    authStrategy: new LocalAuth({ dataPath: path.join(DATA_DIR, '.wwebjs_auth') }),
     puppeteer: {
         headless: true,
         args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--single-process'],
