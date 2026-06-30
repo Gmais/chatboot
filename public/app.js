@@ -149,9 +149,11 @@ btnPairing?.addEventListener('click', async () => {
         if (!res.ok) throw new Error(data.error || 'Erro ao gerar código');
         if (pairingCodeValue) pairingCodeValue.textContent = data.code;
         if (pairingCodeDisplay) pairingCodeDisplay.style.display = 'block';
-        showToast('Código gerado!', 'Digite-o no WhatsApp → Dispositivos vinculados → Vincular com número', 'success', 8000);
+        showToast('Código gerado! ✅', `Código: ${data.code} — Digite no WhatsApp em Dispositivos vinculados`, 'success', 12000);
     } catch (err) {
-        showToast('Erro', err.message, 'error');
+        // Se o código já estava visível, mantém — não esconde em caso de erro
+        const errorMsg = err.message && err.message.length > 3 ? err.message : 'Clique em Gerar código novamente quando aparecer um novo QR';
+        showToast('Tente novamente', errorMsg, 'error');
     } finally {
         btnPairing.disabled = false;
         btnPairing.textContent = 'Gerar código';
