@@ -219,9 +219,17 @@
                     </div>
 
                     <div class="form-group">
-                        <label>OpenAI API Key <a href="https://platform.openai.com/api-keys" target="_blank" style="color:var(--green);font-size:.75rem;margin-left:.5rem">Pegar minha chave</a></label>
+                        <label>Provider de IA</label>
+                        <select id="ia-provider" style="width:100%;background:var(--input-bg);border:1px solid rgba(255,255,255,0.1);border-radius:var(--radius-sm);padding:.7rem 1rem;color:var(--text-1);font-family:'Inter',sans-serif">
+                            <option value="openai">🟢 OpenAI (ChatGPT)</option>
+                            <option value="groq">⚡ Groq (Gratuito e Ultrarrápido)</option>
+                        </select>
+                    </div>
+
+                    <div class="form-group" id="ia-apikey-group">
+                        <label id="ia-apikey-label">API Key</label>
                         <input type="password" id="ia-apikey" placeholder="sk-proj-xxxxxxxxxxxxxxxxxxxxxxxxx">
-                        <span class="hint">Sua chave é armazenada com segurança no banco local.</span>
+                        <span class="hint" id="ia-apikey-hint">Sua chave é armazenada com segurança no banco local.</span>
                     </div>
 
                     <div class="form-group">

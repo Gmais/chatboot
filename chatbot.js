@@ -651,7 +651,14 @@ client.on('message', async (msg) => {
             const config = {};
             confRows.forEach(r => config[r.chave] = r.valor);
 
-            if (config.openai_status === 'true' && config.openai_api_key) {
+            const provider  = config.ia_provider || 'openai';
+            const iaAtiva   = config.openai_status === 'true';
+            const apiKey    = provider === 'groq' ? config.groq_api_key : config.openai_api_key;
+            const modelo    = provider === 'groq'
+                ? (config.groq_modelo || 'llama-3.1-8b-instant')
+                : (config.openai_modelo || 'gpt-3.5-turbo');
+
+            if (iaAtiva && apiKey) {
                 await chat.sendStateTyping();
 
                 if (!global.chatHistory) global.chatHistory = new Map();
@@ -664,10 +671,13 @@ client.on('message', async (msg) => {
                 history.push({ role: 'user', content: texto });
 
                 try {
-                    const openai = new OpenAI({ apiKey: config.openai_api_key });
+                    const openai = new OpenAI({
+                        apiKey,
+                        ...(provider === 'groq' && { baseURL: 'https://api.groq.com/openai/v1' })
+                    });
                     const completion = await openai.chat.completions.create({
                         messages: history,
-                        model: config.openai_modelo || 'gpt-3.5-turbo',
+                        model: modelo,
                         max_tokens: 300
                     });
 
@@ -686,7 +696,7 @@ client.on('message', async (msg) => {
                     await client.sendMessage(telefoneReal, respostaIA);
                     await updateStats(true);
                 } catch (e) {
-                    console.error('❌ Erro na API da OpenAI:', e.message);
+                    console.error(`❌ Erro na API da IA (${provider}):`, e.message);
                 }
             }
             return;

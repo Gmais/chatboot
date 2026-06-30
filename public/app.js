@@ -229,33 +229,79 @@ navBtns.forEach(btn => {
 });
 
 // =====================================
-// INTELIGÊNCIA ARTIFICIAL (OpenAI)
+// INTELIGÊNCIA ARTIFICIAL
 // =====================================
-const iaStatus = document.getElementById('ia-status');
-const iaApikey = document.getElementById('ia-apikey');
-const iaModelo = document.getElementById('ia-modelo');
+const iaStatus     = document.getElementById('ia-status');
+const iaProvider   = document.getElementById('ia-provider');
+const iaApikey     = document.getElementById('ia-apikey');
+const iaModelo     = document.getElementById('ia-modelo');
 const iaTreinamento = document.getElementById('ia-treinamento');
-const btnSalvarIa = document.getElementById('btn-salvar-ia');
+const btnSalvarIa  = document.getElementById('btn-salvar-ia');
+
+const GROQ_MODELS = [
+    { value: 'llama-3.1-8b-instant',       label: 'Llama 3.1 8B Instant (Mais Rápido, Gratuito)' },
+    { value: 'llama-3.3-70b-versatile',     label: 'Llama 3.3 70B Versatile (Melhor Qualidade)' },
+    { value: 'mixtral-8x7b-32768',          label: 'Mixtral 8x7B (Bom em Português)' },
+    { value: 'gemma2-9b-it',               label: 'Gemma 2 9B (Google, Gratuito)' },
+];
+const OPENAI_MODELS = [
+    { value: 'gpt-3.5-turbo', label: 'GPT-3.5 Turbo (Mais Rápido e Barato)' },
+    { value: 'gpt-4o',        label: 'GPT-4o (Mais Inteligente, Maior Custo)' },
+];
+
+function updateIaProviderUI(provider) {
+    if (!iaModelo) return;
+    const models = provider === 'groq' ? GROQ_MODELS : OPENAI_MODELS;
+    const currentVal = iaModelo.value;
+    iaModelo.innerHTML = models.map(m => `<option value="${m.value}">${m.label}</option>`).join('');
+    if (models.find(m => m.value === currentVal)) iaModelo.value = currentVal;
+
+    const label = document.getElementById('ia-apikey-label');
+    const hint  = document.getElementById('ia-apikey-hint');
+    if (provider === 'groq') {
+        if (label) label.innerHTML = 'Groq API Key <a href="https://console.groq.com/keys" target="_blank" style="color:var(--green);font-size:.75rem;margin-left:.5rem">⚡ Pegar chave grátis</a>';
+        if (hint)  hint.textContent = 'Gratuito. Crie uma conta em console.groq.com e gere sua chave.';
+        if (iaApikey) iaApikey.placeholder = 'gsk_xxxxxxxxxxxxxxxxxxxxxxxx';
+    } else {
+        if (label) label.innerHTML = 'OpenAI API Key <a href="https://platform.openai.com/api-keys" target="_blank" style="color:var(--green);font-size:.75rem;margin-left:.5rem">Pegar minha chave</a>';
+        if (hint)  hint.textContent = 'Sua chave é armazenada com segurança no banco local.';
+        if (iaApikey) iaApikey.placeholder = 'sk-proj-xxxxxxxxxxxxxxxxxxxxxxxxx';
+    }
+}
+
+iaProvider?.addEventListener('change', () => updateIaProviderUI(iaProvider.value));
 
 async function loadIaConfig() {
     try {
         const res = await fetch('/api/configuracoes');
         const config = await res.json();
-        if (iaStatus) iaStatus.checked = config.openai_status === 'true';
-        if (iaApikey) iaApikey.value = config.openai_api_key || '';
-        if (iaModelo) iaModelo.value = config.openai_modelo || 'gpt-3.5-turbo';
+        const provider = config.ia_provider || 'openai';
+        if (iaProvider)    iaProvider.value  = provider;
+        updateIaProviderUI(provider);
+        if (iaStatus)      iaStatus.checked  = config.openai_status === 'true';
         if (iaTreinamento) iaTreinamento.value = config.openai_treinamento || '';
+        if (provider === 'groq') {
+            if (iaApikey) iaApikey.value = config.groq_api_key || '';
+            if (iaModelo) iaModelo.value = config.groq_modelo || 'llama-3.1-8b-instant';
+        } else {
+            if (iaApikey) iaApikey.value = config.openai_api_key || '';
+            if (iaModelo) iaModelo.value = config.openai_modelo || 'gpt-3.5-turbo';
+        }
     } catch (e) {
         console.error('Erro ao carregar configs de IA', e);
     }
 }
 
 btnSalvarIa?.addEventListener('click', async () => {
+    const provider = iaProvider?.value || 'openai';
     const payload = {
+        ia_provider: provider,
         openai_status: iaStatus.checked ? 'true' : 'false',
-        openai_api_key: iaApikey.value.trim(),
-        openai_modelo: iaModelo.value,
-        openai_treinamento: iaTreinamento.value.trim()
+        openai_treinamento: iaTreinamento.value.trim(),
+        ...(provider === 'groq'
+            ? { groq_api_key: iaApikey.value.trim(), groq_modelo: iaModelo.value }
+            : { openai_api_key: iaApikey.value.trim(), openai_modelo: iaModelo.value }
+        )
     };
     try {
         await fetch('/api/configuracoes', {
