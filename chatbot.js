@@ -614,7 +614,7 @@ async function resolvePhone(msg) {
 
 client.on('message', async (msg) => {
     try {
-        if (!msg.from || msg.from.endsWith('@g.us')) return;
+        if (!msg.from || msg.from.endsWith('@g.us') || msg.from === 'status@broadcast') return;
         const chat = await msg.getChat();
         if (chat.isGroup) return;
 
