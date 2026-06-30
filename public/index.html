@@ -123,6 +123,18 @@
                     </div>
                 </div>
             </div>
+
+            <!-- Feed de Mensagens ao Vivo -->
+            <div class="card glass" style="margin-top:1.5rem">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem">
+                    <h3>💬 Conversas ao Vivo</h3>
+                    <button id="btn-limpar-feed" style="background:none;border:1px solid rgba(255,255,255,0.1);color:var(--text-3);border-radius:6px;padding:.3rem .7rem;font-size:.75rem;cursor:pointer">Limpar</button>
+                </div>
+                <div id="live-feed" style="display:flex;flex-direction:column;gap:.5rem;max-height:350px;overflow-y:auto;padding-right:.3rem">
+                    <p id="live-feed-empty" style="color:var(--text-3);font-size:.85rem;text-align:center;padding:2rem 0">Aguardando mensagens...</p>
+                </div>
+            </div>
+
         </div>
 
         <!-- ===================== MENSAGENS ===================== -->

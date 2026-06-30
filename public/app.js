@@ -186,6 +186,69 @@ socket.on('stats', (stats) => {
 });
 
 // =====================================
+// FEED DE CONVERSAS AO VIVO
+// =====================================
+const liveFeed      = document.getElementById('live-feed');
+const liveFeedEmpty = document.getElementById('live-feed-empty');
+const btnLimparFeed = document.getElementById('btn-limpar-feed');
+let msgReceivedCount = 0;
+let msgSentCount = 0;
+
+function addFeedMessage(type, phone, text, ts) {
+    if (!liveFeed) return;
+    if (liveFeedEmpty) liveFeedEmpty.style.display = 'none';
+
+    const isIn = type === 'in';
+    const time = new Date(ts).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+    const shortPhone = phone.replace('@c.us','').replace('@lid','').replace(/^55/, '');
+    const preview = text ? (text.length > 120 ? text.slice(0, 120) + '…' : text) : '';
+
+    const div = document.createElement('div');
+    div.style.cssText = `
+        display:flex; align-items:flex-start; gap:.5rem;
+        ${isIn ? 'flex-direction:row' : 'flex-direction:row-reverse'};
+        animation:fadeIn .25s ease;
+    `;
+    div.innerHTML = `
+        <span style="font-size:1.1rem;flex-shrink:0;margin-top:.1rem">${isIn ? '📲' : '🤖'}</span>
+        <div style="
+            max-width:75%; padding:.5rem .75rem; border-radius:10px; font-size:.8rem;
+            background:${isIn ? 'rgba(255,255,255,0.06)' : 'rgba(37,211,102,0.12)'};
+            border:1px solid ${isIn ? 'rgba(255,255,255,0.08)' : 'rgba(37,211,102,0.2)'};
+        ">
+            <div style="font-size:.7rem;color:var(--text-3);margin-bottom:.2rem">
+                ${isIn ? `<strong style="color:var(--text-2)">${shortPhone}</strong>` : '<strong style="color:var(--green)">Robô</strong>'}
+                <span style="margin-left:.4rem">${time}</span>
+            </div>
+            <div style="color:var(--text-1);word-break:break-word">${preview}</div>
+        </div>
+    `;
+    liveFeed.appendChild(div);
+    liveFeed.scrollTop = liveFeed.scrollHeight;
+
+    // Mantém apenas as últimas 50 mensagens no feed
+    while (liveFeed.children.length > 51) liveFeed.removeChild(liveFeed.children[1]);
+}
+
+socket.on('message_in', ({ from, text, ts }) => {
+    addFeedMessage('in', from, text, ts);
+    msgReceivedCount++;
+    if (msgReceivedEl) animateCounter(msgReceivedEl, parseInt(msgReceivedEl.textContent.replace(/\D/g,'') || 0) + 1);
+});
+
+socket.on('message_out', ({ to, text, ts }) => {
+    addFeedMessage('out', to, text, ts);
+    msgSentCount++;
+    if (msgSentEl) animateCounter(msgSentEl, parseInt(msgSentEl.textContent.replace(/\D/g,'') || 0) + 1);
+});
+
+btnLimparFeed?.addEventListener('click', () => {
+    if (!liveFeed) return;
+    liveFeed.innerHTML = '';
+    if (liveFeedEmpty) { liveFeedEmpty.style.display = 'block'; liveFeed.appendChild(liveFeedEmpty); }
+});
+
+// =====================================
 // LEADS TABLE
 // =====================================
 const leadsTableBody = document.getElementById('leads-table-body');

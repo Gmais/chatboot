@@ -649,6 +649,7 @@ client.on('message', async (msg) => {
         const texto = msg.body ? msg.body.trim().toLowerCase() : '';
 
         console.log(`📨 Mensagem de ${telefoneReal}: "${msg.body}"`);
+        io.emit('message_in', { from: telefoneReal.replace('@c.us','').replace('@lid',''), text: msg.body || '', ts: Date.now() });
 
         if (await handleCadastroFlow(telefoneReal, texto, msg.body || '')) {
             await updateStats(true);
@@ -716,6 +717,7 @@ client.on('message', async (msg) => {
 
                     console.log(`🤖 IA respondendo para ${telefoneReal}`);
                     await client.sendMessage(telefoneReal, respostaIA);
+                    io.emit('message_out', { to: telefoneReal.replace('@c.us','').replace('@lid',''), text: respostaIA, ts: Date.now() });
                     await updateStats(true);
                 } catch (e) {
                     console.error(`❌ Erro na API da IA (${provider}):`, e.message);
@@ -737,6 +739,7 @@ client.on('message', async (msg) => {
         const textoFinal = regraAtiva.resposta.replace(/{saudacao}/g, saudacao);
         console.log(`📤 Regra #${regraAtiva.id} ativada → respondendo para ${telefoneReal}`);
         await client.sendMessage(telefoneReal, textoFinal);
+        io.emit('message_out', { to: telefoneReal.replace('@c.us','').replace('@lid',''), text: textoFinal, ts: Date.now() });
 
         // Envia Áudio de Voz (audio_vendas.ogg)
         if (regraAtiva.enviar_audio) {
