@@ -99,17 +99,26 @@ socket.on('loading', (msg) => {
     setBadge('loading');
 });
 
+const pairingSection     = document.getElementById('pairing-section');
+const pairingCodeDisplay = document.getElementById('pairing-code-display');
+const pairingCodeValue   = document.getElementById('pairing-code-value');
+const pairingPhone       = document.getElementById('pairing-phone');
+const btnPairing         = document.getElementById('btn-pairing');
+
 socket.on('qr', (qrDataUrl) => {
     if (qrContainer) qrContainer.innerHTML = `<img src="${qrDataUrl}" alt="QR Code">`;
     if (statusText) statusText.textContent = '📲 Escaneie com o WhatsApp';
     setBadge('waiting');
-    showToast('QR Code Pronto', 'Escaneie o código com o seu WhatsApp', 'info');
+    if (pairingSection) pairingSection.style.display = 'block';
+    showToast('QR Code Pronto', 'Escaneie ou use o código abaixo', 'info');
 });
 
 socket.on('ready', () => {
     if (qrContainer) qrContainer.innerHTML = `<div style="font-size:3.5rem;text-align:center">✅<br><span style="font-size:1rem;font-weight:600;color:#25D366">Conectado!</span></div>`;
     if (statusText) { statusText.textContent = 'WhatsApp Online'; statusText.style.color = 'var(--green)'; }
     setBadge('online');
+    if (pairingSection) pairingSection.style.display = 'none';
+    if (pairingCodeDisplay) pairingCodeDisplay.style.display = 'none';
     addActivity('✅', 'WhatsApp conectado', 'Robô ativo e pronto para responder');
     showToast('WhatsApp Conectado!', 'Seu robô está ativo e monitorando mensagens', 'success');
 });
@@ -118,7 +127,35 @@ socket.on('disconnected', () => {
     if (qrContainer) qrContainer.innerHTML = `<span style="color:#ef4444;font-size:.85rem">❌ Desconectado</span>`;
     if (statusText) { statusText.textContent = 'WhatsApp Offline'; statusText.style.color = 'var(--red)'; }
     setBadge('offline');
+    if (pairingSection) pairingSection.style.display = 'none';
     showToast('Desconectado', 'O WhatsApp foi desconectado. Reinicie o servidor.', 'error');
+});
+
+btnPairing?.addEventListener('click', async () => {
+    const phone = pairingPhone?.value.trim().replace(/\D/g, '');
+    if (!phone || phone.length < 10) {
+        showToast('Número inválido', 'Digite o número com DDD e código do país. Ex: 5542999222857', 'error');
+        return;
+    }
+    btnPairing.disabled = true;
+    btnPairing.textContent = 'Aguarde...';
+    try {
+        const res = await fetch('/api/pairing-code', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ telefone: phone })
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Erro ao gerar código');
+        if (pairingCodeValue) pairingCodeValue.textContent = data.code;
+        if (pairingCodeDisplay) pairingCodeDisplay.style.display = 'block';
+        showToast('Código gerado!', 'Digite-o no WhatsApp → Dispositivos vinculados → Vincular com número', 'success', 8000);
+    } catch (err) {
+        showToast('Erro', err.message, 'error');
+    } finally {
+        btnPairing.disabled = false;
+        btnPairing.textContent = 'Gerar código';
+    }
 });
 
 function setBadge(state) {

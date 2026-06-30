@@ -290,6 +290,22 @@ app.post('/api/broadcast/stop', (req, res) => {
     res.json({ success: true });
 });
 
+app.post('/api/pairing-code', async (req, res) => {
+    const { telefone } = req.body;
+    if (!telefone) return res.status(400).json({ error: 'Informe o número de telefone.' });
+    if (!clientReadyForPairing) return res.status(400).json({ error: 'Aguarde o QR Code aparecer antes de solicitar o código.' });
+    try {
+        // Remove tudo exceto dígitos
+        const numero = String(telefone).replace(/\D/g, '');
+        const code = await client.requestPairingCode(numero);
+        console.log(`🔑 Código de pareamento gerado: ${code}`);
+        res.json({ code });
+    } catch (err) {
+        console.error('Erro ao gerar código de pareamento:', err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
 app.post('/api/disconnect', async (req, res) => {
     // Responde imediatamente para não travar o frontend
     res.json({ success: true });
@@ -336,6 +352,7 @@ const client = new Client({
 
 let currentQR = null;
 let isConnected = false;
+let clientReadyForPairing = false;
 
 // =====================================
 // EVENTOS DO SOCKET.IO (PAINEL WEB)
@@ -360,6 +377,7 @@ io.on('connection', async (socket) => {
 // =====================================
 client.on('qr', async (qr) => {
     console.log('📲 Novo QR Code gerado! Acesse o painel web para escanear.');
+    clientReadyForPairing = true;
     try {
         const qrDataUrl = await qrcode.toDataURL(qr);
         currentQR = qrDataUrl;
@@ -371,6 +389,7 @@ client.on('ready', () => {
     console.log('✅ Tudo certo! WhatsApp conectado.');
     isConnected = true;
     currentQR = null;
+    clientReadyForPairing = false;
     io.emit('ready');
 });
 
