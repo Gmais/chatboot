@@ -330,7 +330,6 @@ const client = new Client({
             '--disable-gpu',
             '--no-zygote',
             '--disable-extensions',
-            '--disable-background-networking',
         ],
     },
 });
