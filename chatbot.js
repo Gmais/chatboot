@@ -294,14 +294,19 @@ app.post('/api/disconnect', async (req, res) => {
     if (client) {
         try {
             await client.logout();
-            isConnected = false;
-            currentQR = null;
-            io.emit('disconnected', 'Desconectado manualmente');
-            res.json({ success: true });
         } catch (err) {
-            console.error('Erro ao desconectar:', err);
-            res.status(500).json({ error: 'Erro ao desconectar' });
+            console.error('logout() falhou, forçando destroy():', err.message);
+            try { await client.destroy(); } catch (_) {}
         }
+        // Remove sessão salva no volume para forçar novo QR Code
+        try {
+            const authDir = path.join(DATA_DIR, '.wwebjs_auth');
+            if (fs.existsSync(authDir)) fs.rmSync(authDir, { recursive: true, force: true });
+        } catch (_) {}
+        isConnected = false;
+        currentQR = null;
+        io.emit('disconnected', 'Desconectado manualmente');
+        res.json({ success: true });
     } else {
         res.status(400).json({ error: 'Cliente WhatsApp não encontrado' });
     }
@@ -314,7 +319,15 @@ const client = new Client({
     authStrategy: new LocalAuth({ dataPath: path.join(DATA_DIR, '.wwebjs_auth') }),
     puppeteer: {
         headless: true,
-        args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--single-process'],
+        args: [
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-dev-shm-usage',
+            '--disable-gpu',
+            '--no-zygote',
+            '--disable-extensions',
+            '--disable-background-networking',
+        ],
     },
 });
 
@@ -590,7 +603,10 @@ const delay = (ms) => new Promise((res) => setTimeout(res, ms));
 async function resolvePhone(msg) {
     if (!msg.from.endsWith('@lid')) return msg.from;
     try {
-        const contact = await msg.getContact();
+        const contact = await Promise.race([
+            msg.getContact(),
+            new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 3000))
+        ]);
         if (contact.number) return `${contact.number}@c.us`;
     } catch (_) {}
     return msg.from;
