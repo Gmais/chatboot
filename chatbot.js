@@ -335,10 +335,18 @@ app.post('/api/disconnect', async (req, res) => {
 // =====================================
 // CONFIGURAÇÃO DO CLIENTE WHATSAPP
 // =====================================
+
+// Mata qualquer Chrome residual de inicializações anteriores
+try { require('child_process').execSync('pkill -f chrome || true', { stdio: 'ignore' }); } catch (_) {}
+
+// Diretório de cache único por processo (evita conflito de bindings entre reinicializações)
+const CHROME_CACHE_DIR = `/tmp/wwebjs-chrome-${process.pid}`;
+
 const client = new Client({
     authStrategy: new LocalAuth({ dataPath: path.join(DATA_DIR, '.wwebjs_auth') }),
     puppeteer: {
         headless: true,
+        userDataDir: CHROME_CACHE_DIR,
         args: [
             '--no-sandbox',
             '--disable-setuid-sandbox',
