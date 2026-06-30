@@ -651,19 +651,20 @@ client.on('message', async (msg) => {
         const chat = await msg.getChat();
         if (chat.isGroup) return;
 
-        const telefoneReal = await resolvePhone(msg);
+        const replyTo    = msg.from;                    // endereço original para enviar resposta
+        const telefoneReal = await resolvePhone(msg);  // número limpo para salvar no banco
         await registerLead(telefoneReal);
         const texto = msg.body ? msg.body.trim().toLowerCase() : '';
 
         console.log(`📨 Mensagem de ${telefoneReal}: "${msg.body}"`);
         io.emit('message_in', { from: telefoneReal.replace('@c.us','').replace('@lid',''), text: msg.body || '', ts: Date.now() });
 
-        if (await handleCadastroFlow(telefoneReal, texto, msg.body || '')) {
+        if (await handleCadastroFlow(replyTo, texto, msg.body || '')) {
             await updateStats(true);
             return;
         }
 
-        if (await handlePactoFlow(telefoneReal, texto)) {
+        if (await handlePactoFlow(replyTo, texto)) {
             await updateStats(true);
             return;
         }
@@ -676,7 +677,6 @@ client.on('message', async (msg) => {
         }
 
         if (!regraAtiva) {
-            // Se não encontrou regra, tenta a IA
             const confRows = await db.all('SELECT * FROM configuracoes');
             const config = {};
             confRows.forEach(r => config[r.chave] = r.valor);
@@ -723,7 +723,7 @@ client.on('message', async (msg) => {
                     global.chatHistory.set(telefoneReal, history);
 
                     console.log(`🤖 IA respondendo para ${telefoneReal}`);
-                    await client.sendMessage(telefoneReal, respostaIA);
+                    await client.sendMessage(replyTo, respostaIA);
                     io.emit('message_out', { to: telefoneReal.replace('@c.us','').replace('@lid',''), text: respostaIA, ts: Date.now() });
                     await updateStats(true);
                 } catch (e) {
@@ -745,27 +745,25 @@ client.on('message', async (msg) => {
 
         const textoFinal = regraAtiva.resposta.replace(/{saudacao}/g, saudacao);
         console.log(`📤 Regra #${regraAtiva.id} ativada → respondendo para ${telefoneReal}`);
-        await client.sendMessage(telefoneReal, textoFinal);
+        await client.sendMessage(replyTo, textoFinal);
         io.emit('message_out', { to: telefoneReal.replace('@c.us','').replace('@lid',''), text: textoFinal, ts: Date.now() });
 
-        // Envia Áudio de Voz (audio_vendas.ogg)
         if (regraAtiva.enviar_audio) {
             const audioPath = path.join(__dirname, 'audio_vendas.ogg');
             if (fs.existsSync(audioPath)) {
                 await chat.sendStateRecording();
                 await delay(3000);
                 const audioMedia = MessageMedia.fromFilePath(audioPath);
-                await client.sendMessage(telefoneReal, audioMedia, { sendAudioAsVoice: true });
+                await client.sendMessage(replyTo, audioMedia, { sendAudioAsVoice: true });
             }
         }
 
-        // Envia Mídia (Imagem, Vídeo, Arquivo)
         if (regraAtiva.media_path) {
             const mediaFullPath = path.join(__dirname, 'public', regraAtiva.media_path.replace(/^\//, ''));
             if (fs.existsSync(mediaFullPath)) {
                 await delay(500);
                 const media = MessageMedia.fromFilePath(mediaFullPath);
-                await client.sendMessage(telefoneReal, media);
+                await client.sendMessage(replyTo, media);
             }
         }
 
