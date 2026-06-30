@@ -638,6 +638,13 @@ async function resolvePhone(msg) {
     return msg.from;
 }
 
+// Debug temporário: loga QUALQUER evento de mensagem para diagnóstico
+client.on('message_create', (msg) => {
+    if (!msg.fromMe) {
+        console.log(`🔍 [DEBUG] message_create: from=${msg.from} body="${(msg.body||'').slice(0,40)}"`);
+    }
+});
+
 client.on('message', async (msg) => {
     try {
         if (!msg.from || msg.from.endsWith('@g.us') || msg.from === 'status@broadcast') return;
