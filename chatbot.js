@@ -417,28 +417,32 @@ client.on('ready', async () => {
         if (info) console.log(`📱 Número conectado: ${info.wid.user} (${info.pushname})`);
     } catch (_) {}
 
-    // Diagnóstico: estado interno do WhatsApp Web
-    try {
-        const state = await client.pupPage.evaluate(() => {
-            try {
-                const s = window.Store;
-                return {
-                    hasStore: !!s,
-                    socketState: s && s.Socket ? s.Socket.state : 'N/A',
-                    hasMsgCollection: !!(s && s.Msg),
-                    hasChatCollection: !!(s && s.Chat),
-                };
-            } catch (e) { return { error: e.message }; }
-        });
-        console.log(`🔬 WA Web: socket=${state.socketState} store=${state.hasStore} msg=${state.hasMsgCollection} chat=${state.hasChatCollection}`);
-    } catch (e) {
-        console.error('❌ Diagnóstico falhou:', e.message);
-    }
-
     isConnected = true;
     currentQR = null;
     clientReadyForPairing = false;
     io.emit('ready');
+
+    // Verifica se window.Store aparece após inicialização (pode ter delay)
+    const checkStore = async (label, delay) => {
+        await new Promise(r => setTimeout(r, delay));
+        try {
+            const s = await client.pupPage.evaluate(() => {
+                const st = window.Store;
+                if (!st) return null;
+                return {
+                    socket: st.Socket ? st.Socket.state : 'N/A',
+                    hasMsg: !!st.Msg,
+                    hasChat: !!st.Chat,
+                };
+            });
+            if (s) console.log(`🔬 [${label}] Store OK: socket=${s.socket} msg=${s.hasMsg} chat=${s.hasChat}`);
+            else console.log(`🔬 [${label}] window.Store ainda NULL`);
+        } catch (e) { console.log(`🔬 [${label}] erro: ${e.message}`); }
+    };
+    checkStore('1s', 1000);
+    checkStore('5s', 5000);
+    checkStore('15s', 15000);
+    checkStore('30s', 30000);
 });
 
 client.on('disconnected', (reason) => {
