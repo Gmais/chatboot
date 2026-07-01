@@ -336,7 +336,19 @@ app.post('/api/disconnect', async (req, res) => {
 // CONFIGURAÇÃO DO CLIENTE WHATSAPP
 // =====================================
 
-// Mata qualquer Chrome residual de inicializações anteriores
+// Sessões de pairing code restauradas via LocalAuth não recebem eventos de mensagem
+// de forma confiável (problema conhecido do whatsapp-web.js). A solução mais robusta
+// é sempre iniciar com sessão fresca — o usuário faz o pairing code uma vez por restart.
+// O restart na Railway acontece apenas em deploys (git push), não em falhas normais.
+const authDir = path.join(DATA_DIR, '.wwebjs_auth');
+if (fs.existsSync(authDir)) {
+    try {
+        fs.rmSync(authDir, { recursive: true, force: true });
+        console.log('🧹 Sessão anterior removida — iniciando sessão fresca para garantir recepcao de mensagens.');
+    } catch (_) {}
+}
+
+// Mata qualquer Chrome residual
 try { require('child_process').execSync('pkill -f chrome || true', { stdio: 'ignore' }); } catch (_) {}
 
 const client = new Client({
@@ -357,7 +369,6 @@ const client = new Client({
 let currentQR = null;
 let isConnected = false;
 let clientReadyForPairing = false;
-let sessionWasFresh = false; // true when a QR/pairing-code flow happened this run
 
 // =====================================
 // EVENTOS DO SOCKET.IO (PAINEL WEB)
@@ -405,27 +416,6 @@ client.on('ready', async () => {
         const info = client.info;
         if (info) console.log(`📱 Número conectado: ${info.wid.user} (${info.pushname})`);
     } catch (_) {}
-
-    // Quando LocalAuth restaura uma sessão silenciosamente (sem QR/pairing nesta execução),
-    // os hooks de mensagem do whatsapp-web.js ficam em estado inconsistente e nenhum
-    // evento de mensagem dispara. A solução é fazer destroy() + initialize() completo,
-    // que refaz toda a injeção de hooks corretamente enquanto mantém a sessão salva.
-    if (!sessionWasFresh) {
-        console.log('🔄 Sessão restaurada detectada — reiniciando cliente para ativar hooks de mensagem...');
-        sessionWasFresh = true; // evita loop na próxima chamada de ready
-        setTimeout(async () => {
-            try {
-                await client.destroy();
-                await new Promise(r => setTimeout(r, 2000));
-                await client.initialize();
-                console.log('✅ Cliente reiniciado. Aguardando nova conexão...');
-            } catch (e) {
-                console.error('❌ Erro ao reiniciar cliente:', e.message);
-                process.exit(1);
-            }
-        }, 500);
-        return;
-    }
 
     isConnected = true;
     currentQR = null;
