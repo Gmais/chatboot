@@ -1,4 +1,19 @@
 // =====================================
+// PATCH (deve rodar ANTES de qualquer require do whatsapp-web.js)
+// Ignora erro "already exists" ao registrar funções do Puppeteer.
+// Ocorre quando a sessão LocalAuth restaurada já tem bindings do run anterior.
+// =====================================
+try {
+    const wwebPup = require('./node_modules/whatsapp-web.js/src/util/Puppeteer');
+    const _orig = wwebPup.exposeFunctionIfAbsent;
+    wwebPup.exposeFunctionIfAbsent = async (page, name, func) => {
+        try { await _orig(page, name, func); }
+        catch (e) { if (!e.message || !e.message.includes('already exists')) throw e; }
+    };
+    console.log('✅ Patch exposeFunctionIfAbsent aplicado.');
+} catch (_) {}
+
+// =====================================
 // IMPORTAÇÕES
 // =====================================
 require('dotenv').config();
@@ -14,18 +29,6 @@ const multer = require('multer');
 const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
 const OpenAI = require('openai');
 const { buscarAlunoPorMatricula, buscarAlunoPorCodigo, obterParcelasEmAberto, criarCliente, matricularAluno } = require('./pacto');
-
-// Patch: ignora erro "already exists" ao registrar funções do Puppeteer.
-// Ocorre quando a sessão salva (LocalAuth) já tem as funções registradas do
-// run anterior. O registro existente continua funcionando normalmente.
-try {
-    const wwebPup = require('./node_modules/whatsapp-web.js/src/util/Puppeteer');
-    const _orig = wwebPup.exposeFunctionIfAbsent;
-    wwebPup.exposeFunctionIfAbsent = async (page, name, func) => {
-        try { await _orig(page, name, func); }
-        catch (e) { if (!e.message || !e.message.includes('already exists')) throw e; }
-    };
-} catch (_) {}
 
 // =====================================
 // CONFIGURAÇÃO DO SERVIDOR WEB E SOCKET.IO
