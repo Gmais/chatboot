@@ -389,8 +389,20 @@ client.on('qr', async (qr) => {
     } catch (err) { console.error('Erro ao gerar QR:', err); }
 });
 
-client.on('ready', () => {
+client.on('authenticated', () => {
+    console.log('🔐 WhatsApp autenticado — sessão estabelecida.');
+});
+
+client.on('auth_failure', (msg) => {
+    console.error('❌ Falha de autenticação WhatsApp:', msg);
+});
+
+client.on('ready', async () => {
     console.log('✅ Tudo certo! WhatsApp conectado.');
+    try {
+        const info = client.info;
+        if (info) console.log(`📱 Número conectado: ${info.wid.user} (${info.pushname})`);
+    } catch (_) {}
     isConnected = true;
     currentQR = null;
     clientReadyForPairing = false;
