@@ -831,14 +831,8 @@ client.on('message', async (msg) => {
         const sent = await enviarResposta(msg, textoFinal);
         if (sent) io.emit('message_out', { to: telefoneReal.replace('@c.us','').replace('@lid',''), text: textoFinal, ts: Date.now() });
 
-        if (regraAtiva.enviar_audio) {
-            const audioPath = path.join(__dirname, 'audio_vendas.ogg');
-            if (fs.existsSync(audioPath)) {
-                await delay(3000);
-                const audioMedia = MessageMedia.fromFilePath(audioPath);
-                await enviarResposta(msg, audioMedia, { sendAudioAsVoice: true });
-            }
-        }
+        // Áudio temporariamente desativado (causa timeout no Puppeteer)
+        // if (regraAtiva.enviar_audio) { ... }
 
         if (regraAtiva.media_path) {
             const mediaFullPath = path.join(__dirname, 'public', regraAtiva.media_path.replace(/^\//, ''));
