@@ -11,9 +11,11 @@ try {
             await _orig(page, name, func);
         } catch (e) {
             if (e.message && e.message.includes('already exists')) {
-                // Remove o binding antigo (de processo anterior) e re-registra com o callback atual
+                // Remove via CDP (sem evaluate/JS) e re-registra com callback do processo atual
                 try {
-                    await page.evaluate((n) => { try { delete window[n]; } catch(_) {} }, name);
+                    const cdp = await page.createCDPSession();
+                    try { await cdp.send('Runtime.removeBinding', { name }); } catch (_) {}
+                    await cdp.detach();
                     await _orig(page, name, func);
                 } catch (_) {}
             } else {
@@ -21,7 +23,7 @@ try {
             }
         }
     };
-    console.log('✅ Patch exposeFunctionIfAbsent aplicado (com re-registro de bindings antigos).');
+    console.log('✅ Patch aplicado (removeBinding via CDP).');
 } catch (_) {}
 
 // =====================================
