@@ -663,7 +663,8 @@ client.on('message', async (msg) => {
         const chat = await msg.getChat();
         if (chat.isGroup) return;
 
-        const replyTo    = msg.from;                    // endereço original para enviar resposta
+        // Usa o ID interno do chat para envio — funciona com @lid e @c.us
+        const replyTo    = chat.id._serialized;
         const telefoneReal = await resolvePhone(msg);  // número limpo para salvar no banco
         await registerLead(telefoneReal);
         const texto = msg.body ? msg.body.trim().toLowerCase() : '';
