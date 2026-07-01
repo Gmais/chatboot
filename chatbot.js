@@ -782,7 +782,7 @@ client.on('message', async (msg) => {
                     global.chatHistory.set(telefoneReal, history);
 
                     console.log(`🤖 IA respondendo para ${telefoneReal}`);
-                    await client.sendMessage(replyTo, respostaIA);
+                    await msg.reply(respostaIA);
                     io.emit('message_out', { to: telefoneReal.replace('@c.us','').replace('@lid',''), text: respostaIA, ts: Date.now() });
                     await updateStats(true);
                 } catch (e) {
@@ -804,16 +804,15 @@ client.on('message', async (msg) => {
 
         const textoFinal = regraAtiva.resposta.replace(/{saudacao}/g, saudacao);
         console.log(`📤 Regra #${regraAtiva.id} ativada → respondendo para ${telefoneReal}`);
-        await client.sendMessage(replyTo, textoFinal);
+        await msg.reply(textoFinal);
         io.emit('message_out', { to: telefoneReal.replace('@c.us','').replace('@lid',''), text: textoFinal, ts: Date.now() });
 
         if (regraAtiva.enviar_audio) {
             const audioPath = path.join(__dirname, 'audio_vendas.ogg');
             if (fs.existsSync(audioPath)) {
-                
                 await delay(3000);
                 const audioMedia = MessageMedia.fromFilePath(audioPath);
-                await client.sendMessage(replyTo, audioMedia, { sendAudioAsVoice: true });
+                await msg.reply(audioMedia, undefined, { sendAudioAsVoice: true });
             }
         }
 
@@ -822,7 +821,7 @@ client.on('message', async (msg) => {
             if (fs.existsSync(mediaFullPath)) {
                 await delay(500);
                 const media = MessageMedia.fromFilePath(mediaFullPath);
-                await client.sendMessage(replyTo, media);
+                await msg.reply(media);
             }
         }
 
