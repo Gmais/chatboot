@@ -336,25 +336,14 @@ app.post('/api/disconnect', async (req, res) => {
 // CONFIGURAÇÃO DO CLIENTE WHATSAPP
 // =====================================
 
-// Sessões de pairing code restauradas via LocalAuth não recebem eventos de mensagem
-// de forma confiável (problema conhecido do whatsapp-web.js). A solução mais robusta
-// é sempre iniciar com sessão fresca — o usuário faz o pairing code uma vez por restart.
-// O restart na Railway acontece apenas em deploys (git push), não em falhas normais.
-const authDir = path.join(DATA_DIR, '.wwebjs_auth');
-if (fs.existsSync(authDir)) {
-    try {
-        fs.rmSync(authDir, { recursive: true, force: true });
-        console.log('🧹 Sessão anterior removida — iniciando sessão fresca para garantir recepcao de mensagens.');
-    } catch (_) {}
-}
-
-// Mata qualquer Chrome residual
+// Mata qualquer Chrome residual de inicializações anteriores
 try { require('child_process').execSync('pkill -f chrome || true', { stdio: 'ignore' }); } catch (_) {}
 
 const client = new Client({
     authStrategy: new LocalAuth({ dataPath: path.join(DATA_DIR, '.wwebjs_auth') }),
     puppeteer: {
         headless: true,
+        protocolTimeout: 120000,
         args: [
             '--no-sandbox',
             '--disable-setuid-sandbox',
