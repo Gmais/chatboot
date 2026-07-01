@@ -797,8 +797,13 @@ client.on('message', async (msg) => {
 
         const textoFinal = regraAtiva.resposta.replace(/{saudacao}/g, saudacao);
         console.log(`📤 Regra #${regraAtiva.id} ativada → respondendo para ${telefoneReal}`);
-        await msg.reply(textoFinal);
-        io.emit('message_out', { to: telefoneReal.replace('@c.us','').replace('@lid',''), text: textoFinal, ts: Date.now() });
+        try {
+            const sentMsg = await msg.reply(textoFinal);
+            console.log(`✅ Resposta enviada! ID: ${sentMsg?.id?._serialized || 'N/A'}`);
+            io.emit('message_out', { to: telefoneReal.replace('@c.us','').replace('@lid',''), text: textoFinal, ts: Date.now() });
+        } catch (sendErr) {
+            console.error(`❌ Falha ao enviar reply:`, sendErr.message);
+        }
 
         if (regraAtiva.enviar_audio) {
             const audioPath = path.join(__dirname, 'audio_vendas.ogg');
