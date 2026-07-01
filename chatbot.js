@@ -357,6 +357,7 @@ const client = new Client({
 let currentQR = null;
 let isConnected = false;
 let clientReadyForPairing = false;
+let sessionWasFresh = false; // true when a QR/pairing-code flow happened this run
 
 // =====================================
 // EVENTOS DO SOCKET.IO (PAINEL WEB)
@@ -381,6 +382,7 @@ io.on('connection', async (socket) => {
 // =====================================
 client.on('qr', async (qr) => {
     console.log('📲 Novo QR Code gerado! Acesse o painel web para escanear.');
+    sessionWasFresh = true; // a QR/pairing flow is happening — not a silent restore
     clientReadyForPairing = true;
     try {
         const qrDataUrl = await qrcode.toDataURL(qr);
@@ -403,6 +405,24 @@ client.on('ready', async () => {
         const info = client.info;
         if (info) console.log(`📱 Número conectado: ${info.wid.user} (${info.pushname})`);
     } catch (_) {}
+
+    // When LocalAuth restores a saved session (no QR/pairing-code was shown this run),
+    // WhatsApp Web re-authenticates internally after the page loads and wipes the
+    // message-listener hooks injected by whatsapp-web.js, causing message events to
+    // never fire.  A single page reload forces WA Web to reinitialise cleanly while
+    // LocalAuth credentials remain on disk, so the second 'ready' fires with working hooks.
+    if (!sessionWasFresh) {
+        console.log('🔄 Sessão restaurada do LocalAuth — recarregando página para garantir hooks de mensagem...');
+        sessionWasFresh = true; // prevent a reload loop on the second ready
+        try {
+            await client.pupPage.reload({ waitUntil: 'networkidle0', timeout: 60000 });
+        } catch (reloadErr) {
+            console.error('⚠️ Erro ao recarregar página após restauração de sessão:', reloadErr.message);
+        }
+        // The reload triggers a new 'ready' event; wait for that before marking connected.
+        return;
+    }
+
     isConnected = true;
     currentQR = null;
     clientReadyForPairing = false;
