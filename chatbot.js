@@ -7,10 +7,21 @@ try {
     const wwebPup = require('./node_modules/whatsapp-web.js/src/util/Puppeteer');
     const _orig = wwebPup.exposeFunctionIfAbsent;
     wwebPup.exposeFunctionIfAbsent = async (page, name, func) => {
-        try { await _orig(page, name, func); }
-        catch (e) { if (!e.message || !e.message.includes('already exists')) throw e; }
+        try {
+            await _orig(page, name, func);
+        } catch (e) {
+            if (e.message && e.message.includes('already exists')) {
+                // Remove o binding antigo (de processo anterior) e re-registra com o callback atual
+                try {
+                    await page.evaluate((n) => { try { delete window[n]; } catch(_) {} }, name);
+                    await _orig(page, name, func);
+                } catch (_) {}
+            } else {
+                throw e;
+            }
+        }
     };
-    console.log('✅ Patch exposeFunctionIfAbsent aplicado.');
+    console.log('✅ Patch exposeFunctionIfAbsent aplicado (com re-registro de bindings antigos).');
 } catch (_) {}
 
 // =====================================
