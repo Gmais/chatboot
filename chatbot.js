@@ -406,20 +406,24 @@ client.on('ready', async () => {
         if (info) console.log(`📱 Número conectado: ${info.wid.user} (${info.pushname})`);
     } catch (_) {}
 
-    // When LocalAuth restores a saved session (no QR/pairing-code was shown this run),
-    // WhatsApp Web re-authenticates internally after the page loads and wipes the
-    // message-listener hooks injected by whatsapp-web.js, causing message events to
-    // never fire.  A single page reload forces WA Web to reinitialise cleanly while
-    // LocalAuth credentials remain on disk, so the second 'ready' fires with working hooks.
+    // Quando LocalAuth restaura uma sessão silenciosamente (sem QR/pairing nesta execução),
+    // os hooks de mensagem do whatsapp-web.js ficam em estado inconsistente e nenhum
+    // evento de mensagem dispara. A solução é fazer destroy() + initialize() completo,
+    // que refaz toda a injeção de hooks corretamente enquanto mantém a sessão salva.
     if (!sessionWasFresh) {
-        console.log('🔄 Sessão restaurada do LocalAuth — recarregando página para garantir hooks de mensagem...');
-        sessionWasFresh = true; // prevent a reload loop on the second ready
-        try {
-            await client.pupPage.reload({ waitUntil: 'domcontentloaded', timeout: 30000 });
-        } catch (reloadErr) {
-            console.error('⚠️ Erro ao recarregar página após restauração de sessão:', reloadErr.message);
-        }
-        // The reload triggers a new 'ready' event; wait for that before marking connected.
+        console.log('🔄 Sessão restaurada detectada — reiniciando cliente para ativar hooks de mensagem...');
+        sessionWasFresh = true; // evita loop na próxima chamada de ready
+        setTimeout(async () => {
+            try {
+                await client.destroy();
+                await new Promise(r => setTimeout(r, 2000));
+                await client.initialize();
+                console.log('✅ Cliente reiniciado. Aguardando nova conexão...');
+            } catch (e) {
+                console.error('❌ Erro ao reiniciar cliente:', e.message);
+                process.exit(1);
+            }
+        }, 500);
         return;
     }
 
