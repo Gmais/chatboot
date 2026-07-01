@@ -735,7 +735,7 @@ client.on('message', async (msg) => {
             const iaAtiva   = config.openai_status === 'true';
             const apiKey    = provider === 'groq' ? config.groq_api_key : config.openai_api_key;
             const modelo    = provider === 'groq'
-                ? (config.groq_modelo || 'llama-3.1-8b-instant')
+                ? (config.groq_modelo || 'llama-3.3-70b-versatile')
                 : (config.openai_modelo || 'gpt-3.5-turbo');
 
             if (iaAtiva && apiKey) {
@@ -750,17 +750,31 @@ client.on('message', async (msg) => {
 
                 history.push({ role: 'user', content: texto });
 
-                try {
-                    const openai = new OpenAI({
-                        apiKey,
-                        ...(provider === 'groq' && { baseURL: 'https://api.groq.com/openai/v1' })
-                    });
-                    const completion = await openai.chat.completions.create({
-                        messages: history,
-                        model: modelo,
-                        max_tokens: 300
-                    });
+                // Tenta com retry automático em caso de rate limit (429)
+                const chamarIA = async (tentativa = 1) => {
+                    try {
+                        const openai = new OpenAI({
+                            apiKey,
+                            ...(provider === 'groq' && { baseURL: 'https://api.groq.com/openai/v1' })
+                        });
+                        return await openai.chat.completions.create({
+                            messages: history,
+                            model: modelo,
+                            max_tokens: 300
+                        });
+                    } catch (e) {
+                        if (e.status === 429 && tentativa < 3) {
+                            const espera = tentativa * 15000; // 15s, 30s
+                            console.log(`⏳ Rate limit (${provider}), tentativa ${tentativa}/3 — aguardando ${espera/1000}s...`);
+                            await new Promise(r => setTimeout(r, espera));
+                            return chamarIA(tentativa + 1);
+                        }
+                        throw e;
+                    }
+                };
 
+                try {
+                    const completion = await chamarIA();
                     const respostaIA = completion.choices[0].message.content;
                     history.push({ role: 'assistant', content: respostaIA });
 
