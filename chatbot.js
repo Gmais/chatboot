@@ -417,6 +417,24 @@ client.on('ready', async () => {
         if (info) console.log(`📱 Número conectado: ${info.wid.user} (${info.pushname})`);
     } catch (_) {}
 
+    // Diagnóstico: estado interno do WhatsApp Web
+    try {
+        const state = await client.pupPage.evaluate(() => {
+            try {
+                const s = window.Store;
+                return {
+                    hasStore: !!s,
+                    socketState: s && s.Socket ? s.Socket.state : 'N/A',
+                    hasMsgCollection: !!(s && s.Msg),
+                    hasChatCollection: !!(s && s.Chat),
+                };
+            } catch (e) { return { error: e.message }; }
+        });
+        console.log(`🔬 WA Web: socket=${state.socketState} store=${state.hasStore} msg=${state.hasMsgCollection} chat=${state.hasChatCollection}`);
+    } catch (e) {
+        console.error('❌ Diagnóstico falhou:', e.message);
+    }
+
     isConnected = true;
     currentQR = null;
     clientReadyForPairing = false;
