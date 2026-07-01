@@ -10,17 +10,8 @@ try {
         try {
             await _orig(page, name, func);
         } catch (e) {
-            if (e.message && e.message.includes('already exists')) {
-                // Remove via CDP (sem evaluate/JS) e re-registra com callback do processo atual
-                try {
-                    const cdp = await page.createCDPSession();
-                    try { await cdp.send('Runtime.removeBinding', { name }); } catch (_) {}
-                    await cdp.detach();
-                    await _orig(page, name, func);
-                } catch (_) {}
-            } else {
-                throw e;
-            }
+            if (!e.message || !e.message.includes('already exists')) throw e;
+            // Ignora silenciosamente - binding da sessão anterior ainda funciona para receber eventos
         }
     };
     console.log('✅ Patch aplicado (removeBinding via CDP).');
