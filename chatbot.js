@@ -723,7 +723,7 @@ client.on('message', async (msg) => {
                 : (config.openai_modelo || 'gpt-3.5-turbo');
 
             if (iaAtiva && apiKey) {
-                await chat.sendStateTyping();
+                
 
                 if (!global.chatHistory) global.chatHistory = new Map();
                 const history = global.chatHistory.get(telefoneReal) || [];
@@ -782,7 +782,7 @@ client.on('message', async (msg) => {
         }
 
         await delay(1500);
-        await chat.sendStateTyping();
+        
         await delay(2000);
 
         const hora = new Date().getHours();
@@ -799,7 +799,7 @@ client.on('message', async (msg) => {
         if (regraAtiva.enviar_audio) {
             const audioPath = path.join(__dirname, 'audio_vendas.ogg');
             if (fs.existsSync(audioPath)) {
-                await chat.sendStateRecording();
+                
                 await delay(3000);
                 const audioMedia = MessageMedia.fromFilePath(audioPath);
                 await client.sendMessage(replyTo, audioMedia, { sendAudioAsVoice: true });
