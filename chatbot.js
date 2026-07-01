@@ -318,7 +318,7 @@ app.post('/api/disconnect', async (req, res) => {
     } catch (_) {}
 
     // Tenta logout suave com timeout de 5s, depois força destroy e reinicia processo
-    const exitClean = () => { console.log('🔄 Reiniciando para gerar novo QR Code...'); process.exit(0); };
+    const exitClean = () => { console.log('🔄 Reiniciando para gerar novo QR Code...'); process.exit(1); };
     const timer = setTimeout(exitClean, 5000);
     try {
         await Promise.race([
