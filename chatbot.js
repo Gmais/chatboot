@@ -693,6 +693,23 @@ client.on('message_create', (msg) => {
     }
 });
 
+// Wrapper de envio: tenta msg.reply(), se timeout reinicia o processo
+async function enviarResposta(msg, conteudo, opcoes = {}) {
+    try {
+        const sent = await msg.reply(conteudo, undefined, opcoes);
+        console.log(`✅ Resposta entregue.`);
+        return sent;
+    } catch (e) {
+        if (e.message && (e.message.includes('timed out') || e.message.includes('Protocol error'))) {
+            console.error('❌ Timeout no envio — reiniciando cliente para recuperar...');
+            setTimeout(() => process.exit(1), 500);
+        } else {
+            console.error('❌ Erro ao enviar:', e.message);
+        }
+        return null;
+    }
+}
+
 client.on('message', async (msg) => {
     try {
         if (!msg.from || msg.from.endsWith('@g.us') || msg.from === 'status@broadcast') return;
@@ -704,6 +721,9 @@ client.on('message', async (msg) => {
         const telefoneReal = await resolvePhone(msg);  // número limpo para salvar no banco
         await registerLead(telefoneReal);
         const texto = msg.body ? msg.body.trim().toLowerCase() : '';
+
+        // Ignora mensagens sem texto (stickers, áudios, imagens sem legenda)
+        if (!texto && !msg.body) return;
 
         console.log(`📨 Mensagem de ${telefoneReal}: "${msg.body}"`);
         io.emit('message_in', { from: telefoneReal.replace('@c.us','').replace('@lid',''), text: msg.body || '', ts: Date.now() });
@@ -786,7 +806,7 @@ client.on('message', async (msg) => {
                     global.chatHistory.set(telefoneReal, history);
 
                     console.log(`🤖 IA respondendo para ${telefoneReal}`);
-                    await msg.reply(respostaIA);
+                    await enviarResposta(msg, respostaIA);
                     io.emit('message_out', { to: telefoneReal.replace('@c.us','').replace('@lid',''), text: respostaIA, ts: Date.now() });
                     await updateStats(true);
                 } catch (e) {
@@ -808,20 +828,15 @@ client.on('message', async (msg) => {
 
         const textoFinal = regraAtiva.resposta.replace(/{saudacao}/g, saudacao);
         console.log(`📤 Regra #${regraAtiva.id} ativada → respondendo para ${telefoneReal}`);
-        try {
-            const sentMsg = await msg.reply(textoFinal);
-            console.log(`✅ Resposta enviada! ID: ${sentMsg?.id?._serialized || 'N/A'}`);
-            io.emit('message_out', { to: telefoneReal.replace('@c.us','').replace('@lid',''), text: textoFinal, ts: Date.now() });
-        } catch (sendErr) {
-            console.error(`❌ Falha ao enviar reply:`, sendErr.message);
-        }
+        const sent = await enviarResposta(msg, textoFinal);
+        if (sent) io.emit('message_out', { to: telefoneReal.replace('@c.us','').replace('@lid',''), text: textoFinal, ts: Date.now() });
 
         if (regraAtiva.enviar_audio) {
             const audioPath = path.join(__dirname, 'audio_vendas.ogg');
             if (fs.existsSync(audioPath)) {
                 await delay(3000);
                 const audioMedia = MessageMedia.fromFilePath(audioPath);
-                await msg.reply(audioMedia, undefined, { sendAudioAsVoice: true });
+                await enviarResposta(msg, audioMedia, { sendAudioAsVoice: true });
             }
         }
 
@@ -830,7 +845,7 @@ client.on('message', async (msg) => {
             if (fs.existsSync(mediaFullPath)) {
                 await delay(500);
                 const media = MessageMedia.fromFilePath(mediaFullPath);
-                await msg.reply(media);
+                await enviarResposta(msg, media);
             }
         }
 
