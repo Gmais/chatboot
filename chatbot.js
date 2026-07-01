@@ -358,11 +358,22 @@ app.post('/api/disconnect', async (req, res) => {
 // Mata qualquer Chrome residual de inicializações anteriores
 try { require('child_process').execSync('pkill -f chrome || true', { stdio: 'ignore' }); } catch (_) {}
 
+// Usa chromium do sistema se disponível (evita download do Chrome pelo puppeteer)
+const chromiumPath = (() => {
+    const candidates = ['/usr/bin/chromium', '/usr/bin/chromium-browser', '/usr/bin/google-chrome'];
+    for (const p of candidates) {
+        try { if (require('fs').existsSync(p)) return p; } catch (_) {}
+    }
+    return undefined;
+})();
+if (chromiumPath) console.log(`🌐 Usando Chromium do sistema: ${chromiumPath}`);
+
 const client = new Client({
     authStrategy: new LocalAuth({ dataPath: path.join(DATA_DIR, '.wwebjs_auth') }),
     puppeteer: {
         headless: true,
         protocolTimeout: 120000,
+        ...(chromiumPath && { executablePath: chromiumPath }),
         args: [
             '--no-sandbox',
             '--disable-setuid-sandbox',
