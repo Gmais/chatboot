@@ -415,7 +415,7 @@ client.on('ready', async () => {
         console.log('🔄 Sessão restaurada do LocalAuth — recarregando página para garantir hooks de mensagem...');
         sessionWasFresh = true; // prevent a reload loop on the second ready
         try {
-            await client.pupPage.reload({ waitUntil: 'networkidle0', timeout: 60000 });
+            await client.pupPage.reload({ waitUntil: 'domcontentloaded', timeout: 30000 });
         } catch (reloadErr) {
             console.error('⚠️ Erro ao recarregar página após restauração de sessão:', reloadErr.message);
         }
@@ -670,10 +670,11 @@ async function resolvePhone(msg) {
     return msg.from;
 }
 
-// Debug temporário: loga QUALQUER evento de mensagem para diagnóstico
+// Debug: loga todos os eventos de mensagem (fromMe e recebidas)
 client.on('message_create', (msg) => {
-    if (!msg.fromMe) {
-        console.log(`🔍 [DEBUG] message_create: from=${msg.from} body="${(msg.body||'').slice(0,40)}"`);
+    const dir = msg.fromMe ? '→ ENVIADA' : '← RECEBIDA';
+    if (msg.from !== 'status@broadcast') {
+        console.log(`🔍 [DEBUG] ${dir} from=${msg.from} body="${(msg.body||'[sem texto]').slice(0,40)}"`);
     }
 });
 
