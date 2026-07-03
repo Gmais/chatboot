@@ -438,6 +438,19 @@ const client = new Client({
             '--disable-gpu',
             '--no-zygote',
             '--disable-extensions',
+            // Reduz consumo de memória do Chrome — o container tem só 1GB de RAM
+            // e a página estava crashando por OOM depois de um tempo de uso.
+            '--disable-background-networking',
+            '--disable-default-apps',
+            '--disable-sync',
+            '--disable-translate',
+            '--metrics-recording-only',
+            '--mute-audio',
+            '--no-first-run',
+            '--disable-backgrounding-occluded-windows',
+            '--disable-renderer-backgrounding',
+            '--disable-features=TranslateUI,BlinkGenPropertyTrees',
+            '--js-flags=--max-old-space-size=460',
         ],
     },
 });
