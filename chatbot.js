@@ -1,20 +1,21 @@
 // =====================================
 // PATCH (deve rodar ANTES de qualquer require do whatsapp-web.js)
-// Ignora erro "already exists" ao registrar funções do Puppeteer.
-// Ocorre quando a sessão LocalAuth restaurada já tem bindings do run anterior.
+// whatsapp-web.js reexpõe as mesmas funções (ex: onAddMessageEvent) sempre que
+// reinicializa o Store. Antes, quando o Puppeteer recusava reexpor uma função
+// já vinculada ("already exists"), o erro era só ignorado — mas isso deixava o
+// binding ANTIGO (de uma inicialização anterior do Store) ativo, com um callback
+// que não emite mais os eventos 'message'/'message_create' pro client atual.
+// Resultado: cliente fica "Conectado" só que nenhuma mensagem chega no robô.
+// Correção: remove o binding antigo e reexpõe o novo (upsertFunction via CDP,
+// suportado a partir do Puppeteer 20.6 — usamos 22.x aqui).
 // =====================================
 try {
     const wwebPup = require('./node_modules/whatsapp-web.js/src/util/Puppeteer');
-    const _orig = wwebPup.exposeFunctionIfAbsent;
     wwebPup.exposeFunctionIfAbsent = async (page, name, func) => {
-        try {
-            await _orig(page, name, func);
-        } catch (e) {
-            if (!e.message || !e.message.includes('already exists')) throw e;
-            // Ignora silenciosamente - binding da sessão anterior ainda funciona para receber eventos
-        }
+        try { await page.removeExposedFunction(name); } catch (_) {}
+        await page.exposeFunction(name, func);
     };
-    console.log('✅ Patch aplicado (removeBinding via CDP).');
+    console.log('✅ Patch aplicado (upsertFunction via removeExposedFunction).');
 } catch (_) {}
 
 // =====================================
