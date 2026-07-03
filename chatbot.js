@@ -768,7 +768,10 @@ client.on('message', async (msg) => {
         let regraAtiva = null;
         for (const regra of regras) {
             const keywords = regra.keywords.split(',').map(k => k.trim().toLowerCase());
-            if (keywords.some(kw => texto.includes(kw))) { regraAtiva = regra; break; }
+            // Palavra-chave puramente numérica (ex: opção "1" do menu) só ativa a regra se
+            // for a mensagem inteira — senão qualquer número (horário, telefone, preço) ativaria à toa.
+            const matched = keywords.some(kw => /^\d+$/.test(kw) ? texto === kw : texto.includes(kw));
+            if (matched) { regraAtiva = regra; break; }
         }
 
         if (!regraAtiva) {
