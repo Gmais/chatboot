@@ -427,18 +427,6 @@ if (chromiumPath) console.log(`🌐 Usando Chromium do sistema: ${chromiumPath}`
 
 const client = new Client({
     authStrategy: new LocalAuth({ dataPath: path.join(DATA_DIR, '.wwebjs_auth') }),
-    // Usa a versão do WhatsApp Web que já vem junto com o whatsapp-web.js instalado
-    // (testada pela lib nessa release), buscando-a num cache mantido pela comunidade
-    // — em vez de pegar a versão "live" atual do WhatsApp, que está batendo num erro
-    // interno de tradução (notificação de grupo) que crasha a página segundos
-    // depois de conectar. Se essa versão não existir no cache, cai de volta pro
-    // comportamento atual (busca a live), sem piorar nada.
-    webVersion: '2.3000.1017054665',
-    webVersionCache: {
-        type: 'remote',
-        remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/{version}.html',
-        strict: false,
-    },
     puppeteer: {
         headless: true,
         protocolTimeout: 120000,
