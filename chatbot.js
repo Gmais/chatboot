@@ -449,9 +449,8 @@ const client = new Client({
             '--no-first-run',
             '--disable-backgrounding-occluded-windows',
             '--disable-renderer-backgrounding',
-            '--disable-features=TranslateUI,BlinkGenPropertyTrees,IsolateOrigins,site-per-process',
-            '--disable-site-isolation-trials',
-            '--js-flags=--max-old-space-size=384',
+            '--disable-features=TranslateUI,BlinkGenPropertyTrees',
+            '--js-flags=--max-old-space-size=460',
         ],
     },
 });
