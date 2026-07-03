@@ -1,21 +1,27 @@
 // =====================================
 // PATCH (deve rodar ANTES de qualquer require do whatsapp-web.js)
 // whatsapp-web.js reexpõe as mesmas funções (ex: onAddMessageEvent) sempre que
-// reinicializa o Store. Antes, quando o Puppeteer recusava reexpor uma função
-// já vinculada ("already exists"), o erro era só ignorado — mas isso deixava o
-// binding ANTIGO (de uma inicialização anterior do Store) ativo, com um callback
-// que não emite mais os eventos 'message'/'message_create' pro client atual.
-// Resultado: cliente fica "Conectado" só que nenhuma mensagem chega no robô.
-// Correção: remove o binding antigo e reexpõe o novo (upsertFunction via CDP,
-// suportado a partir do Puppeteer 20.6 — usamos 22.x aqui).
+// reinicializa o Store. Tentamos remover o binding antigo antes de reexpor
+// (upsertFunction via page.removeExposedFunction) para o novo callback
+// realmente assumir — mas a versão do puppeteer-core usada internamente pelo
+// whatsapp-web.js (instalada via GitHub, sem versão fixa) pode não limpar o
+// binding de fato, e nesse caso page.exposeFunction() ainda lança "already
+// exists". ESSENCIAL: esse erro precisa ficar protegido por try/catch, senão
+// derruba o processo inteiro (crash loop) — pior que só manter o callback
+// antigo ativo.
 // =====================================
 try {
     const wwebPup = require('./node_modules/whatsapp-web.js/src/util/Puppeteer');
     wwebPup.exposeFunctionIfAbsent = async (page, name, func) => {
         try { await page.removeExposedFunction(name); } catch (_) {}
-        await page.exposeFunction(name, func);
+        try {
+            await page.exposeFunction(name, func);
+        } catch (e) {
+            if (!e.message || !e.message.includes('already exists')) throw e;
+            // Não conseguiu substituir o binding — mantém o antigo em vez de crashar.
+        }
     };
-    console.log('✅ Patch aplicado (upsertFunction via removeExposedFunction).');
+    console.log('✅ Patch aplicado (upsertFunction com fallback seguro).');
 } catch (_) {}
 
 // =====================================
