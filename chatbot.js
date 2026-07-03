@@ -515,6 +515,8 @@ client.on('ready', async () => {
             });
             client.pupPage.on('error', (err) => {
                 console.error('🧨 [PAGE CRASHED]', err.message || err);
+                console.error('🔄 Página do Chrome crashou — reiniciando processo para recuperar...');
+                setTimeout(() => process.exit(1), 500);
             });
             console.log('🩺 Diagnóstico de erros da página ativado.');
         }
