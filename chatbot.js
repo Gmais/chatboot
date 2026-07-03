@@ -42,8 +42,13 @@ try {
     const _origAttach = ClientClass.prototype.attachEventListeners;
     ClientClass.prototype.attachEventListeners = async function (...args) {
         if (this._listenersJaAnexados) return;
-        this._listenersJaAnexados = true;
-        return _origAttach.apply(this, args);
+        try {
+            await _origAttach.apply(this, args);
+            this._listenersJaAnexados = true; // só marca como feito se realmente completou sem erro
+        } catch (e) {
+            console.error('🧨 [attachEventListeners falhou]', e.message);
+            throw e;
+        }
     };
     console.log('✅ Patch 2 aplicado (attachEventListeners roda só 1x por processo).');
 } catch (_) {}
@@ -496,7 +501,26 @@ client.on('ready', async () => {
     clientReadyForPairing = false;
     io.emit('ready');
 
-    // Verifica se window.Store aparece após inicialização (pode ter delay)
+    // DIAGNÓSTICO: expõe erros que acontecem DENTRO do Chrome headless (JS da
+    // página, bindings do Puppeteer) — hoje são invisíveis nos logs do Node.
+    // Ativado 1x por página pra não empilhar listener a cada 'ready' repetido.
+    try {
+        if (client.pupPage && !client.pupPage._diagAtivo) {
+            client.pupPage._diagAtivo = true;
+            client.pupPage.on('pageerror', (err) => {
+                console.error('🧨 [PAGE ERROR]', err.message || err);
+            });
+            client.pupPage.on('console', (msg) => {
+                if (msg.type() === 'error') console.error('🧨 [PAGE CONSOLE ERROR]', msg.text());
+            });
+            client.pupPage.on('error', (err) => {
+                console.error('🧨 [PAGE CRASHED]', err.message || err);
+            });
+            console.log('🩺 Diagnóstico de erros da página ativado.');
+        }
+    } catch (e) {
+        console.error('Erro ao ativar diagnóstico de página:', e.message);
+    }
 });
 
 client.on('disconnected', (reason) => {
