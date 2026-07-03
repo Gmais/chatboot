@@ -81,6 +81,12 @@ async function initDB() {
             id INTEGER PRIMARY KEY,
             sent INTEGER DEFAULT 0
         );
+        CREATE TABLE IF NOT EXISTS mensagens_enviadas (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            telefone TEXT NOT NULL,
+            texto TEXT NOT NULL,
+            ts DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
         CREATE TABLE IF NOT EXISTS respostas (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             keywords TEXT NOT NULL,
@@ -109,9 +115,10 @@ async function initDB() {
     try { await db.exec(`ALTER TABLE respostas ADD COLUMN media_path TEXT DEFAULT NULL`); } catch(e) {}
     try { await db.exec(`ALTER TABLE respostas ADD COLUMN media_tipo TEXT DEFAULT NULL`); } catch(e) {}
 
-    const statRow = await db.get('SELECT * FROM stats WHERE id = 1');
-    if (!statRow) await db.run('INSERT INTO stats (id, sent) VALUES (1, 0)');
-    else stats.sent = statRow.sent;
+    // stats.sent reflete a contagem real de mensagens registradas em mensagens_enviadas,
+    // não mais um contador solto — assim o número do dashboard sempre bate com o histórico exibido.
+    const sentCountRow = await db.get('SELECT COUNT(*) as count FROM mensagens_enviadas');
+    stats.sent = sentCountRow.count;
 
     const leadsRows = await db.all('SELECT telefone, mensagens_recebidas FROM leads');
     leadsRows.forEach(row => { leadsSet.add(row.telefone); stats.received += row.mensagens_recebidas; });
@@ -127,8 +134,13 @@ async function initDB() {
     console.log(`📦 Banco de dados carregado. Leads: ${stats.leads}`);
 }
 
-async function updateStats(isSent) {
-    if (isSent) { stats.sent++; await db.run('UPDATE stats SET sent = ? WHERE id = 1', stats.sent); }
+// Registra no histórico permanente cada mensagem realmente enviada pelo robô.
+// É a única fonte da contagem "Mensagens Enviadas" — se está no contador, está nesta tabela.
+async function registrarMensagemEnviada(telefone, texto) {
+    const numeroLimpo = telefone.replace('@c.us', '').replace('@lid', '');
+    await db.run('INSERT INTO mensagens_enviadas (telefone, texto) VALUES (?, ?)', [numeroLimpo, texto]);
+    stats.sent++;
+    io.emit('message_out', { to: numeroLimpo, text: texto, ts: Date.now() });
     io.emit('stats', stats);
 }
 
@@ -244,6 +256,15 @@ app.get('/api/leads/export', async (req, res) => {
     res.setHeader('Content-Type', 'text/csv');
     res.setHeader('Content-Disposition', 'attachment; filename="leads.csv"');
     res.send(csv);
+});
+
+// =====================================
+// API REST — HISTÓRICO DE MENSAGENS ENVIADAS
+// =====================================
+app.get('/api/mensagens/enviadas', async (req, res) => {
+    const limite = Math.min(parseInt(req.query.limit) || 200, 500);
+    const mensagens = await db.all('SELECT * FROM mensagens_enviadas ORDER BY id DESC LIMIT ?', limite);
+    res.json(mensagens);
 });
 
 // =====================================
@@ -400,6 +421,9 @@ io.on('connection', async (socket) => {
     if (db) {
         const allLeads = await db.all('SELECT telefone, data_captura FROM leads ORDER BY data_captura DESC');
         socket.emit('all_leads', allLeads);
+
+        const allMensagensEnviadas = await db.all('SELECT * FROM mensagens_enviadas ORDER BY id DESC LIMIT 200');
+        socket.emit('all_mensagens_enviadas', allMensagensEnviadas);
     }
 
     if (isConnected) socket.emit('ready');
@@ -479,6 +503,13 @@ function ehIntencaoPacto(texto) {
     return PACTO_PALAVRAS_CHAVE.some(p => texto.includes(p));
 }
 
+// Envia uma mensagem via WhatsApp e registra no histórico de mensagens enviadas.
+async function enviarEregistrar(telefone, conteudo) {
+    const resultado = await client.sendMessage(telefone, conteudo);
+    await registrarMensagemEnviada(telefone, typeof conteudo === 'string' ? conteudo : '[mídia]');
+    return resultado;
+}
+
 // Envia a situação do aluno e as parcelas em aberto sempre juntas: quem pergunta
 // "minha situação" também quer saber se está devendo, e vice-versa.
 async function enviarRespostaPacto(telefone, aluno) {
@@ -499,21 +530,21 @@ async function enviarRespostaPacto(telefone, aluno) {
         texto += '⚠️ Não consegui consultar seus débitos agora. Tente novamente em alguns minutos.';
     }
 
-    await client.sendMessage(telefone, texto);
+    await enviarEregistrar(telefone, texto);
 }
 
 async function identificarERresponder(telefone, matricula) {
     try {
         const aluno = await buscarAlunoPorMatricula(matricula);
         if (!aluno) {
-            await client.sendMessage(telefone, `❌ Não encontrei nenhum aluno com a matrícula ${matricula}. Confira o número e tente de novo.`);
+            await enviarEregistrar(telefone, `❌ Não encontrei nenhum aluno com a matrícula ${matricula}. Confira o número e tente de novo.`);
             return;
         }
         await saveVinculo(telefone, aluno);
         await enviarRespostaPacto(telefone, aluno);
     } catch (err) {
         console.error('❌ Erro ao consultar aluno na Pacto:', err.message);
-        await client.sendMessage(telefone, '⚠️ Não consegui consultar seus dados agora. Tente novamente em alguns minutos.');
+        await enviarEregistrar(telefone, '⚠️ Não consegui consultar seus dados agora. Tente novamente em alguns minutos.');
     }
 }
 
@@ -528,7 +559,7 @@ async function handlePactoFlow(telefone, texto) {
         global.pactoFlow.delete(telefone);
         const matricula = texto.replace(/\D/g, '');
         if (!matricula) {
-            await client.sendMessage(telefone, '❌ Não entendi. Envie apenas o número da sua matrícula.');
+            await enviarEregistrar(telefone, '❌ Não entendi. Envie apenas o número da sua matrícula.');
             return true;
         }
         await identificarERresponder(telefone, matricula);
@@ -544,13 +575,13 @@ async function handlePactoFlow(telefone, texto) {
             await enviarRespostaPacto(telefone, aluno);
         } catch (err) {
             console.error('❌ Erro ao consultar aluno vinculado na Pacto:', err.message);
-            await client.sendMessage(telefone, '⚠️ Não consegui consultar seus dados agora. Tente novamente em alguns minutos.');
+            await enviarEregistrar(telefone, '⚠️ Não consegui consultar seus dados agora. Tente novamente em alguns minutos.');
         }
         return true;
     }
 
     global.pactoFlow.set(telefone, true);
-    await client.sendMessage(telefone, '👋 Para te ajudar, me informe o número da sua matrícula na academia:');
+    await enviarEregistrar(telefone, '👋 Para te ajudar, me informe o número da sua matrícula na academia:');
     return true;
 }
 
@@ -605,10 +636,10 @@ async function finalizarCadastro(telefone, dados) {
         });
 
         await saveVinculo(telefone, cliente);
-        await client.sendMessage(telefone, `✅ Matrícula realizada com sucesso! Sua matrícula é *${cliente.matricula}*. Bem-vindo(a)!`);
+        await enviarEregistrar(telefone, `✅ Matrícula realizada com sucesso! Sua matrícula é *${cliente.matricula}*. Bem-vindo(a)!`);
     } catch (err) {
         console.error('❌ Erro ao matricular novo aluno na Pacto:', err.message);
-        await client.sendMessage(telefone, '⚠️ Não consegui concluir sua matrícula agora. Por favor, fale com a recepção da academia.');
+        await enviarEregistrar(telefone, '⚠️ Não consegui concluir sua matrícula agora. Por favor, fale com a recepção da academia.');
     }
 }
 
@@ -620,33 +651,33 @@ async function handleCadastroFlow(telefone, texto, textoOriginal) {
     if (!estado) {
         if (!ehIntencaoMatricular(texto)) return false;
         global.pactoCadastro.set(telefone, { etapa: 'nome' });
-        await client.sendMessage(telefone, '🏋️ Que ótimo que você quer treinar com a gente! Pra começar, me diga seu *nome completo*:');
+        await enviarEregistrar(telefone, '🏋️ Que ótimo que você quer treinar com a gente! Pra começar, me diga seu *nome completo*:');
         return true;
     }
 
     if (estado.etapa === 'nome') {
         estado.nome = textoOriginal.trim();
         estado.etapa = 'cpf';
-        await client.sendMessage(telefone, 'Agora me informe seu *CPF* (somente números):');
+        await enviarEregistrar(telefone, 'Agora me informe seu *CPF* (somente números):');
         return true;
     }
 
     if (estado.etapa === 'cpf') {
         const cpf = texto.replace(/\D/g, '');
         if (cpf.length !== 11) {
-            await client.sendMessage(telefone, '❌ CPF inválido. Envie os 11 números do seu CPF:');
+            await enviarEregistrar(telefone, '❌ CPF inválido. Envie os 11 números do seu CPF:');
             return true;
         }
         estado.cpf = cpf;
         estado.etapa = 'email';
-        await client.sendMessage(telefone, 'Qual o seu *e-mail*? (ou digite *pular* se não quiser informar)');
+        await enviarEregistrar(telefone, 'Qual o seu *e-mail*? (ou digite *pular* se não quiser informar)');
         return true;
     }
 
     if (estado.etapa === 'email') {
         estado.email = texto === 'pular' ? '' : textoOriginal.trim();
         estado.etapa = 'confirmar';
-        await client.sendMessage(telefone,
+        await enviarEregistrar(telefone,
             `📋 Confere os seus dados:\n\nNome: ${estado.nome}\nCPF: ${estado.cpf}\nE-mail: ${estado.email || '(não informado)'}\n\n` +
             `Plano: Mensal — R$ ${process.env.PACTO_PLANO_VALOR_CONTRATO} + R$ ${process.env.PACTO_PLANO_VALOR_MATRICULA} de matrícula\n\n` +
             `Digite *CONFIRMAR* para finalizar ou *CANCELAR* para desistir.`
@@ -657,7 +688,7 @@ async function handleCadastroFlow(telefone, texto, textoOriginal) {
     if (estado.etapa === 'confirmar') {
         global.pactoCadastro.delete(telefone);
         if (texto !== 'confirmar') {
-            await client.sendMessage(telefone, '❌ Cadastro cancelado. Se quiser tentar de novo, é só me chamar.');
+            await enviarEregistrar(telefone, '❌ Cadastro cancelado. Se quiser tentar de novo, é só me chamar.');
             return true;
         }
         await finalizarCadastro(telefone, estado);
@@ -728,15 +759,9 @@ client.on('message', async (msg) => {
         console.log(`📨 Mensagem de ${telefoneReal}: "${msg.body}"`);
         io.emit('message_in', { from: telefoneReal.replace('@c.us','').replace('@lid',''), text: msg.body || '', ts: Date.now() });
 
-        if (await handleCadastroFlow(replyTo, texto, msg.body || '')) {
-            await updateStats(true);
-            return;
-        }
+        if (await handleCadastroFlow(replyTo, texto, msg.body || '')) return;
 
-        if (await handlePactoFlow(replyTo, texto)) {
-            await updateStats(true);
-            return;
-        }
+        if (await handlePactoFlow(replyTo, texto)) return;
 
         const regras = await db.all('SELECT * FROM respostas WHERE ativo = 1 ORDER BY ordem ASC');
         let regraAtiva = null;
@@ -806,9 +831,8 @@ client.on('message', async (msg) => {
                     global.chatHistory.set(telefoneReal, history);
 
                     console.log(`🤖 IA respondendo para ${telefoneReal}`);
-                    await enviarResposta(msg, respostaIA);
-                    io.emit('message_out', { to: telefoneReal.replace('@c.us','').replace('@lid',''), text: respostaIA, ts: Date.now() });
-                    await updateStats(true);
+                    const sentIA = await enviarResposta(msg, respostaIA);
+                    if (sentIA) await registrarMensagemEnviada(telefoneReal, respostaIA);
                 } catch (e) {
                     console.error(`❌ Erro na API da IA (${provider}):`, e.message);
                 }
@@ -829,7 +853,7 @@ client.on('message', async (msg) => {
         const textoFinal = regraAtiva.resposta.replace(/{saudacao}/g, saudacao);
         console.log(`📤 Regra #${regraAtiva.id} ativada → respondendo para ${telefoneReal}`);
         const sent = await enviarResposta(msg, textoFinal);
-        if (sent) io.emit('message_out', { to: telefoneReal.replace('@c.us','').replace('@lid',''), text: textoFinal, ts: Date.now() });
+        if (sent) await registrarMensagemEnviada(telefoneReal, textoFinal);
 
         // Áudio temporariamente desativado (causa timeout no Puppeteer)
         // if (regraAtiva.enviar_audio) { ... }
@@ -839,11 +863,10 @@ client.on('message', async (msg) => {
             if (fs.existsSync(mediaFullPath)) {
                 await delay(500);
                 const media = MessageMedia.fromFilePath(mediaFullPath);
-                await enviarResposta(msg, media);
+                const sentMedia = await enviarResposta(msg, media);
+                if (sentMedia) await registrarMensagemEnviada(telefoneReal, '[mídia enviada]');
             }
         }
-
-        await updateStats(true);
     } catch (error) {
         console.error('❌ Erro no processamento da mensagem:', error);
     }

@@ -135,6 +135,26 @@
                 </div>
             </div>
 
+            <!-- Histórico Real de Mensagens Enviadas -->
+            <div class="card glass" style="margin-top:1.5rem">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem">
+                    <h3>📤 Histórico de Mensagens Enviadas</h3>
+                    <span style="color:var(--text-3);font-size:.75rem">Cada linha é uma mensagem realmente enviada pelo robô</span>
+                </div>
+                <table class="leads-table">
+                    <thead>
+                        <tr>
+                            <th>Número</th>
+                            <th>Mensagem</th>
+                            <th style="text-align:right">Data/Hora</th>
+                        </tr>
+                    </thead>
+                    <tbody id="mensagens-enviadas-table-body">
+                        <tr><td colspan="3" style="padding:2rem;text-align:center;color:var(--text-3)">Nenhuma mensagem enviada ainda.</td></tr>
+                    </tbody>
+                </table>
+            </div>
+
         </div>
 
         <!-- ===================== MENSAGENS ===================== -->

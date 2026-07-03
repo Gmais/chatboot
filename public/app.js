@@ -240,6 +240,34 @@ socket.on('message_out', ({ to, text, ts }) => {
     addFeedMessage('out', to, text, ts);
     msgSentCount++;
     if (msgSentEl) animateCounter(msgSentEl, parseInt(msgSentEl.textContent.replace(/\D/g,'') || 0) + 1);
+    addMensagemEnviadaToTable(to, text, ts);
+});
+
+// =====================================
+// HISTÓRICO DE MENSAGENS ENVIADAS
+// =====================================
+const mensagensEnviadasTableBody = document.getElementById('mensagens-enviadas-table-body');
+
+function addMensagemEnviadaToTable(telefone, texto, ts) {
+    if (!mensagensEnviadasTableBody) return;
+    if (mensagensEnviadasTableBody.querySelector('td[colspan]')) mensagensEnviadasTableBody.innerHTML = '';
+    const tr = document.createElement('tr');
+    const fmt = new Date(ts).toLocaleString('pt-BR');
+    const num = telefone.replace('@c.us', '').replace('@lid', '');
+    const preview = texto && texto.length > 140 ? texto.slice(0, 140) + '…' : (texto || '');
+    tr.innerHTML = `
+        <td>${num}</td>
+        <td style="color:var(--text-2);max-width:420px;white-space:pre-wrap;word-break:break-word">${preview}</td>
+        <td style="text-align:right;color:var(--text-3)">${fmt}</td>
+    `;
+    mensagensEnviadasTableBody.insertBefore(tr, mensagensEnviadasTableBody.firstChild);
+}
+
+socket.on('all_mensagens_enviadas', (mensagens) => {
+    if (!mensagensEnviadasTableBody) return;
+    if (mensagens.length === 0) return;
+    mensagensEnviadasTableBody.innerHTML = '';
+    [...mensagens].reverse().forEach(m => addMensagemEnviadaToTable(m.telefone, m.texto, m.ts));
 });
 
 btnLimparFeed?.addEventListener('click', () => {
