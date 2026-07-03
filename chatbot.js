@@ -1,27 +1,39 @@
 // =====================================
 // PATCH (deve rodar ANTES de qualquer require do whatsapp-web.js)
-// whatsapp-web.js reexpõe as mesmas funções (ex: onAddMessageEvent) sempre que
-// reinicializa o Store. Tentamos remover o binding antigo antes de reexpor
-// (upsertFunction via page.removeExposedFunction) para o novo callback
-// realmente assumir — mas a versão do puppeteer-core usada internamente pelo
-// whatsapp-web.js (instalada via GitHub, sem versão fixa) pode não limpar o
-// binding de fato, e nesse caso page.exposeFunction() ainda lança "already
-// exists". ESSENCIAL: esse erro precisa ficar protegido por try/catch, senão
-// derruba o processo inteiro (crash loop) — pior que só manter o callback
-// antigo ativo.
+// whatsapp-web.js reexpõe as mesmas funções sempre que reinicializa o Store
+// (attachEventListeners() roda de novo a cada 'framenavigated'). Isso inclui
+// tanto os bindings de MENSAGEM (onAddMessageEvent etc, que é o que quebrava
+// e fazia o robô parar de receber mensagens depois de um tempo) quanto os
+// bindings de AUTENTICAÇÃO/QR (onAuthAppStateChangedEvent, onAppStateHasSyncedEvent
+// etc, chamados 1x dentro de inject() durante o pareamento).
+//
+// Tentamos fazer upsert (removeExposedFunction + exposeFunction) só nos
+// bindings de MENSAGEM, que é o problema original. Para os bindings de
+// autenticação/QR mantemos o comportamento ORIGINAL da biblioteca (só
+// ignora "already exists") — mexer neles quebrou o pareamento (celular
+// linkava mas o robô nunca via o evento), porque o exposeFunction extra
+// atrasa o inject() e aumenta a chance de correr com outro framenavigated.
 // =====================================
 try {
     const wwebPup = require('./node_modules/whatsapp-web.js/src/util/Puppeteer');
+    const _orig = wwebPup.exposeFunctionIfAbsent;
+    const NOMES_DE_MENSAGEM = new Set([
+        'onAddMessageEvent', 'onChangeMessageTypeEvent', 'onChangeMessageEvent',
+        'onRemoveMessageEvent', 'onMessageAckEvent', 'onChatUnreadCountEvent',
+        'onMessageMediaUploadedEvent', 'onEditMessageEvent',
+    ]);
     wwebPup.exposeFunctionIfAbsent = async (page, name, func) => {
-        try { await page.removeExposedFunction(name); } catch (_) {}
+        if (NOMES_DE_MENSAGEM.has(name)) {
+            try { await page.removeExposedFunction(name); } catch (_) {}
+        }
         try {
-            await page.exposeFunction(name, func);
+            await _orig(page, name, func);
         } catch (e) {
             if (!e.message || !e.message.includes('already exists')) throw e;
             // Não conseguiu substituir o binding — mantém o antigo em vez de crashar.
         }
     };
-    console.log('✅ Patch aplicado (upsertFunction com fallback seguro).');
+    console.log('✅ Patch aplicado (upsert só nos eventos de mensagem).');
 } catch (_) {}
 
 // =====================================
