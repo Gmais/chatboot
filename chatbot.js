@@ -25,6 +25,30 @@ try {
 } catch (_) {}
 
 // =====================================
+// PATCH 2 — CAUSA RAIZ do "conecta mas para de receber mensagem depois de um tempo"
+// whatsapp-web.js religa TODOS os listeners (attachEventListeners, incluindo
+// onAddMessageEvent) toda vez que a página dispara 'framenavigated' — o que
+// acontece várias vezes sozinho, sem que a gente peça, enquanto o WhatsApp Web
+// resincroniza em segundo plano. Cada religação corre o risco de colidir com
+// a anterior (fica no ar entre remover e recriar o binding no Puppeteer) e
+// deixar o robô sem NENHUM listener funcional de mensagem — sem erro, sem log,
+// só silêncio. Como nosso processo nunca reaproveita o mesmo Client após um
+// logout de verdade (sempre reinicia o container), os listeners só PRECISAM
+// ser ligados uma vez por processo. Trava attachEventListeners para rodar só
+// na primeira vez e ignorar as reinicializações redundantes seguintes.
+// =====================================
+try {
+    const ClientClass = require('./node_modules/whatsapp-web.js/src/Client');
+    const _origAttach = ClientClass.prototype.attachEventListeners;
+    ClientClass.prototype.attachEventListeners = async function (...args) {
+        if (this._listenersJaAnexados) return;
+        this._listenersJaAnexados = true;
+        return _origAttach.apply(this, args);
+    };
+    console.log('✅ Patch 2 aplicado (attachEventListeners roda só 1x por processo).');
+} catch (_) {}
+
+// =====================================
 // IMPORTAÇÕES
 // =====================================
 require('dotenv').config();
