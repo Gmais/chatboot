@@ -551,7 +551,7 @@ const client = new Client({
     authStrategy: new LocalAuth({ dataPath: path.join(DATA_DIR, '.wwebjs_auth') }),
     puppeteer: {
         headless: true,
-        protocolTimeout: 120000,
+        protocolTimeout: 180000,
         ...(chromiumPath && { executablePath: chromiumPath }),
         args: [
             '--no-sandbox',
@@ -559,9 +559,8 @@ const client = new Client({
             '--disable-dev-shm-usage',
             '--disable-gpu',
             '--no-zygote',
+            '--single-process',                          // Evita processos filho — economiza ~150MB no Railway
             '--disable-extensions',
-            // Reduz consumo de memória do Chrome — o container tem só 1GB de RAM
-            // e a página estava crashando por OOM depois de um tempo de uso.
             '--disable-background-networking',
             '--disable-default-apps',
             '--disable-sync',
@@ -571,8 +570,23 @@ const client = new Client({
             '--no-first-run',
             '--disable-backgrounding-occluded-windows',
             '--disable-renderer-backgrounding',
-            '--disable-features=TranslateUI,BlinkGenPropertyTrees',
-            '--js-flags=--max-old-space-size=460',
+            '--disable-features=TranslateUI,BlinkGenPropertyTrees,IsolateOrigins,site-per-process',
+            '--disable-hang-monitor',
+            '--disable-prompt-on-repost',
+            '--disable-domain-reliability',
+            '--disable-component-update',
+            '--disable-client-side-phishing-detection',
+            '--disable-popup-blocking',
+            '--disable-breakpad',
+            '--disable-crash-reporter',
+            '--disable-in-process-stack-traces',
+            '--disable-logging',
+            '--disable-web-security',
+            '--memory-pressure-off',
+            '--disable-low-res-tiling',
+            '--disable-smooth-scrolling',
+            '--process-per-site',
+            '--js-flags=--max-old-space-size=256 --optimize-for-size --gc-interval=100',
         ],
     },
 });
