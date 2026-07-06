@@ -898,7 +898,10 @@ function ehIntencaoPacto(texto) {
 
 // Envia uma mensagem via WhatsApp e registra no histórico de mensagens enviadas.
 async function enviarEregistrar(telefone, conteudo) {
-    if (typeof conteudo === 'string') await delay(calcularDelayDigitacao(conteudo));
+    if (typeof conteudo === 'string') {
+        await simularDigitando(client.getChatById(telefone));
+        await delay(calcularDelayDigitacao(conteudo));
+    }
     const resultado = await client.sendMessage(telefone, conteudo);
     await registrarMensagemEnviada(telefone, typeof conteudo === 'string' ? conteudo : '[mídia]');
     return resultado;
@@ -1107,6 +1110,19 @@ function calcularDelayDigitacao(texto) {
     return Math.min(DIGITACAO_MAX_MS, Math.max(DIGITACAO_MIN_MS, estimado));
 }
 
+// Mostra o "digitando..." de verdade no WhatsApp do contato. Isso já causou
+// travamento do Puppeteer no passado (commit 1099a86) porque era chamado sem
+// nenhuma proteção — aqui roda com timeout curto e nunca deixa o envio da
+// mensagem depender do resultado (se travar ou falhar, apenas ignora).
+async function simularDigitando(chatOuGetter) {
+    try {
+        await Promise.race([
+            Promise.resolve(chatOuGetter).then(chat => chat.sendStateTyping()),
+            new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 3000))
+        ]);
+    } catch (_) {}
+}
+
 // Quando o WhatsApp usa @lid (privacidade), resolve o número de telefone real.
 // contact.number NÃO serve aqui: para contatos @lid ele devolve o próprio lid,
 // não o telefone. getContactLidAndPhone() consulta o mapeamento real do WhatsApp.
@@ -1138,7 +1154,10 @@ client.on('message_create', (msg) => {
 // Wrapper de envio: tenta msg.reply(), se timeout reinicia o processo
 async function enviarResposta(msg, conteudo, opcoes = {}) {
     try {
-        if (typeof conteudo === 'string') await delay(calcularDelayDigitacao(conteudo));
+        if (typeof conteudo === 'string') {
+            await simularDigitando(msg.getChat());
+            await delay(calcularDelayDigitacao(conteudo));
+        }
         const sent = await msg.reply(conteudo, undefined, opcoes);
         console.log(`✅ Resposta entregue.`);
         return sent;
