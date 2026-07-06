@@ -246,6 +246,22 @@ async function registerLead(telefone) {
 }
 
 // =====================================
+// OVERRIDE MANUAL — BOTÃO "ATIVAR ROBÔ"
+// =====================================
+// Permite à recepcionista assumir manualmente por um tempo (ex: foi ao banheiro,
+// foi ao mercado) e devolver o atendimento ao robô sem mexer nas faixas de
+// horário configuradas. Tem prioridade sobre qualquer faixa/modo padrão.
+async function obterOverrideRobo() {
+    const rows = await db.all("SELECT * FROM configuracoes WHERE chave IN ('override_robo_ate','override_robo_indeterminado')");
+    const config = {};
+    rows.forEach(r => config[r.chave] = r.valor);
+    const indeterminado = config.override_robo_indeterminado === 'true';
+    const ate = config.override_robo_ate ? Number(config.override_robo_ate) : null;
+    const ativo = indeterminado || (ate !== null && Date.now() < ate);
+    return { ativo, indeterminado: ativo && indeterminado, ate: (ativo && !indeterminado) ? ate : null };
+}
+
+// =====================================
 // HORÁRIO DE FUNCIONAMENTO
 // =====================================
 // Define, por faixa de horário, quem atende: "robo" (resposta automática) ou
@@ -270,9 +286,12 @@ function faixaCobreAgora(faixa, diaAtual, diaAnterior, minutoAtual) {
            (dias.includes(diaAnterior) && minutoAtual < minutoFim);
 }
 
-// Resolve quem deve atender agora: consulta as faixas cadastradas e, se nenhuma
-// bater com o momento atual, cai no modo padrão configurado.
+// Resolve quem deve atender agora: o override manual manda mais que tudo; na
+// ausência dele, consulta as faixas cadastradas e cai no modo padrão se nenhuma bater.
 async function obterModoAtual() {
+    const override = await obterOverrideRobo();
+    if (override.ativo) return { modo: 'robo', mensagemHumano: '' };
+
     const confRows = await db.all('SELECT * FROM configuracoes');
     const config = {};
     confRows.forEach(r => config[r.chave] = r.valor);
@@ -399,6 +418,36 @@ app.put('/api/horarios', async (req, res) => {
         );
     }
     res.json({ success: true });
+});
+
+// =====================================
+// API REST — OVERRIDE MANUAL (BOTÃO "ATIVAR ROBÔ")
+// =====================================
+app.get('/api/robo-override', async (req, res) => {
+    res.json(await obterOverrideRobo());
+});
+
+app.post('/api/robo-override', async (req, res) => {
+    const minutos = Number(req.body.minutos);
+    if (minutos > 0) {
+        const ate = Date.now() + minutos * 60000;
+        await db.run('INSERT OR REPLACE INTO configuracoes (chave, valor) VALUES (?, ?)', ['override_robo_ate', String(ate)]);
+        await db.run('INSERT OR REPLACE INTO configuracoes (chave, valor) VALUES (?, ?)', ['override_robo_indeterminado', 'false']);
+    } else {
+        await db.run('INSERT OR REPLACE INTO configuracoes (chave, valor) VALUES (?, ?)', ['override_robo_ate', '']);
+        await db.run('INSERT OR REPLACE INTO configuracoes (chave, valor) VALUES (?, ?)', ['override_robo_indeterminado', 'true']);
+    }
+    const estado = await obterOverrideRobo();
+    io.emit('robo_override', estado);
+    res.json(estado);
+});
+
+app.delete('/api/robo-override', async (req, res) => {
+    await db.run('INSERT OR REPLACE INTO configuracoes (chave, valor) VALUES (?, ?)', ['override_robo_ate', '']);
+    await db.run('INSERT OR REPLACE INTO configuracoes (chave, valor) VALUES (?, ?)', ['override_robo_indeterminado', 'false']);
+    const estado = await obterOverrideRobo();
+    io.emit('robo_override', estado);
+    res.json(estado);
 });
 
 // Upload de Mídia para uma Regra

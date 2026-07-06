@@ -361,6 +361,35 @@ header h1 {
 }
 .btn-secondary:hover { background: rgba(255,255,255,0.1); color: var(--text-1); }
 
+.robo-toggle-menu {
+    display: none;
+    position: absolute;
+    top: 115%;
+    right: 0;
+    background: var(--card-bg);
+    border: 1px solid var(--card-border);
+    border-radius: var(--radius-sm);
+    box-shadow: var(--shadow);
+    padding: .5rem;
+    min-width: 200px;
+    z-index: 100;
+}
+.robo-toggle-menu.open { display: block; }
+.robo-tempo-opcao {
+    display: block;
+    width: 100%;
+    text-align: left;
+    background: none;
+    border: none;
+    color: var(--text-1);
+    padding: .55rem .6rem;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: .85rem;
+    font-family: inherit;
+}
+.robo-tempo-opcao:hover { background: rgba(255,255,255,0.08); }
+
 .btn-cancel {
     background: transparent;
     color: var(--text-2);

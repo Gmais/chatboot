@@ -449,6 +449,106 @@ btnSalvarIa?.addEventListener('click', async () => {
 });
 
 // =====================================
+// OVERRIDE MANUAL — BOTÃO "ATIVAR ROBÔ"
+// =====================================
+const btnRoboToggle  = document.getElementById('btn-robo-toggle');
+const roboToggleMenu = document.getElementById('robo-toggle-menu');
+let roboOverrideState = { ativo: false, indeterminado: false, ate: null };
+let roboCountdownInterval = null;
+
+function renderRoboToggle() {
+    if (!btnRoboToggle) return;
+    clearInterval(roboCountdownInterval);
+
+    if (!roboOverrideState.ativo) {
+        btnRoboToggle.textContent = '🤖 Ativar Robô';
+        btnRoboToggle.className = 'btn-primary';
+        return;
+    }
+
+    btnRoboToggle.className = 'btn-danger';
+    if (roboOverrideState.indeterminado) {
+        btnRoboToggle.textContent = '🟢 Robô Ativo — Desligar';
+        return;
+    }
+
+    const atualizarLabel = () => {
+        const restanteMs = roboOverrideState.ate - Date.now();
+        if (restanteMs <= 0) {
+            roboOverrideState = { ativo: false, indeterminado: false, ate: null };
+            renderRoboToggle();
+            return;
+        }
+        const min = Math.ceil(restanteMs / 60000);
+        btnRoboToggle.textContent = `🟢 Robô Ativo (${min}min) — Desligar`;
+    };
+    atualizarLabel();
+    roboCountdownInterval = setInterval(atualizarLabel, 1000);
+}
+
+async function loadRoboOverride() {
+    try {
+        const res = await fetch('/api/robo-override');
+        roboOverrideState = await res.json();
+        renderRoboToggle();
+    } catch (e) {
+        console.error('Erro ao carregar estado do robô', e);
+    }
+}
+
+btnRoboToggle?.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    if (roboOverrideState.ativo) {
+        try {
+            const res = await fetch('/api/robo-override', { method: 'DELETE' });
+            roboOverrideState = await res.json();
+            renderRoboToggle();
+            showToast('Robô desligado', 'Atendimento humano assumiu as respostas.', 'info');
+            addActivity('🧑', 'Robô desligado manualmente', new Date().toLocaleString('pt-BR'));
+        } catch (err) {
+            showToast('Erro', 'Não foi possível desligar o robô', 'error');
+        }
+        return;
+    }
+    roboToggleMenu?.classList.toggle('open');
+});
+
+document.addEventListener('click', (e) => {
+    if (roboToggleMenu?.classList.contains('open') && !roboToggleMenu.contains(e.target) && e.target !== btnRoboToggle) {
+        roboToggleMenu.classList.remove('open');
+    }
+});
+
+roboToggleMenu?.querySelectorAll('.robo-tempo-opcao').forEach(btn => {
+    btn.addEventListener('click', async () => {
+        const minutosAttr = btn.dataset.minutos;
+        const minutos = minutosAttr ? Number(minutosAttr) : null;
+        roboToggleMenu.classList.remove('open');
+        try {
+            const res = await fetch('/api/robo-override', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ minutos })
+            });
+            roboOverrideState = await res.json();
+            renderRoboToggle();
+            const desc = minutos ? `pelos próximos ${minutos} minutos` : 'por tempo indeterminado';
+            showToast('Robô ativado!', `O robô vai responder ${desc}.`, 'success');
+            addActivity('🤖', `Robô ativado manualmente (${minutos ? minutos + 'min' : 'indeterminado'})`, new Date().toLocaleString('pt-BR'));
+        } catch (err) {
+            showToast('Erro', 'Não foi possível ativar o robô', 'error');
+        }
+    });
+});
+
+socket.on('robo_override', (state) => {
+    roboOverrideState = state;
+    renderRoboToggle();
+});
+
+loadRoboOverride();
+
+// =====================================
 // HORÁRIO DE FUNCIONAMENTO
 // =====================================
 const horarioAtivo          = document.getElementById('horario-ativo');
