@@ -898,6 +898,7 @@ function ehIntencaoPacto(texto) {
 
 // Envia uma mensagem via WhatsApp e registra no histórico de mensagens enviadas.
 async function enviarEregistrar(telefone, conteudo) {
+    if (typeof conteudo === 'string') await delay(calcularDelayDigitacao(conteudo));
     const resultado = await client.sendMessage(telefone, conteudo);
     await registrarMensagemEnviada(telefone, typeof conteudo === 'string' ? conteudo : '[mídia]');
     return resultado;
@@ -1096,6 +1097,16 @@ async function handleCadastroFlow(telefone, texto, textoOriginal) {
 // =====================================
 const delay = (ms) => new Promise((res) => setTimeout(res, ms));
 
+// Simula o tempo de "digitando...": resposta curta pausa pouco, resposta longa
+// pausa mais — enviar tudo instantâneo soa robótico demais.
+const DIGITACAO_MIN_MS = 1200;
+const DIGITACAO_MAX_MS = 6000;
+const DIGITACAO_MS_POR_CARACTERE = 35;
+function calcularDelayDigitacao(texto) {
+    const estimado = (texto || '').length * DIGITACAO_MS_POR_CARACTERE;
+    return Math.min(DIGITACAO_MAX_MS, Math.max(DIGITACAO_MIN_MS, estimado));
+}
+
 // Quando o WhatsApp usa @lid (privacidade), resolve o número de telefone real.
 // contact.number NÃO serve aqui: para contatos @lid ele devolve o próprio lid,
 // não o telefone. getContactLidAndPhone() consulta o mapeamento real do WhatsApp.
@@ -1127,6 +1138,7 @@ client.on('message_create', (msg) => {
 // Wrapper de envio: tenta msg.reply(), se timeout reinicia o processo
 async function enviarResposta(msg, conteudo, opcoes = {}) {
     try {
+        if (typeof conteudo === 'string') await delay(calcularDelayDigitacao(conteudo));
         const sent = await msg.reply(conteudo, undefined, opcoes);
         console.log(`✅ Resposta entregue.`);
         return sent;
@@ -1277,9 +1289,9 @@ client.on('message', async (msg) => {
                     }
                     global.chatHistory.set(telefoneReal, history);
 
-                    io.emit('bot_digitando', { telefone: numLimpo, ativo: false });
                     console.log(`🤖 IA respondendo para ${numLimpo}`);
                     const sentIA = await enviarResposta(msg, respostaIA);
+                    io.emit('bot_digitando', { telefone: numLimpo, ativo: false });
                     if (sentIA) await registrarMensagemEnviada(telefoneReal, respostaIA, nomeContato);
                 } catch (e) {
                     io.emit('bot_digitando', { telefone: numLimpo, ativo: false });
@@ -1289,10 +1301,6 @@ client.on('message', async (msg) => {
             return;
         }
 
-        await delay(1500);
-        
-        await delay(2000);
-
         const hora = new Date().getHours();
         let saudacao = 'Olá';
         if (hora >= 5 && hora < 12) saudacao = 'Bom dia';
@@ -1300,9 +1308,9 @@ client.on('message', async (msg) => {
         else saudacao = 'Boa noite';
 
         const textoFinal = regraAtiva.resposta.replace(/{saudacao}/g, saudacao);
-        io.emit('bot_digitando', { telefone: numLimpo, ativo: false });
         console.log(`📤 Regra #${regraAtiva.id} ativada → respondendo para ${numLimpo}`);
         const sent = await enviarResposta(msg, textoFinal);
+        io.emit('bot_digitando', { telefone: numLimpo, ativo: false });
         if (sent) await registrarMensagemEnviada(telefoneReal, textoFinal, nomeContato);
 
         // Áudio temporariamente desativado (causa timeout no Puppeteer)
