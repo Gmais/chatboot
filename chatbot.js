@@ -946,15 +946,22 @@ async function handleCadastroFlow(telefone, texto, textoOriginal) {
 // =====================================
 const delay = (ms) => new Promise((res) => setTimeout(res, ms));
 
-// Quando o WhatsApp usa @lid (privacidade), tenta obter o número real do contato.
+// Quando o WhatsApp usa @lid (privacidade), resolve o número de telefone real.
+// contact.number NÃO serve aqui: para contatos @lid ele devolve o próprio lid,
+// não o telefone. getContactLidAndPhone() consulta o mapeamento real do WhatsApp.
+const lidParaTelefone = new Map();
 async function resolvePhone(msg) {
     if (!msg.from.endsWith('@lid')) return msg.from;
+    if (lidParaTelefone.has(msg.from)) return lidParaTelefone.get(msg.from);
     try {
-        const contact = await Promise.race([
-            msg.getContact(),
+        const [{ pn } = {}] = await Promise.race([
+            client.getContactLidAndPhone([msg.from]),
             new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 3000))
         ]);
-        if (contact.number) return `${contact.number}@c.us`;
+        if (pn) {
+            lidParaTelefone.set(msg.from, pn);
+            return pn;
+        }
     } catch (_) {}
     return msg.from;
 }
