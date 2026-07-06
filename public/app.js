@@ -451,44 +451,100 @@ btnSalvarIa?.addEventListener('click', async () => {
 // =====================================
 // HORÁRIO DE FUNCIONAMENTO
 // =====================================
-const horarioAtivo     = document.getElementById('horario-ativo');
-const horarioInicio    = document.getElementById('horario-inicio');
-const horarioFim       = document.getElementById('horario-fim');
-const horarioMensagem  = document.getElementById('horario-mensagem');
-const btnSalvarHorario = document.getElementById('btn-salvar-horario');
-const horarioDiasBoxes = document.querySelectorAll('.horario-dia');
+const horarioAtivo          = document.getElementById('horario-ativo');
+const horarioModoPadrao     = document.getElementById('horario-modo-padrao');
+const horarioMensagemHumano = document.getElementById('horario-mensagem-humano');
+const btnSalvarHorario      = document.getElementById('btn-salvar-horario');
+const horarioFaixasList     = document.getElementById('horario-faixas-list');
+const btnAddFaixa           = document.getElementById('btn-add-faixa');
+
+const DIAS_SEMANA = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'];
+let horarioFaixas = []; // [{ dias: [1,2,3,4,5], inicio: '07:00', fim: '11:00', modo: 'humano' }, ...]
+
+// Lê o estado atual dos inputs de volta para horarioFaixas, para não perder
+// edições em andamento ao adicionar/remover uma faixa ou salvar.
+function sincronizarFaixasDoDOM() {
+    if (!horarioFaixasList) return;
+    horarioFaixasList.querySelectorAll('.faixa-row').forEach(row => {
+        const idx = Number(row.dataset.idx);
+        const dias = Array.from(row.querySelectorAll('.faixa-dia')).filter(cb => cb.checked).map(cb => Number(cb.dataset.dia));
+        const inicio = row.querySelector('.faixa-inicio').value || '00:00';
+        const fim = row.querySelector('.faixa-fim').value || '00:00';
+        const modo = row.querySelector('.faixa-modo').value;
+        horarioFaixas[idx] = { dias, inicio, fim, modo };
+    });
+}
+
+function renderFaixas() {
+    if (!horarioFaixasList) return;
+    if (horarioFaixas.length === 0) {
+        horarioFaixasList.innerHTML = '<p style="color:var(--text-3);font-size:.85rem">Nenhuma faixa cadastrada — clique em "+ Adicionar faixa".</p>';
+        return;
+    }
+    horarioFaixasList.innerHTML = horarioFaixas.map((f, idx) => `
+        <div class="faixa-row" data-idx="${idx}" style="display:flex;flex-wrap:wrap;gap:.6rem;align-items:center;padding:.7rem;background:rgba(255,255,255,0.03);border-radius:8px;margin-bottom:.6rem">
+            <div style="display:flex;flex-wrap:wrap;gap:.4rem;flex:1;min-width:210px">
+                ${DIAS_SEMANA.map((label, d) => `
+                    <label style="display:flex;align-items:center;gap:.25rem;cursor:pointer;font-size:.78rem">
+                        <input type="checkbox" class="faixa-dia" data-dia="${d}" ${f.dias.includes(d) ? 'checked' : ''} style="accent-color:var(--green)"> ${label}
+                    </label>
+                `).join('')}
+            </div>
+            <input type="time" class="faixa-inicio" value="${f.inicio}" style="width:110px">
+            <span style="color:var(--text-3)">até</span>
+            <input type="time" class="faixa-fim" value="${f.fim}" style="width:110px">
+            <select class="faixa-modo" style="background:var(--input-bg);border:1px solid rgba(255,255,255,0.1);border-radius:var(--radius-sm);padding:.5rem .7rem;color:var(--text-1)">
+                <option value="robo" ${f.modo === 'robo' ? 'selected' : ''}>🤖 Robô</option>
+                <option value="humano" ${f.modo === 'humano' ? 'selected' : ''}>🧑 Humano</option>
+            </select>
+            <button type="button" class="btn-remove-faixa" data-idx="${idx}" style="background:none;border:none;color:var(--red);font-size:1.1rem;cursor:pointer;padding:.2rem .5rem">✕</button>
+        </div>
+    `).join('');
+}
+
+btnAddFaixa?.addEventListener('click', () => {
+    sincronizarFaixasDoDOM();
+    horarioFaixas.push({ dias: [1, 2, 3, 4, 5], inicio: '08:00', fim: '18:00', modo: 'robo' });
+    renderFaixas();
+});
+
+horarioFaixasList?.addEventListener('click', (e) => {
+    const btn = e.target.closest('.btn-remove-faixa');
+    if (!btn) return;
+    sincronizarFaixasDoDOM();
+    horarioFaixas.splice(Number(btn.dataset.idx), 1);
+    renderFaixas();
+});
 
 async function loadHorarioConfig() {
     try {
-        const res = await fetch('/api/configuracoes');
-        const config = await res.json();
-        if (horarioAtivo) horarioAtivo.checked = config.horario_ativo === 'true';
-        if (horarioInicio) horarioInicio.value = config.horario_inicio || '08:00';
-        if (horarioFim) horarioFim.value = config.horario_fim || '22:00';
-        if (horarioMensagem) horarioMensagem.value = config.horario_mensagem_fora || '';
-        const dias = (config.horario_dias || '1,2,3,4,5,6').split(',');
-        horarioDiasBoxes.forEach(box => { box.checked = dias.includes(box.value); });
+        const res = await fetch('/api/horarios');
+        const data = await res.json();
+        if (horarioAtivo) horarioAtivo.checked = !!data.ativo;
+        if (horarioModoPadrao) horarioModoPadrao.value = data.modo_padrao || 'robo';
+        if (horarioMensagemHumano) horarioMensagemHumano.value = data.mensagem_humano || '';
+        horarioFaixas = (data.faixas || []).map(f => ({ dias: f.dias, inicio: f.inicio, fim: f.fim, modo: f.modo }));
+        renderFaixas();
     } catch (e) {
         console.error('Erro ao carregar horário de funcionamento', e);
     }
 }
 
 btnSalvarHorario?.addEventListener('click', async () => {
-    const dias = Array.from(horarioDiasBoxes).filter(b => b.checked).map(b => b.value);
+    sincronizarFaixasDoDOM();
     const payload = {
-        horario_ativo: horarioAtivo.checked ? 'true' : 'false',
-        horario_dias: dias.join(','),
-        horario_inicio: horarioInicio.value || '08:00',
-        horario_fim: horarioFim.value || '22:00',
-        horario_mensagem_fora: horarioMensagem.value.trim()
+        ativo: !!horarioAtivo?.checked,
+        modo_padrao: horarioModoPadrao?.value || 'robo',
+        mensagem_humano: (horarioMensagemHumano?.value || '').trim(),
+        faixas: horarioFaixas.filter(f => f.dias.length > 0)
     };
     try {
-        await fetch('/api/configuracoes', {
+        await fetch('/api/horarios', {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload)
         });
-        showToast('Horário salvo!', 'As configurações de horário de funcionamento foram atualizadas.', 'success');
+        showToast('Horário salvo!', 'As faixas de horário de funcionamento foram atualizadas.', 'success');
         addActivity('⏰', 'Horário de funcionamento atualizado', new Date().toLocaleString('pt-BR'));
     } catch (e) {
         showToast('Erro', 'Não foi possível salvar o horário de funcionamento', 'error');

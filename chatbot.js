@@ -158,6 +158,13 @@ async function initDB() {
         );
         CREATE INDEX IF NOT EXISTS idx_conversas_tel ON conversas(telefone, ts);
         CREATE INDEX IF NOT EXISTS idx_conversas_ts ON conversas(ts DESC);
+        CREATE TABLE IF NOT EXISTS horarios_atendimento (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            dias TEXT NOT NULL,
+            inicio TEXT NOT NULL,
+            fim TEXT NOT NULL,
+            modo TEXT NOT NULL DEFAULT 'robo'
+        );
     `);
 
     // Adiciona colunas novas se migrando de versão anterior
@@ -241,36 +248,54 @@ async function registerLead(telefone) {
 // =====================================
 // HORÁRIO DE FUNCIONAMENTO
 // =====================================
-// Controla em quais dias/horas o robô responde automaticamente.
+// Define, por faixa de horário, quem atende: "robo" (resposta automática) ou
+// "humano" (mensagem só fica registrada em Conversas, para responder na mão).
 // Usa moment-timezone porque o servidor (Railway) roda fisicamente nos EUA —
 // comparar com a hora local do processo (new Date()) daria o horário errado.
-const ultimaMsgForaHorario = new Map(); // telefone -> data (YYYY-MM-DD) do último aviso enviado
+const ultimaMsgModoHumano = new Map(); // telefone -> data (YYYY-MM-DD) do último aviso enviado
 
-async function getHorarioConfig() {
-    const rows = await db.all('SELECT * FROM configuracoes');
-    const config = {};
-    rows.forEach(r => config[r.chave] = r.valor);
-    return {
-        ativo: config.horario_ativo === 'true',
-        timezone: config.horario_timezone || 'America/Sao_Paulo',
-        dias: (config.horario_dias || '0,1,2,3,4,5,6').split(',').filter(Boolean).map(Number),
-        inicio: config.horario_inicio || '00:00',
-        fim: config.horario_fim || '23:59',
-        mensagemFora: config.horario_mensagem_fora || ''
-    };
-}
-
-// Retorna true se o momento atual está dentro do horário configurado.
-function estaDentroDoHorario(cfg) {
-    if (!cfg.ativo) return true;
-    const agora = moment.tz(cfg.timezone);
-    if (!cfg.dias.includes(agora.day())) return false;
-    const minutoAtual = agora.hours() * 60 + agora.minutes();
-    const [hIni, mIni] = cfg.inicio.split(':').map(Number);
-    const [hFim, mFim] = cfg.fim.split(':').map(Number);
+// Uma faixa "cobre" o momento atual mesmo quando cruza a meia-noite (ex: 21:00-07:00):
+// nesse caso ela pertence ao dia em que COMEÇA, então também precisa valer nas
+// primeiras horas do dia seguinte.
+function faixaCobreAgora(faixa, diaAtual, diaAnterior, minutoAtual) {
+    const dias = faixa.dias.split(',').filter(Boolean).map(Number);
+    const [hIni, mIni] = faixa.inicio.split(':').map(Number);
+    const [hFim, mFim] = faixa.fim.split(':').map(Number);
     const minutoIni = hIni * 60 + mIni;
     const minutoFim = hFim * 60 + mFim;
-    return minutoAtual >= minutoIni && minutoAtual < minutoFim;
+    if (minutoIni < minutoFim) {
+        return dias.includes(diaAtual) && minutoAtual >= minutoIni && minutoAtual < minutoFim;
+    }
+    return (dias.includes(diaAtual) && minutoAtual >= minutoIni) ||
+           (dias.includes(diaAnterior) && minutoAtual < minutoFim);
+}
+
+// Resolve quem deve atender agora: consulta as faixas cadastradas e, se nenhuma
+// bater com o momento atual, cai no modo padrão configurado.
+async function obterModoAtual() {
+    const confRows = await db.all('SELECT * FROM configuracoes');
+    const config = {};
+    confRows.forEach(r => config[r.chave] = r.valor);
+
+    const mensagemHumano = config.horario_mensagem_humano || '';
+    if (config.horario_ativo !== 'true') return { modo: 'robo', mensagemHumano: '' };
+
+    const timezone = config.horario_timezone || 'America/Sao_Paulo';
+    const modoPadrao = config.horario_modo_padrao === 'humano' ? 'humano' : 'robo';
+
+    const agora = moment.tz(timezone);
+    const diaAtual = agora.day();
+    const diaAnterior = (diaAtual + 6) % 7;
+    const minutoAtual = agora.hours() * 60 + agora.minutes();
+
+    const faixas = await db.all('SELECT * FROM horarios_atendimento');
+    let modo = null;
+    for (const faixa of faixas) {
+        if (!faixaCobreAgora(faixa, diaAtual, diaAnterior, minutoAtual)) continue;
+        if (faixa.modo === 'humano') { modo = 'humano'; break; } // humano tem prioridade sobre robô em caso de sobreposição
+        modo = 'robo';
+    }
+    return { modo: modo || modoPadrao, mensagemHumano, timezone };
 }
 
 // =====================================
@@ -332,6 +357,46 @@ app.put('/api/configuracoes', async (req, res) => {
     const keys = Object.keys(req.body);
     for (const key of keys) {
         await db.run('INSERT OR REPLACE INTO configuracoes (chave, valor) VALUES (?, ?)', [key, String(req.body[key])]);
+    }
+    res.json({ success: true });
+});
+
+// =====================================
+// API REST — HORÁRIO DE FUNCIONAMENTO
+// =====================================
+app.get('/api/horarios', async (req, res) => {
+    const confRows = await db.all("SELECT * FROM configuracoes WHERE chave LIKE 'horario_%'");
+    const config = {};
+    confRows.forEach(r => config[r.chave] = r.valor);
+    const faixas = await db.all('SELECT * FROM horarios_atendimento ORDER BY id ASC');
+    res.json({
+        ativo: config.horario_ativo === 'true',
+        modo_padrao: config.horario_modo_padrao === 'humano' ? 'humano' : 'robo',
+        mensagem_humano: config.horario_mensagem_humano || '',
+        faixas: faixas.map(f => ({
+            id: f.id,
+            dias: f.dias.split(',').filter(Boolean).map(Number),
+            inicio: f.inicio,
+            fim: f.fim,
+            modo: f.modo
+        }))
+    });
+});
+
+app.put('/api/horarios', async (req, res) => {
+    const { ativo, modo_padrao, mensagem_humano, faixas } = req.body;
+    await db.run('INSERT OR REPLACE INTO configuracoes (chave, valor) VALUES (?, ?)', ['horario_ativo', ativo ? 'true' : 'false']);
+    await db.run('INSERT OR REPLACE INTO configuracoes (chave, valor) VALUES (?, ?)', ['horario_modo_padrao', modo_padrao === 'humano' ? 'humano' : 'robo']);
+    await db.run('INSERT OR REPLACE INTO configuracoes (chave, valor) VALUES (?, ?)', ['horario_mensagem_humano', mensagem_humano || '']);
+
+    await db.run('DELETE FROM horarios_atendimento');
+    for (const f of (Array.isArray(faixas) ? faixas : [])) {
+        const dias = Array.isArray(f.dias) ? f.dias.join(',') : String(f.dias || '');
+        if (!dias || !f.inicio || !f.fim) continue;
+        await db.run(
+            'INSERT INTO horarios_atendimento (dias, inicio, fim, modo) VALUES (?, ?, ?, ?)',
+            [dias, f.inicio, f.fim, f.modo === 'humano' ? 'humano' : 'robo']
+        );
     }
     res.json({ success: true });
 });
@@ -1070,17 +1135,17 @@ client.on('message', async (msg) => {
         console.log(`📨 Mensagem de ${numLimpo} (${nomeContato}): "${msg.body}"`);
         io.emit('message_in', { from: numLimpo, nome: nomeContato, text: msg.body || '', ts: Date.now() });
 
-        // Fora do horário de funcionamento: a mensagem já foi salva em "conversas"
-        // (o operador pode responder manualmente pelo painel), mas o robô não
-        // dispara fluxos automáticos nem a IA.
-        const horarioCfg = await getHorarioConfig();
-        if (!estaDentroDoHorario(horarioCfg)) {
-            const hoje = moment.tz(horarioCfg.timezone).format('YYYY-MM-DD');
-            if (horarioCfg.mensagemFora && ultimaMsgForaHorario.get(numLimpo) !== hoje) {
-                const sentFora = await enviarResposta(msg, horarioCfg.mensagemFora);
-                if (sentFora) {
-                    ultimaMsgForaHorario.set(numLimpo, hoje);
-                    await registrarMensagemEnviada(telefoneReal, horarioCfg.mensagemFora, nomeContato);
+        // Modo Humano: a mensagem já foi salva em "conversas" (o operador pode
+        // responder manualmente pelo painel), mas o robô não dispara fluxos
+        // automáticos nem a IA.
+        const { modo, mensagemHumano, timezone } = await obterModoAtual();
+        if (modo === 'humano') {
+            const hoje = moment.tz(timezone || 'America/Sao_Paulo').format('YYYY-MM-DD');
+            if (mensagemHumano && ultimaMsgModoHumano.get(numLimpo) !== hoje) {
+                const sentHumano = await enviarResposta(msg, mensagemHumano);
+                if (sentHumano) {
+                    ultimaMsgModoHumano.set(numLimpo, hoje);
+                    await registrarMensagemEnviada(telefoneReal, mensagemHumano, nomeContato);
                 }
             }
             return;
