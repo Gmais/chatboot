@@ -594,6 +594,7 @@ const client = new Client({
 let currentQR = null;
 let isConnected = false;
 let clientReadyForPairing = false;
+let restartInProgress = false; // Evita loop de restart: só uma reinicialização por vez
 
 // =====================================
 // EVENTOS DO SOCKET.IO (PAINEL WEB)
@@ -663,10 +664,10 @@ client.on('ready', async () => {
     isConnected = true;
     currentQR = null;
     clientReadyForPairing = false;
+    restartInProgress = false;
     io.emit('ready');
 
-    // DIAGNÓSTICO: expõe erros que acontecem DENTRO do Chrome headless (JS da
-    // página, bindings do Puppeteer) — hoje são invisíveis nos logs do Node.
+    // DIAGNÓSTICO: expõe erros que acontecem DENTRO do Chrome headless
     // Ativado 1x por página pra não empilhar listener a cada 'ready' repetido.
     try {
         if (client.pupPage && !client.pupPage._diagAtivo) {
@@ -677,10 +678,31 @@ client.on('ready', async () => {
             client.pupPage.on('console', (msg) => {
                 if (msg.type() === 'error') console.error('🧨 [PAGE CONSOLE ERROR]', msg.text());
             });
-            client.pupPage.on('error', (err) => {
+            client.pupPage.on('error', async (err) => {
                 console.error('🧨 [PAGE CRASHED]', err.message || err);
-                console.error('🔄 Página do Chrome crashou — reiniciando processo para recuperar...');
-                setTimeout(() => process.exit(1), 500);
+                if (restartInProgress) {
+                    console.log('⚠️  Restart já em andamento — ignorando crash duplicado.');
+                    return;
+                }
+                restartInProgress = true;
+                isConnected = false;
+                io.emit('disconnected', 'Reconectando WhatsApp...');
+                console.log('🔄 Reiniciando cliente WhatsApp (servidor HTTP permanece no ar)...');
+
+                // Destroi o cliente atual silenciosamente
+                try { await client.destroy(); } catch (_) {}
+
+                // Aguarda 4s e reinicializa — sem matar o processo Node!
+                setTimeout(async () => {
+                    try {
+                        await client.initialize();
+                        console.log('🔁 Cliente reinicializado com sucesso.');
+                    } catch (e) {
+                        console.error('❌ Falha ao reinicializar cliente:', e.message);
+                        // Só agora, se realmente falhar, mata o processo como último recurso
+                        setTimeout(() => process.exit(1), 1000);
+                    }
+                }, 4000);
             });
             console.log('🩺 Diagnóstico de erros da página ativado.');
         }
