@@ -355,6 +355,7 @@ navBtns.forEach(btn => {
         pageTitle.textContent = text;
         if (targetId === 'mensagens-section') loadRegras();
         if (targetId === 'ia-section') loadIaConfig();
+        if (targetId === 'configuracoes-section') loadHorarioConfig();
         if (targetId === 'conversas-section') CM.onEnterSection();
     });
 });
@@ -444,6 +445,53 @@ btnSalvarIa?.addEventListener('click', async () => {
         addActivity('🧠', 'Configurações de IA salvas', new Date().toLocaleString('pt-BR'));
     } catch (e) {
         showToast('Erro', 'Não foi possível salvar as configurações da IA', 'error');
+    }
+});
+
+// =====================================
+// HORÁRIO DE FUNCIONAMENTO
+// =====================================
+const horarioAtivo     = document.getElementById('horario-ativo');
+const horarioInicio    = document.getElementById('horario-inicio');
+const horarioFim       = document.getElementById('horario-fim');
+const horarioMensagem  = document.getElementById('horario-mensagem');
+const btnSalvarHorario = document.getElementById('btn-salvar-horario');
+const horarioDiasBoxes = document.querySelectorAll('.horario-dia');
+
+async function loadHorarioConfig() {
+    try {
+        const res = await fetch('/api/configuracoes');
+        const config = await res.json();
+        if (horarioAtivo) horarioAtivo.checked = config.horario_ativo === 'true';
+        if (horarioInicio) horarioInicio.value = config.horario_inicio || '08:00';
+        if (horarioFim) horarioFim.value = config.horario_fim || '22:00';
+        if (horarioMensagem) horarioMensagem.value = config.horario_mensagem_fora || '';
+        const dias = (config.horario_dias || '1,2,3,4,5,6').split(',');
+        horarioDiasBoxes.forEach(box => { box.checked = dias.includes(box.value); });
+    } catch (e) {
+        console.error('Erro ao carregar horário de funcionamento', e);
+    }
+}
+
+btnSalvarHorario?.addEventListener('click', async () => {
+    const dias = Array.from(horarioDiasBoxes).filter(b => b.checked).map(b => b.value);
+    const payload = {
+        horario_ativo: horarioAtivo.checked ? 'true' : 'false',
+        horario_dias: dias.join(','),
+        horario_inicio: horarioInicio.value || '08:00',
+        horario_fim: horarioFim.value || '22:00',
+        horario_mensagem_fora: horarioMensagem.value.trim()
+    };
+    try {
+        await fetch('/api/configuracoes', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+        showToast('Horário salvo!', 'As configurações de horário de funcionamento foram atualizadas.', 'success');
+        addActivity('⏰', 'Horário de funcionamento atualizado', new Date().toLocaleString('pt-BR'));
+    } catch (e) {
+        showToast('Erro', 'Não foi possível salvar o horário de funcionamento', 'error');
     }
 });
 

@@ -396,6 +396,51 @@ Sempre tente agendar uma aula experimental."></textarea>
                 </div>
 
                 <div class="card glass">
+                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem">
+                        <h3>⏰ Horário de Funcionamento</h3>
+                        <label style="display:flex;align-items:center;gap:.5rem;cursor:pointer">
+                            <input type="checkbox" id="horario-ativo" style="accent-color:var(--green);width:18px;height:18px">
+                            <strong style="color:var(--text-1)">Restringir horário</strong>
+                        </label>
+                    </div>
+                    <p style="color:var(--text-2);font-size:.85rem;margin-bottom:1rem">Fora dos dias/horários marcados, o robô não responde automaticamente — a mensagem continua aparecendo em <strong>Conversas</strong> para você responder na mão.</p>
+
+                    <div class="form-group">
+                        <label>Dias de funcionamento</label>
+                        <div id="horario-dias" style="display:flex;flex-wrap:wrap;gap:.6rem;margin-top:.3rem">
+                            <label style="display:flex;align-items:center;gap:.35rem;cursor:pointer;font-size:.85rem"><input type="checkbox" class="horario-dia" value="0" style="accent-color:var(--green)"> Dom</label>
+                            <label style="display:flex;align-items:center;gap:.35rem;cursor:pointer;font-size:.85rem"><input type="checkbox" class="horario-dia" value="1" style="accent-color:var(--green)"> Seg</label>
+                            <label style="display:flex;align-items:center;gap:.35rem;cursor:pointer;font-size:.85rem"><input type="checkbox" class="horario-dia" value="2" style="accent-color:var(--green)"> Ter</label>
+                            <label style="display:flex;align-items:center;gap:.35rem;cursor:pointer;font-size:.85rem"><input type="checkbox" class="horario-dia" value="3" style="accent-color:var(--green)"> Qua</label>
+                            <label style="display:flex;align-items:center;gap:.35rem;cursor:pointer;font-size:.85rem"><input type="checkbox" class="horario-dia" value="4" style="accent-color:var(--green)"> Qui</label>
+                            <label style="display:flex;align-items:center;gap:.35rem;cursor:pointer;font-size:.85rem"><input type="checkbox" class="horario-dia" value="5" style="accent-color:var(--green)"> Sex</label>
+                            <label style="display:flex;align-items:center;gap:.35rem;cursor:pointer;font-size:.85rem"><input type="checkbox" class="horario-dia" value="6" style="accent-color:var(--green)"> Sáb</label>
+                        </div>
+                    </div>
+
+                    <div style="display:flex;gap:1rem;flex-wrap:wrap">
+                        <div class="form-group" style="flex:1;min-width:140px">
+                            <label>Início</label>
+                            <input type="time" id="horario-inicio" value="08:00">
+                        </div>
+                        <div class="form-group" style="flex:1;min-width:140px">
+                            <label>Fim</label>
+                            <input type="time" id="horario-fim" value="22:00">
+                        </div>
+                    </div>
+
+                    <div class="form-group">
+                        <label>Mensagem fora do horário (opcional)</label>
+                        <textarea id="horario-mensagem" style="min-height:100px" placeholder="Olá! No momento estamos fora do horário de atendimento. Retornaremos assim que possível 🙏"></textarea>
+                        <span class="hint">Enviada no máximo 1x por dia para cada contato. Deixe em branco para não enviar nada — a mensagem só fica registrada em Conversas.</span>
+                    </div>
+
+                    <div style="display:flex;justify-content:flex-end;margin-top:1rem">
+                        <button class="btn-primary" id="btn-salvar-horario">💾 Salvar Horário</button>
+                    </div>
+                </div>
+
+                <div class="card glass">
                     <h3>🚀 Rodando 24/7 — Sem precisar do PC</h3>
                     <p style="color:var(--text-2);font-size:.88rem;margin-bottom:1.5rem">Siga o passo a passo para hospedar no <strong style="color:var(--text-1)">Railway.app</strong> gratuitamente:</p>
                     <div class="deploy-steps">

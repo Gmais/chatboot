@@ -68,6 +68,7 @@ const { open } = require('sqlite');
 const multer = require('multer');
 const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
 const OpenAI = require('openai');
+const moment = require('moment-timezone');
 const { buscarAlunoPorMatricula, buscarAlunoPorCodigo, obterParcelasEmAberto, criarCliente, matricularAluno } = require('./pacto');
 
 // =====================================
@@ -235,6 +236,41 @@ async function registerLead(telefone) {
         await db.run('UPDATE leads SET mensagens_recebidas = mensagens_recebidas + 1 WHERE telefone = ?', telefone);
     }
     io.emit('stats', stats);
+}
+
+// =====================================
+// HORÁRIO DE FUNCIONAMENTO
+// =====================================
+// Controla em quais dias/horas o robô responde automaticamente.
+// Usa moment-timezone porque o servidor (Railway) roda fisicamente nos EUA —
+// comparar com a hora local do processo (new Date()) daria o horário errado.
+const ultimaMsgForaHorario = new Map(); // telefone -> data (YYYY-MM-DD) do último aviso enviado
+
+async function getHorarioConfig() {
+    const rows = await db.all('SELECT * FROM configuracoes');
+    const config = {};
+    rows.forEach(r => config[r.chave] = r.valor);
+    return {
+        ativo: config.horario_ativo === 'true',
+        timezone: config.horario_timezone || 'America/Sao_Paulo',
+        dias: (config.horario_dias || '0,1,2,3,4,5,6').split(',').filter(Boolean).map(Number),
+        inicio: config.horario_inicio || '00:00',
+        fim: config.horario_fim || '23:59',
+        mensagemFora: config.horario_mensagem_fora || ''
+    };
+}
+
+// Retorna true se o momento atual está dentro do horário configurado.
+function estaDentroDoHorario(cfg) {
+    if (!cfg.ativo) return true;
+    const agora = moment.tz(cfg.timezone);
+    if (!cfg.dias.includes(agora.day())) return false;
+    const minutoAtual = agora.hours() * 60 + agora.minutes();
+    const [hIni, mIni] = cfg.inicio.split(':').map(Number);
+    const [hFim, mFim] = cfg.fim.split(':').map(Number);
+    const minutoIni = hIni * 60 + mIni;
+    const minutoFim = hFim * 60 + mFim;
+    return minutoAtual >= minutoIni && minutoAtual < minutoFim;
 }
 
 // =====================================
@@ -1033,6 +1069,22 @@ client.on('message', async (msg) => {
 
         console.log(`📨 Mensagem de ${numLimpo} (${nomeContato}): "${msg.body}"`);
         io.emit('message_in', { from: numLimpo, nome: nomeContato, text: msg.body || '', ts: Date.now() });
+
+        // Fora do horário de funcionamento: a mensagem já foi salva em "conversas"
+        // (o operador pode responder manualmente pelo painel), mas o robô não
+        // dispara fluxos automáticos nem a IA.
+        const horarioCfg = await getHorarioConfig();
+        if (!estaDentroDoHorario(horarioCfg)) {
+            const hoje = moment.tz(horarioCfg.timezone).format('YYYY-MM-DD');
+            if (horarioCfg.mensagemFora && ultimaMsgForaHorario.get(numLimpo) !== hoje) {
+                const sentFora = await enviarResposta(msg, horarioCfg.mensagemFora);
+                if (sentFora) {
+                    ultimaMsgForaHorario.set(numLimpo, hoje);
+                    await registrarMensagemEnviada(telefoneReal, horarioCfg.mensagemFora, nomeContato);
+                }
+            }
+            return;
+        }
 
         // Sinaliza que o bot está processando ("digitando...")
         io.emit('bot_digitando', { telefone: numLimpo, ativo: true });
