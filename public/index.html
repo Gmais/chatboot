@@ -26,6 +26,11 @@
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
                 Mensagens
             </a>
+            <a href="#" class="nav-btn" data-target="conversas-section" id="nav-conversas">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 8h2a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2h-2v4l-4-4H9a1.994 1.994 0 0 1-1.414-.586"/><path d="M15 2H6a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h2v4l4-4h3a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2z"/></svg>
+                Conversas
+                <span id="badge-nao-lidas" style="display:none;background:var(--red);color:#fff;border-radius:50px;padding:0.1rem 0.45rem;font-size:0.7rem;font-weight:700;margin-left:auto;">0</span>
+            </a>
             <a href="#" class="nav-btn" data-target="leads-section">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
                 Leads
@@ -166,6 +171,70 @@
                 </div>
                 <div id="regras-lista">
                     <p style="color:var(--text-3);text-align:center;padding:2rem">Carregando regras...</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- ===================== CONVERSAS ===================== -->
+        <div id="conversas-section" class="page-section hidden">
+            <div class="chat-layout">
+                <!-- Lista de Conversas -->
+                <div class="chat-list-col">
+                    <div class="chat-list-header">
+                        <h3>💬 Conversas</h3>
+                        <div class="chat-search-wrap">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+                            <input type="text" id="chat-search" placeholder="Buscar contato...">
+                        </div>
+                    </div>
+                    <div id="chat-contact-list">
+                        <div id="chat-list-empty" style="padding:2rem;text-align:center;color:var(--text-3);font-size:.85rem">Nenhuma conversa ainda.<br>Aguardando mensagens...</div>
+                    </div>
+                </div>
+
+                <!-- Janela do Chat -->
+                <div class="chat-window" id="chat-window">
+                    <!-- Estado: nenhum contato selecionado -->
+                    <div class="chat-placeholder" id="chat-placeholder">
+                        <div style="text-align:center;">
+                            <div style="font-size:4rem;margin-bottom:1rem">💬</div>
+                            <h3 style="color:var(--text-2);font-size:1.1rem;font-weight:600">Selecione uma conversa</h3>
+                            <p style="color:var(--text-3);font-size:.85rem;margin-top:.5rem">Clique em um contato para ver o histórico<br>e enviar mensagens manualmente</p>
+                        </div>
+                    </div>
+
+                    <!-- Header do chat ativo (escondido até selecionar) -->
+                    <div class="chat-header" id="chat-header" style="display:none">
+                        <div class="chat-avatar" id="chat-header-avatar">?</div>
+                        <div class="chat-header-info">
+                            <div class="chat-header-name" id="chat-header-name">–</div>
+                            <div class="chat-header-status" id="chat-header-status">–</div>
+                        </div>
+                        <div class="chat-header-actions">
+                            <button id="btn-chat-reload" class="btn-secondary" style="padding:.35rem .7rem;font-size:.75rem" title="Recarregar histórico">↻</button>
+                        </div>
+                    </div>
+
+                    <!-- Mensagens -->
+                    <div class="chat-messages" id="chat-messages" style="display:none">
+                        <div id="chat-messages-empty" style="padding:3rem;text-align:center;color:var(--text-3);font-size:.85rem">Carregando histórico...</div>
+                    </div>
+
+                    <!-- Indicador digitando -->
+                    <div id="chat-typing-bar" style="display:none;padding:.4rem 1.5rem;background:var(--card-bg)">
+                        <div class="typing-indicator">
+                            <span></span><span></span><span></span>
+                            <span style="margin-left:.5rem;font-size:.75rem;color:var(--text-3)">Bot processando...</span>
+                        </div>
+                    </div>
+
+                    <!-- Barra de Input -->
+                    <div class="chat-input-bar" id="chat-input-bar" style="display:none">
+                        <textarea id="chat-input-text" placeholder="Digite uma mensagem..." rows="1"></textarea>
+                        <button id="btn-chat-send" class="btn-primary" style="padding:.6rem 1.1rem;border-radius:50px">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" width="18" height="18"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+                        </button>
+                    </div>
                 </div>
             </div>
         </div>

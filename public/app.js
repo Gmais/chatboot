@@ -351,10 +351,11 @@ navBtns.forEach(btn => {
         const target = document.getElementById(targetId);
         if (target) target.classList.remove('hidden');
         // Título limpo (sem emojis de SVG)
-        const text = btn.textContent.trim();
+        const text = btn.textContent.trim().split('\n')[0].trim();
         pageTitle.textContent = text;
         if (targetId === 'mensagens-section') loadRegras();
         if (targetId === 'ia-section') loadIaConfig();
+        if (targetId === 'conversas-section') CM.onEnterSection();
     });
 });
 
@@ -671,3 +672,377 @@ btnParar?.addEventListener('click', async () => {
     if (btnDisparar) btnDisparar.style.display = 'inline-flex';
     if (btnParar)    btnParar.style.display = 'none';
 });
+
+// =====================================
+// CONVERSATION MANAGER
+// =====================================
+const CM = (() => {
+    // ---- Estado interno ----
+    let contacts    = new Map(); // telefone -> { nome, ultimo_texto, ultima_direcao, ultimo_ts, nao_lidas }
+    let activePhone = null;
+    let totalNaoLidas = 0;
+    let searchQuery = '';
+
+    // ---- Referências DOM ----
+    const contactList    = document.getElementById('chat-contact-list');
+    const chatEmpty      = document.getElementById('chat-list-empty');
+    const chatPlaceholder = document.getElementById('chat-placeholder');
+    const chatHeader     = document.getElementById('chat-header');
+    const chatHeaderAvatar = document.getElementById('chat-header-avatar');
+    const chatHeaderName = document.getElementById('chat-header-name');
+    const chatHeaderStatus = document.getElementById('chat-header-status');
+    const chatMessages   = document.getElementById('chat-messages');
+    const chatInputBar   = document.getElementById('chat-input-bar');
+    const chatTypingBar  = document.getElementById('chat-typing-bar');
+    const chatInput      = document.getElementById('chat-input-text');
+    const btnSend        = document.getElementById('btn-chat-send');
+    const btnReload      = document.getElementById('btn-chat-reload');
+    const searchInput    = document.getElementById('chat-search');
+    const badgeNaoLidas  = document.getElementById('badge-nao-lidas');
+
+    // ---- Utilitários ----
+    function avatarLetter(nome) {
+        if (!nome) return '?';
+        const parts = nome.trim().split(' ');
+        return (parts[0][0] + (parts[1] ? parts[1][0] : '')).toUpperCase();
+    }
+
+    function formatHora(tsStr) {
+        const d = new Date(tsStr);
+        if (isNaN(d)) return '';
+        const now = new Date();
+        const diffMs = now - d;
+        const diffMin = Math.round(diffMs / 60000);
+        if (diffMin < 1)   return 'agora';
+        if (diffMin < 60)  return `${diffMin}min`;
+        const diffH = Math.floor(diffMin / 60);
+        if (diffH < 24)    return d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+        if (diffH < 168)   return d.toLocaleDateString('pt-BR', { weekday: 'short' });
+        return d.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' });
+    }
+
+    function formatHoraCompleta(tsStr) {
+        const d = new Date(tsStr);
+        if (isNaN(d)) return '';
+        return d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+    }
+
+    function formatDataSep(tsStr) {
+        const d = new Date(tsStr);
+        if (isNaN(d)) return '';
+        const today = new Date();
+        const yest  = new Date(today); yest.setDate(yest.getDate() - 1);
+        if (d.toDateString() === today.toDateString()) return 'Hoje';
+        if (d.toDateString() === yest.toDateString())  return 'Ontem';
+        return d.toLocaleDateString('pt-BR', { day: '2-digit', month: 'long', year: 'numeric' });
+    }
+
+    function tipoIcon(tipo) {
+        const icons = { image: '🖼️ Imagem', audio: '🎤 Áudio', video: '🎥 Vídeo', document: '📄 Documento', sticker: '🎭 Sticker', ptt: '🎤 Áudio' };
+        return icons[tipo] || null;
+    }
+
+    // ---- Atualiza badge global de não lidas ----
+    function updateGlobalBadge() {
+        totalNaoLidas = 0;
+        contacts.forEach(c => { totalNaoLidas += (c.nao_lidas || 0); });
+        if (badgeNaoLidas) {
+            if (totalNaoLidas > 0) {
+                badgeNaoLidas.textContent = totalNaoLidas > 99 ? '99+' : totalNaoLidas;
+                badgeNaoLidas.style.display = 'inline';
+            } else {
+                badgeNaoLidas.style.display = 'none';
+            }
+        }
+    }
+
+    // ---- Renderiza a lista de contatos ----
+    function renderContactList() {
+        if (!contactList) return;
+        // Remove todos os itens de contato (não o empty placeholder)
+        const existing = contactList.querySelectorAll('.chat-contact-item');
+        existing.forEach(el => el.remove());
+
+        // Filtra e ordena: por data decrescente
+        const filtered = [...contacts.values()].filter(c => {
+            if (!searchQuery) return true;
+            const q = searchQuery.toLowerCase();
+            return c.nome.toLowerCase().includes(q) || c.telefone.includes(q);
+        }).sort((a, b) => new Date(b.ultimo_ts) - new Date(a.ultimo_ts));
+
+        if (filtered.length === 0) {
+            if (chatEmpty) chatEmpty.style.display = 'block';
+            return;
+        }
+        if (chatEmpty) chatEmpty.style.display = 'none';
+
+        filtered.forEach(c => {
+            const item = document.createElement('div');
+            item.className = `chat-contact-item${activePhone === c.telefone ? ' active' : ''}`;
+            item.dataset.phone = c.telefone;
+
+            const icon = tipoIcon(c.ultimo_tipo);
+            const previewText = icon || (c.ultimo_texto ? (c.ultimo_texto.length > 42 ? c.ultimo_texto.slice(0, 42) + '…' : c.ultimo_texto) : '');
+            const previewClass = c.ultima_direcao === 'out' ? 'chat-contact-preview preview-out' : 'chat-contact-preview';
+            const previewPrefix = c.ultima_direcao === 'out' ? '↪ ' : '';
+
+            item.innerHTML = `
+                <div class="chat-contact-avatar">${avatarLetter(c.nome)}</div>
+                <div class="chat-contact-body">
+                    <div class="chat-contact-name">${c.nome}</div>
+                    <div class="${previewClass}">${previewPrefix}${previewText}</div>
+                </div>
+                <div class="chat-contact-meta">
+                    <span class="chat-contact-time">${formatHora(c.ultimo_ts)}</span>
+                    ${c.nao_lidas > 0 ? `<span class="chat-unread-badge">${c.nao_lidas}</span>` : ''}
+                </div>
+            `;
+            item.addEventListener('click', () => openChat(c.telefone));
+            contactList.appendChild(item);
+        });
+    }
+
+    // ---- Atualiza ou insere um contato no mapa ----
+    function upsertContact(data) {
+        const existing = contacts.get(data.telefone) || {};
+        contacts.set(data.telefone, { ...existing, ...data });
+    }
+
+    // ---- Abre o chat de um contato ----
+    async function openChat(telefone) {
+        activePhone = telefone;
+        const c = contacts.get(telefone);
+        const nome = c ? c.nome : telefone;
+
+        // Atualiza header
+        if (chatHeader)         chatHeader.style.display = 'flex';
+        if (chatPlaceholder)    chatPlaceholder.style.display = 'none';
+        if (chatHeaderAvatar)   chatHeaderAvatar.textContent = avatarLetter(nome);
+        if (chatHeaderName)     chatHeaderName.textContent = nome;
+        if (chatHeaderStatus)   chatHeaderStatus.textContent = telefone;
+        if (chatMessages)       { chatMessages.style.display = 'flex'; chatMessages.innerHTML = '<div style="text-align:center;color:var(--text-3);padding:2rem;font-size:.82rem">Carregando...</div>'; }
+        if (chatInputBar)       chatInputBar.style.display = 'flex';
+        if (chatTypingBar)      chatTypingBar.style.display = 'none';
+        if (chatInput)          chatInput.value = '';
+
+        // Atualiza item ativo na lista
+        renderContactList();
+
+        // Marca como lida
+        if (c && c.nao_lidas > 0) {
+            upsertContact({ ...c, nao_lidas: 0 });
+            updateGlobalBadge();
+            try { await fetch(`/api/conversas/${telefone}/lida`, { method: 'POST' }); } catch(_) {}
+        }
+
+        // Carrega histórico
+        await loadHistory(telefone);
+    }
+
+    // ---- Carrega e exibe histórico de mensagens ----
+    async function loadHistory(telefone) {
+        if (!chatMessages) return;
+        try {
+            const res  = await fetch(`/api/conversas/${encodeURIComponent(telefone)}?limit=150`);
+            const msgs = await res.json();
+
+            chatMessages.innerHTML = '';
+            if (!msgs || msgs.length === 0) {
+                chatMessages.innerHTML = '<div style="text-align:center;color:var(--text-3);padding:3rem;font-size:.82rem">Nenhuma mensagem ainda.</div>';
+                return;
+            }
+
+            let lastDate = null;
+            msgs.forEach(m => {
+                // Separador de data
+                const dateSep = formatDataSep(m.ts);
+                if (dateSep !== lastDate) {
+                    const sep = document.createElement('div');
+                    sep.className = 'chat-date-sep';
+                    sep.textContent = dateSep;
+                    chatMessages.appendChild(sep);
+                    lastDate = dateSep;
+                }
+                appendBubble(m);
+            });
+
+            // Scrolla para o fundo
+            chatMessages.scrollTop = chatMessages.scrollHeight;
+        } catch(err) {
+            chatMessages.innerHTML = '<div style="text-align:center;color:var(--red);padding:2rem;font-size:.82rem">Erro ao carregar histórico.</div>';
+        }
+    }
+
+    // ---- Cria e adiciona uma bolha de mensagem ----
+    function appendBubble(m, scroll = false) {
+        if (!chatMessages) return;
+        const wrap = document.createElement('div');
+        wrap.className = `chat-bubble-wrap ${m.direcao}`;
+
+        const isManual = m.manual === true;
+        const bubbleClass = `chat-bubble ${m.direcao}${isManual ? ' manual' : ''}`;
+        const icon = tipoIcon(m.tipo);
+
+        let senderLabel = '';
+        if (m.direcao === 'out') {
+            senderLabel = isManual
+                ? `<div class="bubble-sender manual">👤 Operador</div>`
+                : `<div class="bubble-sender">🤖 Bot</div>`;
+        }
+
+        const bodyHtml = icon
+            ? `<span class="bubble-type-badge">${icon}</span>`
+            : `<div class="bubble-text">${escapeHtml(m.texto || '')}</div>`;
+
+        wrap.innerHTML = `
+            <div class="${bubbleClass}">
+                ${senderLabel}
+                ${bodyHtml}
+                <div class="bubble-time">${formatHoraCompleta(m.ts)}</div>
+            </div>
+        `;
+
+        chatMessages.appendChild(wrap);
+        if (scroll) chatMessages.scrollTop = chatMessages.scrollHeight;
+    }
+
+    function escapeHtml(str) {
+        return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+    }
+
+    // ---- Envia mensagem manual ----
+    async function sendManual() {
+        if (!activePhone || !chatInput) return;
+        const texto = chatInput.value.trim();
+        if (!texto) return;
+
+        chatInput.value = '';
+        chatInput.style.height = 'auto';
+        btnSend.disabled = true;
+
+        try {
+            const res = await fetch(`/api/conversas/${encodeURIComponent(activePhone)}/enviar`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ texto })
+            });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || 'Erro ao enviar');
+            // A bolha já vai aparecer via evento socket nova_mensagem
+        } catch(err) {
+            showToast('Erro ao enviar', err.message, 'error');
+            chatInput.value = texto; // Restaura o texto
+        } finally {
+            btnSend.disabled = false;
+            chatInput.focus();
+        }
+    }
+
+    // ---- API pública ----
+    function init() {
+        // Busca de contato
+        searchInput?.addEventListener('input', () => {
+            searchQuery = searchInput.value.trim();
+            renderContactList();
+        });
+
+        // Envio por botão
+        btnSend?.addEventListener('click', sendManual);
+
+        // Envio por Enter (Shift+Enter = nova linha)
+        chatInput?.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                sendManual();
+            }
+        });
+
+        // Auto-resize do textarea
+        chatInput?.addEventListener('input', () => {
+            chatInput.style.height = 'auto';
+            chatInput.style.height = Math.min(chatInput.scrollHeight, 120) + 'px';
+        });
+
+        // Recarregar histórico
+        btnReload?.addEventListener('click', () => {
+            if (activePhone) loadHistory(activePhone);
+        });
+
+        // Eventos Socket.IO
+        socket.on('all_conversas', (lista) => {
+            contacts.clear();
+            lista.forEach(c => contacts.set(c.telefone, c));
+            updateGlobalBadge();
+            renderContactList();
+        });
+
+        socket.on('nova_mensagem', (data) => {
+            // Atualiza o mapa de contatos
+            const existing = contacts.get(data.telefone) || {};
+            const naoLidas = data.direcao === 'in' && activePhone !== data.telefone
+                ? (existing.nao_lidas || 0) + 1
+                : (data.direcao === 'in' && activePhone === data.telefone ? 0 : existing.nao_lidas || 0);
+
+            upsertContact({
+                telefone: data.telefone,
+                nome: data.nome || existing.nome || data.telefone,
+                ultimo_texto: data.texto,
+                ultima_direcao: data.direcao,
+                ultimo_tipo: data.tipo,
+                ultimo_ts: data.ts,
+                nao_lidas: naoLidas
+            });
+
+            updateGlobalBadge();
+            renderContactList();
+
+            // Se é a conversa ativa, adiciona a bolha
+            if (activePhone === data.telefone && chatMessages && chatMessages.style.display !== 'none') {
+                // Adiciona separador de data se necessário
+                const items = chatMessages.querySelectorAll('.chat-date-sep');
+                const lastSep = items[items.length - 1];
+                const dateSep = formatDataSep(data.ts);
+                if (!lastSep || lastSep.textContent !== dateSep) {
+                    const sep = document.createElement('div');
+                    sep.className = 'chat-date-sep';
+                    sep.textContent = dateSep;
+                    chatMessages.appendChild(sep);
+                }
+                appendBubble(data, true);
+
+                // Marca como lida automaticamente (chat aberto)
+                if (data.direcao === 'in') {
+                    const c = contacts.get(data.telefone);
+                    if (c) { upsertContact({ ...c, nao_lidas: 0 }); updateGlobalBadge(); }
+                    fetch(`/api/conversas/${data.telefone}/lida`, { method: 'POST' }).catch(() => {});
+                }
+            }
+        });
+
+        socket.on('bot_digitando', ({ telefone, ativo }) => {
+            if (activePhone === telefone && chatTypingBar) {
+                chatTypingBar.style.display = ativo ? 'block' : 'none';
+            }
+        });
+
+        socket.on('conversa_lida', ({ telefone }) => {
+            const c = contacts.get(telefone);
+            if (c) { upsertContact({ ...c, nao_lidas: 0 }); updateGlobalBadge(); renderContactList(); }
+        });
+    }
+
+    function onEnterSection() {
+        // Recarrega a lista ao entrar na seção
+        fetch('/api/conversas').then(r => r.json()).then(lista => {
+            contacts.clear();
+            lista.forEach(c => contacts.set(c.telefone, c));
+            updateGlobalBadge();
+            renderContactList();
+        }).catch(() => {});
+    }
+
+    return { init, onEnterSection };
+})();
+
+// Inicializa o ConversationManager
+CM.init();

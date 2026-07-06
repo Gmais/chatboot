@@ -145,11 +145,27 @@ async function initDB() {
             nome TEXT,
             data_vinculo DATETIME DEFAULT CURRENT_TIMESTAMP
         );
+        CREATE TABLE IF NOT EXISTS conversas (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            telefone TEXT NOT NULL,
+            nome TEXT,
+            direcao TEXT NOT NULL,
+            texto TEXT,
+            tipo TEXT DEFAULT 'text',
+            ts DATETIME DEFAULT CURRENT_TIMESTAMP,
+            lida INTEGER DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS idx_conversas_tel ON conversas(telefone, ts);
+        CREATE INDEX IF NOT EXISTS idx_conversas_ts ON conversas(ts DESC);
     `);
 
     // Adiciona colunas novas se migrando de versão anterior
     try { await db.exec(`ALTER TABLE respostas ADD COLUMN media_path TEXT DEFAULT NULL`); } catch(e) {}
     try { await db.exec(`ALTER TABLE respostas ADD COLUMN media_tipo TEXT DEFAULT NULL`); } catch(e) {}
+    // Garante tabela conversas em instalações antigas
+    try { await db.exec(`CREATE TABLE IF NOT EXISTS conversas (id INTEGER PRIMARY KEY AUTOINCREMENT, telefone TEXT NOT NULL, nome TEXT, direcao TEXT NOT NULL, texto TEXT, tipo TEXT DEFAULT 'text', ts DATETIME DEFAULT CURRENT_TIMESTAMP, lida INTEGER DEFAULT 0)`); } catch(e) {}
+    try { await db.exec(`CREATE INDEX IF NOT EXISTS idx_conversas_tel ON conversas(telefone, ts)`); } catch(e) {}
+    try { await db.exec(`CREATE INDEX IF NOT EXISTS idx_conversas_ts ON conversas(ts DESC)`); } catch(e) {}
 
     // stats.sent reflete a contagem real de mensagens registradas em mensagens_enviadas,
     // não mais um contador solto — assim o número do dashboard sempre bate com o histórico exibido.
@@ -170,12 +186,40 @@ async function initDB() {
     console.log(`📦 Banco de dados carregado. Leads: ${stats.leads}`);
 }
 
+// Cache de nomes de contatos para evitar chamadas repetidas ao WhatsApp
+const nomeContatos = new Map();
+
+async function resolverNomeContato(telefone) {
+    const num = telefone.replace('@c.us','').replace('@lid','');
+    if (nomeContatos.has(num)) return nomeContatos.get(num);
+    try {
+        const vinculo = await db.get('SELECT nome FROM vinculo_pacto WHERE telefone LIKE ?', [`%${num}%`]);
+        if (vinculo?.nome) { nomeContatos.set(num, vinculo.nome); return vinculo.nome; }
+    } catch(_) {}
+    return num;
+}
+
+// Salva mensagem na tabela de conversas (in ou out) e emite evento Socket.IO
+async function salvarNaConversa(telefone, nome, direcao, texto, tipo = 'text') {
+    const num = telefone.replace('@c.us','').replace('@lid','');
+    const ts = new Date().toISOString();
+    const lida = direcao === 'out' ? 1 : 0;
+    await db.run(
+        'INSERT INTO conversas (telefone, nome, direcao, texto, tipo, ts, lida) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        [num, nome || num, direcao, texto, tipo, ts, lida]
+    );
+    // Conta não lidas deste telefone
+    const naoLidas = await db.get('SELECT COUNT(*) as c FROM conversas WHERE telefone=? AND lida=0 AND direcao="in"', num);
+    io.emit('nova_mensagem', { telefone: num, nome: nome || num, texto, direcao, tipo, ts, nao_lidas: naoLidas.c });
+}
+
 // Registra no histórico permanente cada mensagem realmente enviada pelo robô.
 // É a única fonte da contagem "Mensagens Enviadas" — se está no contador, está nesta tabela.
-async function registrarMensagemEnviada(telefone, texto) {
+async function registrarMensagemEnviada(telefone, texto, nome) {
     const numeroLimpo = telefone.replace('@c.us', '').replace('@lid', '');
     await db.run('INSERT INTO mensagens_enviadas (telefone, texto) VALUES (?, ?)', [numeroLimpo, texto]);
     stats.sent++;
+    await salvarNaConversa(numeroLimpo, nome, 'out', texto, 'text');
     io.emit('message_out', { to: numeroLimpo, text: texto, ts: Date.now() });
     io.emit('stats', stats);
 }
@@ -301,6 +345,84 @@ app.get('/api/mensagens/enviadas', async (req, res) => {
     const limite = Math.min(parseInt(req.query.limit) || 200, 500);
     const mensagens = await db.all('SELECT * FROM mensagens_enviadas ORDER BY id DESC LIMIT ?', limite);
     res.json(mensagens);
+});
+
+// =====================================
+// API REST — CONVERSAS (GERENCIADOR)
+// =====================================
+
+// Lista todas as conversas (uma por contato, com o último texto e count de não lidas)
+app.get('/api/conversas', async (req, res) => {
+    try {
+        const conversas = await db.all(`
+            SELECT
+                c.telefone,
+                c.nome,
+                c.texto AS ultimo_texto,
+                c.direcao AS ultima_direcao,
+                c.tipo AS ultimo_tipo,
+                c.ts AS ultimo_ts,
+                (SELECT COUNT(*) FROM conversas WHERE telefone = c.telefone AND lida = 0 AND direcao = 'in') AS nao_lidas
+            FROM conversas c
+            INNER JOIN (
+                SELECT telefone, MAX(ts) AS max_ts
+                FROM conversas
+                GROUP BY telefone
+            ) latest ON c.telefone = latest.telefone AND c.ts = latest.max_ts
+            GROUP BY c.telefone
+            ORDER BY c.ts DESC
+            LIMIT 200
+        `);
+        res.json(conversas);
+    } catch(err) {
+        console.error('Erro /api/conversas:', err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Histórico de mensagens de um contato
+app.get('/api/conversas/:telefone', async (req, res) => {
+    const { telefone } = req.params;
+    const limite = Math.min(parseInt(req.query.limit) || 100, 500);
+    try {
+        const msgs = await db.all(
+            'SELECT * FROM conversas WHERE telefone = ? ORDER BY ts ASC LIMIT ?',
+            [telefone, limite]
+        );
+        res.json(msgs);
+    } catch(err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Envia mensagem manual pelo dashboard para um contato
+app.post('/api/conversas/:telefone/enviar', async (req, res) => {
+    const { telefone } = req.params;
+    const { texto } = req.body;
+    if (!texto || !texto.trim()) return res.status(400).json({ error: 'Texto obrigatório.' });
+    if (!isConnected) return res.status(400).json({ error: 'WhatsApp não está conectado.' });
+    try {
+        const chatId = telefone.includes('@') ? telefone : `${telefone}@c.us`;
+        await client.sendMessage(chatId, texto.trim());
+        const nome = await resolverNomeContato(telefone);
+        await registrarMensagemEnviada(telefone, texto.trim(), nome);
+        res.json({ success: true });
+    } catch(err) {
+        console.error('Erro envio manual:', err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Marca todas as mensagens de um contato como lidas
+app.post('/api/conversas/:telefone/lida', async (req, res) => {
+    const { telefone } = req.params;
+    try {
+        await db.run('UPDATE conversas SET lida = 1 WHERE telefone = ? AND direcao = "in"', telefone);
+        io.emit('conversa_lida', { telefone });
+        res.json({ success: true });
+    } catch(err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
 // =====================================
@@ -473,6 +595,21 @@ io.on('connection', async (socket) => {
 
         const allMensagensEnviadas = await db.all('SELECT * FROM mensagens_enviadas ORDER BY id DESC LIMIT 200');
         socket.emit('all_mensagens_enviadas', allMensagensEnviadas);
+
+        // Envia lista de conversas para popular o gerenciador
+        try {
+            const conversas = await db.all(`
+                SELECT c.telefone, c.nome, c.texto AS ultimo_texto, c.direcao AS ultima_direcao,
+                       c.tipo AS ultimo_tipo, c.ts AS ultimo_ts,
+                       (SELECT COUNT(*) FROM conversas WHERE telefone = c.telefone AND lida = 0 AND direcao = 'in') AS nao_lidas
+                FROM conversas c
+                INNER JOIN (SELECT telefone, MAX(ts) AS max_ts FROM conversas GROUP BY telefone) latest
+                    ON c.telefone = latest.telefone AND c.ts = latest.max_ts
+                GROUP BY c.telefone
+                ORDER BY c.ts DESC LIMIT 200
+            `);
+            socket.emit('all_conversas', conversas);
+        } catch(e) { console.error('Erro ao carregar conversas:', e.message); }
     }
 
     if (isConnected) socket.emit('ready');
@@ -820,18 +957,46 @@ client.on('message', async (msg) => {
         // Usa o ID interno do chat para envio — funciona com @lid e @c.us
         const replyTo    = chat.id._serialized;
         const telefoneReal = await resolvePhone(msg);  // número limpo para salvar no banco
+        const numLimpo = telefoneReal.replace('@c.us','').replace('@lid','');
+
+        // Tenta obter o nome do contato (pushname ou nome da agenda)
+        let nomeContato = numLimpo;
+        try {
+            const contact = await Promise.race([
+                msg.getContact(),
+                new Promise((_, r) => setTimeout(() => r(new Error('timeout')), 2500))
+            ]);
+            nomeContato = contact.pushname || contact.name || contact.number || numLimpo;
+            nomeContatos.set(numLimpo, nomeContato);
+        } catch(_) {}
+
         await registerLead(telefoneReal);
         const texto = msg.body ? msg.body.trim().toLowerCase() : '';
+
+        // Determina tipo da mensagem
+        let tipoMsg = 'text';
+        if (msg.type === 'image') tipoMsg = 'image';
+        else if (msg.type === 'audio' || msg.type === 'ptt') tipoMsg = 'audio';
+        else if (msg.type === 'video') tipoMsg = 'video';
+        else if (msg.type === 'document') tipoMsg = 'document';
+        else if (msg.type === 'sticker') tipoMsg = 'sticker';
+
+        // Salva na tabela de conversas (mensagens recebidas)
+        const textoExibir = msg.body || `[${tipoMsg}]`;
+        await salvarNaConversa(numLimpo, nomeContato, 'in', textoExibir, tipoMsg);
 
         // Ignora mensagens sem texto (stickers, áudios, imagens sem legenda)
         if (!texto && !msg.body) return;
 
-        console.log(`📨 Mensagem de ${telefoneReal}: "${msg.body}"`);
-        io.emit('message_in', { from: telefoneReal.replace('@c.us','').replace('@lid',''), text: msg.body || '', ts: Date.now() });
+        console.log(`📨 Mensagem de ${numLimpo} (${nomeContato}): "${msg.body}"`);
+        io.emit('message_in', { from: numLimpo, nome: nomeContato, text: msg.body || '', ts: Date.now() });
 
-        if (await handleCadastroFlow(replyTo, texto, msg.body || '')) return;
+        // Sinaliza que o bot está processando ("digitando...")
+        io.emit('bot_digitando', { telefone: numLimpo, ativo: true });
 
-        if (await handlePactoFlow(replyTo, texto)) return;
+        if (await handleCadastroFlow(replyTo, texto, msg.body || '')) { io.emit('bot_digitando', { telefone: numLimpo, ativo: false }); return; }
+
+        if (await handlePactoFlow(replyTo, texto)) { io.emit('bot_digitando', { telefone: numLimpo, ativo: false }); return; }
 
         const regras = await db.all('SELECT * FROM respostas WHERE ativo = 1 ORDER BY ordem ASC');
         let regraAtiva = null;
@@ -903,10 +1068,12 @@ client.on('message', async (msg) => {
                     }
                     global.chatHistory.set(telefoneReal, history);
 
-                    console.log(`🤖 IA respondendo para ${telefoneReal}`);
+                    io.emit('bot_digitando', { telefone: numLimpo, ativo: false });
+                    console.log(`🤖 IA respondendo para ${numLimpo}`);
                     const sentIA = await enviarResposta(msg, respostaIA);
-                    if (sentIA) await registrarMensagemEnviada(telefoneReal, respostaIA);
+                    if (sentIA) await registrarMensagemEnviada(telefoneReal, respostaIA, nomeContato);
                 } catch (e) {
+                    io.emit('bot_digitando', { telefone: numLimpo, ativo: false });
                     console.error(`❌ Erro na API da IA (${provider}):`, e.message);
                 }
             }
@@ -924,9 +1091,10 @@ client.on('message', async (msg) => {
         else saudacao = 'Boa noite';
 
         const textoFinal = regraAtiva.resposta.replace(/{saudacao}/g, saudacao);
-        console.log(`📤 Regra #${regraAtiva.id} ativada → respondendo para ${telefoneReal}`);
+        io.emit('bot_digitando', { telefone: numLimpo, ativo: false });
+        console.log(`📤 Regra #${regraAtiva.id} ativada → respondendo para ${numLimpo}`);
         const sent = await enviarResposta(msg, textoFinal);
-        if (sent) await registrarMensagemEnviada(telefoneReal, textoFinal);
+        if (sent) await registrarMensagemEnviada(telefoneReal, textoFinal, nomeContato);
 
         // Áudio temporariamente desativado (causa timeout no Puppeteer)
         // if (regraAtiva.enviar_audio) { ... }
@@ -937,7 +1105,7 @@ client.on('message', async (msg) => {
                 await delay(500);
                 const media = MessageMedia.fromFilePath(mediaFullPath);
                 const sentMedia = await enviarResposta(msg, media);
-                if (sentMedia) await registrarMensagemEnviada(telefoneReal, '[mídia enviada]');
+                if (sentMedia) await registrarMensagemEnviada(telefoneReal, '[mídia enviada]', nomeContato);
             }
         }
     } catch (error) {
