@@ -102,7 +102,46 @@ async function matricularAluno({
     });
 }
 
+// =====================================
+// PAGAMENTO — LINK PIX VIA CAIXA EM ABERTO (EXPERIMENTAL, NÃO CONFIRMADO PELA PACTO)
+// =====================================
+// Encadeamento hipotético levantado a partir da doc pública
+// (api-docs.pactosolucoes.com.br), NÃO confirmado com o suporte/gerente de
+// conta da Pacto:
+//   1) POST /pagamento/realizarCobrancaOnline -> retorna transacaoId
+//   2) GET  /pix/visualizar/{token}           -> usa o transacaoId como token
+// Antes de usar em produção: validar esse encadeamento com a Pacto e testar
+// contra uma parcela de homologação. O formato de resposta de
+// /pix/visualizar/{token} não está documentado com exemplo — o campo "pix"
+// devolvido abaixo pode precisar de ajuste após o primeiro teste real.
+const PACTO_CONVENIO_PIX_SANTANDER = process.env.PACTO_CONVENIO_PIX_SANTANDER;
+
+async function gerarLinkPagamentoPixSantander({ movparcela, nrParcelas = 1, convenio = PACTO_CONVENIO_PIX_SANTANDER } = {}) {
+    if (!convenio) throw new Error('gerarLinkPagamentoPixSantander: defina PACTO_CONVENIO_PIX_SANTANDER no .env ou informe "convenio".');
+    if (!movparcela) throw new Error('gerarLinkPagamentoPixSantander: "movparcela" é obrigatório.');
+
+    const cobranca = await pactoRequest('POST', '/pagamento/realizarCobrancaOnline', {
+        params: { convenio, movparcela, nrParcelas }
+    });
+
+    const transacaoId = cobranca?.retorno?.transacaoId;
+    if (cobranca?.retorno?.status !== 'sucesso' || !transacaoId) {
+        throw new Error(`Falha ao realizar cobrança online: ${JSON.stringify(cobranca)}`);
+    }
+
+    const pix = await pactoRequest('GET', `/pix/visualizar/${transacaoId}`);
+    return { transacaoId, valor: cobranca.retorno.valor, pix };
+}
+
+// Variante para obter o QR Code em vez do link de visualização.
+async function gerarQrCodePixSantander(opcoes) {
+    const { transacaoId, valor } = await gerarLinkPagamentoPixSantander(opcoes);
+    const qrcode = await pactoRequest('GET', `/pix/qrcode/${transacaoId}`);
+    return { transacaoId, valor, qrcode };
+}
+
 module.exports = {
     buscarAlunoPorMatricula, buscarAlunoPorCodigo, obterParcelasEmAberto,
-    criarCliente, matricularAluno
+    criarCliente, matricularAluno,
+    gerarLinkPagamentoPixSantander, gerarQrCodePixSantander
 };

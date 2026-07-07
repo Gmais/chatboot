@@ -70,7 +70,7 @@ const multer = require('multer');
 const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
 const OpenAI = require('openai');
 const moment = require('moment-timezone');
-const { buscarAlunoPorMatricula, buscarAlunoPorCodigo, obterParcelasEmAberto, criarCliente, matricularAluno } = require('./pacto');
+const { buscarAlunoPorMatricula, buscarAlunoPorCodigo, obterParcelasEmAberto, criarCliente, matricularAluno, gerarLinkPagamentoPixSantander } = require('./pacto');
 
 // =====================================
 // CONFIGURAÇÃO DO SERVIDOR WEB E SOCKET.IO
@@ -651,6 +651,22 @@ app.post('/api/pairing-code', async (req, res) => {
         res.json({ code });
     } catch (err) {
         console.error('Erro ao gerar código de pareamento:', err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Rota TEMPORÁRIA para validar manualmente (Postman/curl) o encadeamento
+// experimental de gerarLinkPagamentoPixSantander antes de conectar ao fluxo
+// automático do WhatsApp. Não é chamada por nenhum lugar do robô. Remover (ou
+// proteger) depois que o encadeamento estiver confirmado com a Pacto.
+app.post('/api/pacto/teste-pix', async (req, res) => {
+    const { movparcela, nrParcelas, convenio } = req.body;
+    if (!movparcela) return res.status(400).json({ error: 'Informe "movparcela" (código da parcela a pagar).' });
+    try {
+        const resultado = await gerarLinkPagamentoPixSantander({ movparcela, nrParcelas, convenio });
+        res.json(resultado);
+    } catch (err) {
+        console.error('❌ Erro ao testar geração de link Pix Santander:', err.message);
         res.status(500).json({ error: err.message });
     }
 });
@@ -1263,6 +1279,41 @@ client.on('message', async (msg) => {
 
         console.log(`📨 Mensagem de ${numLimpo} (${nomeContato}): "${textoExibir}"`);
         io.emit('message_in', { from: numLimpo, nome: nomeContato, text: textoExibir, ts: Date.now() });
+
+        // Comando interno TEMPORÁRIO de teste — não documentado pra clientes.
+        // Valida manualmente o encadeamento experimental de
+        // gerarLinkPagamentoPixSantander antes de expor isso de verdade aos
+        // alunos. Roda sempre (ignora horário/modo humano) pra facilitar teste.
+        // Remover depois que o encadeamento estiver confirmado com a Pacto.
+        if (msg.body && msg.body.trim().toLowerCase().startsWith('/testepix')) {
+            const matricula = msg.body.trim().slice('/testepix'.length).trim();
+            if (!matricula) {
+                await enviarResposta(msg, '❌ Uso: /testepix <matrícula>');
+                return;
+            }
+            try {
+                const aluno = await buscarAlunoPorMatricula(matricula);
+                if (!aluno) {
+                    await enviarResposta(msg, `❌ Nenhum aluno encontrado com a matrícula ${matricula}.`);
+                    return;
+                }
+                const parcelas = await obterParcelasEmAberto(aluno.pessoa.codigo);
+                console.log('🧪 [TESTE PIX] parcelas em aberto:', JSON.stringify(parcelas, null, 2));
+                if (parcelas.length === 0) {
+                    await enviarResposta(msg, '✅ Esse aluno não tem parcelas em aberto pra testar.');
+                    return;
+                }
+                const parcela = parcelas[0];
+                const movparcela = parcela.movparcela || parcela.codigo || parcela.id || parcela.numero;
+                await enviarResposta(msg, `🧪 Parcela usada:\n${JSON.stringify(parcela)}\n\nCampo usado como movparcela: ${movparcela}`);
+                const resultado = await gerarLinkPagamentoPixSantander({ movparcela });
+                await enviarResposta(msg, `✅ Resultado:\n${JSON.stringify(resultado, null, 2)}`);
+            } catch (err) {
+                console.error('❌ [TESTE PIX] erro:', err.message);
+                await enviarResposta(msg, `❌ Erro ao testar: ${err.message}`);
+            }
+            return;
+        }
 
         // Modo Humano: a mensagem já foi salva em "conversas" (o operador pode
         // responder manualmente pelo painel), mas o robô não dispara fluxos
