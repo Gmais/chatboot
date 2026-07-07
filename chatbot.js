@@ -70,7 +70,7 @@ const multer = require('multer');
 const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
 const OpenAI = require('openai');
 const moment = require('moment-timezone');
-const { buscarAlunoPorMatricula, buscarAlunoPorCodigo, obterParcelasEmAberto, criarCliente, matricularAluno, gerarLinkPagamentoPixSantander } = require('./pacto');
+const { buscarAlunoPorMatricula, buscarAlunoPorCodigo, obterParcelasEmAberto, criarCliente, matricularAluno, gerarLinkPagamentoPixSantander, listarColaboradoresCrm, abrirCarteiraDia, consultarCarteiraDia } = require('./pacto');
 
 // =====================================
 // CONFIGURAÇÃO DO SERVIDOR WEB E SOCKET.IO
@@ -786,6 +786,45 @@ app.post('/api/pacto/teste-pix', async (req, res) => {
         res.json(resultado);
     } catch (err) {
         console.error('❌ Erro ao testar geração de link Pix Santander:', err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// =====================================
+// API REST — CRM PACTO (CARTEIRA DO DIA)
+// =====================================
+app.get('/api/crm/colaboradores', async (req, res) => {
+    try {
+        const colaboradores = await listarColaboradoresCrm();
+        res.json(colaboradores);
+    } catch (err) {
+        console.error('❌ Erro ao listar colaboradores do CRM:', err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.post('/api/crm/carteira/abrir', async (req, res) => {
+    const { codigoColaboradorResponsavel, dia } = req.body;
+    if (!codigoColaboradorResponsavel) return res.status(400).json({ error: 'Informe "codigoColaboradorResponsavel".' });
+    try {
+        const diaFinal = dia || moment.tz('America/Sao_Paulo').format('YYYY-MM-DD');
+        await abrirCarteiraDia({ dia: diaFinal, codigoColaboradorResponsavel });
+        const carteira = await consultarCarteiraDia({ codigoColaborador: codigoColaboradorResponsavel });
+        res.json(carteira);
+    } catch (err) {
+        console.error('❌ Erro ao abrir carteira do dia:', err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.get('/api/crm/carteira', async (req, res) => {
+    const { codigoColaborador } = req.query;
+    if (!codigoColaborador) return res.status(400).json({ error: 'Informe "codigoColaborador".' });
+    try {
+        const carteira = await consultarCarteiraDia({ codigoColaborador });
+        res.json(carteira);
+    } catch (err) {
+        console.error('❌ Erro ao consultar carteira do dia:', err.message);
         res.status(500).json({ error: err.message });
     }
 });

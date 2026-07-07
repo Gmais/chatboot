@@ -9,7 +9,7 @@ const PACTO_EMPRESA_CODIGO = Number(process.env.PACTO_EMPRESA_CODIGO || 1);
 // Usa o módulo https nativo em vez de fetch: o gateway da Pacto retorna 500
 // (sem corpo) para requisições feitas via undici/fetch, mas responde
 // normalmente a clientes http/1.1 "tradicionais" como curl ou https.request.
-function pactoRequest(method, path, { params, body } = {}) {
+function pactoRequest(method, path, { params, body, headers } = {}) {
     const url = new URL(path, PACTO_BASE_URL);
     Object.entries(params || {}).forEach(([key, value]) => url.searchParams.set(key, value));
     const payload = body ? JSON.stringify(body) : null;
@@ -21,6 +21,7 @@ function pactoRequest(method, path, { params, body } = {}) {
                 Authorization: `Bearer ${PACTO_API_KEY}`,
                 Accept: '*/*',
                 'User-Agent': 'curl/8.18.0',
+                ...headers,
                 ...(payload ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) } : {})
             }
         }, (res) => {
@@ -132,8 +133,58 @@ async function gerarLinkPagamentoPixSantander({ movparcela, nrParcelas = 1, conv
     });
 }
 
+// =====================================
+// CRM — CARTEIRA DO DIA (fila de atendimento por consultor)
+// =====================================
+// Confirmado contra a API real da Pacto (controller carteira-dia-controller):
+// todos os endpoints abaixo foram testados e retornaram dados/erros de
+// negócio coerentes, não "rota não encontrada". A listagem individual de
+// contatos (nomes/telefones dentro de cada categoria) ainda não foi
+// localizada — por enquanto só temos o resumo por categoria (Faltosos,
+// Grupo de Risco, Leads Hoje, etc.), não os contatos em si.
+function empresaHeader(empresa) {
+    return { empresaId: String(empresa || PACTO_EMPRESA_CODIGO) };
+}
+
+// Lista os colaboradores disponíveis para assumir uma carteira do dia.
+async function listarColaboradoresCrm() {
+    const { content } = await pactoRequest('GET', '/carteira-dia/colaboradores-substitutos', {
+        headers: empresaHeader()
+    });
+    return Array.isArray(content) ? content : [];
+}
+
+// Abre (ou confirma que já existe) a carteira do dia de um colaborador.
+// A API devolve HTTP 500 (!) quando a carteira já foi aberta hoje, mesmo
+// isso sendo um caso esperado/idempotente — tratamos essa mensagem
+// específica como sucesso em vez de propagar erro.
+async function abrirCarteiraDia({ dia, codigoColaboradorResponsavel, usarEstudio = false, empresa } = {}) {
+    if (!dia) throw new Error('abrirCarteiraDia: "dia" é obrigatório (formato YYYY-MM-DD).');
+    if (!codigoColaboradorResponsavel) throw new Error('abrirCarteiraDia: "codigoColaboradorResponsavel" é obrigatório.');
+    try {
+        return await pactoRequest('POST', '/carteira-dia/calcular-meta-dia', {
+            headers: empresaHeader(empresa),
+            body: { dia, codigoColaboradorResponsavel, usarEstudio }
+        });
+    } catch (e) {
+        if (e.message && e.message.includes('já foi cadastrada')) return { jaAberta: true };
+        throw e;
+    }
+}
+
+// Consulta o resumo (por categoria) da carteira do dia mais recente de um colaborador.
+async function consultarCarteiraDia({ codigoColaborador, empresa } = {}) {
+    if (!codigoColaborador) throw new Error('consultarCarteiraDia: "codigoColaborador" é obrigatório.');
+    const { content } = await pactoRequest('GET', '/carteira-dia/ultima-abertura', {
+        headers: empresaHeader(empresa),
+        params: { codigoColaborador }
+    });
+    return content;
+}
+
 module.exports = {
     buscarAlunoPorMatricula, buscarAlunoPorCodigo, obterParcelasEmAberto,
     criarCliente, matricularAluno,
-    gerarLinkPagamentoPixSantander
+    gerarLinkPagamentoPixSantander,
+    listarColaboradoresCrm, abrirCarteiraDia, consultarCarteiraDia
 };

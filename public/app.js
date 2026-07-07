@@ -358,6 +358,7 @@ navBtns.forEach(btn => {
         if (targetId === 'configuracoes-section') loadHorarioConfig();
         if (targetId === 'conversas-section') CM.onEnterSection();
         if (targetId === 'disparos-section') loadContatos();
+        if (targetId === 'integracoes-section') loadCrmColaboradores();
     });
 });
 
@@ -1491,3 +1492,62 @@ const CM = (() => {
 
 // Inicializa o ConversationManager
 CM.init();
+
+// =====================================
+// INTEGRAÇÃO — CRM PACTO (CARTEIRA DO DIA)
+// =====================================
+const crmConsultorSelect = document.getElementById('crm-consultor');
+const btnCrmAbrirCarteira = document.getElementById('btn-crm-abrir-carteira');
+const crmCarteiraResultado = document.getElementById('crm-carteira-resultado');
+
+async function loadCrmColaboradores() {
+    if (!crmConsultorSelect) return;
+    try {
+        const res = await fetch('/api/crm/colaboradores');
+        const colaboradores = await res.json();
+        if (!res.ok) throw new Error(colaboradores.error || 'Erro ao carregar consultores');
+        crmConsultorSelect.innerHTML = colaboradores
+            .map(c => `<option value="${c.codigoColaborador}">${c.nomeColaborador}</option>`)
+            .join('');
+    } catch (e) {
+        crmConsultorSelect.innerHTML = '<option value="">Erro ao carregar consultores</option>';
+        console.error('Erro ao carregar colaboradores do CRM', e);
+    }
+}
+
+function renderCrmCategoria(titulo, itens) {
+    const linhas = itens.map(m => `
+        <div style="display:flex;justify-content:space-between;padding:.35rem 0;border-bottom:1px solid rgba(255,255,255,0.05)">
+            <span>${m.identificadorMetaApresentar}</span>
+            <span style="color:var(--text-1);font-weight:600">${m.metaAtingida}</span>
+        </div>
+    `).join('');
+    return `<div style="margin-top:.8rem"><strong style="color:var(--text-1);font-size:.78rem;text-transform:uppercase;letter-spacing:.05em">${titulo}</strong>${linhas}</div>`;
+}
+
+btnCrmAbrirCarteira?.addEventListener('click', async () => {
+    const codigoColaboradorResponsavel = crmConsultorSelect?.value;
+    if (!codigoColaboradorResponsavel) {
+        showToast('Selecione um consultor', '', 'error');
+        return;
+    }
+    crmCarteiraResultado.innerHTML = '⏳ Abrindo carteira do dia...';
+    try {
+        const res = await fetch('/api/crm/carteira/abrir', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ codigoColaboradorResponsavel: Number(codigoColaboradorResponsavel) })
+        });
+        const carteira = await res.json();
+        if (!res.ok) throw new Error(carteira.error || 'Erro ao abrir carteira');
+
+        crmCarteiraResultado.innerHTML = `
+            <div style="color:var(--text-1)"><strong>${carteira.nomeColaboradorResponsavel}</strong> — ${carteira.diaApresentar}</div>
+            ${renderCrmCategoria('Retenção', carteira.metasRetencao)}
+            ${renderCrmCategoria('Leads', carteira.metasLead)}
+            ${renderCrmCategoria('Vendas', carteira.metasVenda)}
+        `;
+    } catch (e) {
+        crmCarteiraResultado.innerHTML = `<span style="color:var(--red)">❌ ${e.message}</span>`;
+    }
+});

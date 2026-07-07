@@ -425,19 +425,21 @@ Sempre tente agendar uma aula experimental."></textarea>
                 <div class="card glass">
                     <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:.8rem;margin-bottom:1rem">
                         <div>
-                            <h3 style="margin-bottom:.3rem">🏋️ CRM Pacto</h3>
-                            <p style="color:var(--text-2);font-size:.85rem;max-width:520px">O robô assume o papel de atendente dentro do CRM da Pacto: consulta a fila de leads/conversas aguardando atendimento e conduz o atendimento pelo WhatsApp da academia.</p>
+                            <h3 style="margin-bottom:.3rem">🏋️ CRM Pacto — Carteira do Dia</h3>
+                            <p style="color:var(--text-2);font-size:.85rem;max-width:560px">Escolha um consultor pra ver o resumo da carteira do dia (Faltosos, Grupo de Risco, Leads, etc.). O disparo automático das mensagens pelo WhatsApp ainda depende de encontrar o endpoint com a lista individual de contatos.</p>
                         </div>
-                        <span style="background:rgba(245,158,11,0.12);color:var(--amber);border:1px solid rgba(245,158,11,0.3);padding:.3rem .8rem;border-radius:50px;font-size:.75rem;font-weight:600;white-space:nowrap">🔬 Em pesquisa</span>
+                        <span style="background:rgba(245,158,11,0.12);color:var(--amber);border:1px solid rgba(245,158,11,0.3);padding:.3rem .8rem;border-radius:50px;font-size:.75rem;font-weight:600;white-space:nowrap">🚧 Visualização (parcial)</span>
                     </div>
-                    <div style="background:rgba(255,255,255,0.03);border-radius:var(--radius-sm);padding:1rem;font-size:.82rem;color:var(--text-2);line-height:1.6">
-                        <strong style="color:var(--text-1)">Como vai funcionar:</strong>
-                        <ol style="margin:.5rem 0 0 1.2rem;padding:0">
-                            <li>O robô consulta periodicamente a fila de atendimento do CRM Pacto</li>
-                            <li>Para cada lead pendente, inicia/continua a conversa pelo WhatsApp de sempre</li>
-                            <li>O atendimento é conduzido pelas mesmas Regras e IA já configuradas</li>
-                        </ol>
-                        <p style="margin-top:.7rem;color:var(--text-3)">Ainda não temos o endpoint confirmado da fila de atendimento na API da Pacto — essa etapa está em pesquisa antes de ligar a integração de verdade (evitando repetir problemas que já tivemos com endpoints da Pacto que não bateram com a documentação).</p>
+
+                    <div style="display:flex;gap:.8rem;align-items:center;flex-wrap:wrap;margin-bottom:1rem">
+                        <select id="crm-consultor" style="flex:1;min-width:220px;background:var(--input-bg);border:1px solid rgba(255,255,255,0.1);border-radius:var(--radius-sm);padding:.6rem .9rem;color:var(--text-1);font-family:'Inter',sans-serif">
+                            <option value="">Carregando consultores...</option>
+                        </select>
+                        <button class="btn-primary" id="btn-crm-abrir-carteira" style="padding:.6rem 1.1rem;font-size:.85rem">📋 Abrir Carteira do Dia</button>
+                    </div>
+
+                    <div id="crm-carteira-resultado" style="background:rgba(255,255,255,0.03);border-radius:var(--radius-sm);padding:1rem;font-size:.82rem;color:var(--text-2);line-height:1.6">
+                        Selecione um consultor e clique em "Abrir Carteira do Dia".
                     </div>
                 </div>
 
