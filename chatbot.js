@@ -655,10 +655,11 @@ app.post('/api/pairing-code', async (req, res) => {
     }
 });
 
-// Rota TEMPORÁRIA para validar manualmente (Postman/curl) o encadeamento
-// experimental de gerarLinkPagamentoPixSantander antes de conectar ao fluxo
-// automático do WhatsApp. Não é chamada por nenhum lugar do robô. Remover (ou
-// proteger) depois que o encadeamento estiver confirmado com a Pacto.
+// Rota TEMPORÁRIA para validar manualmente (Postman/curl) a resposta real de
+// /pagamento/realizarCobrancaOnline antes de conectar ao fluxo automático do
+// WhatsApp — ainda não sabemos se ela traz link/QR Code do Pix além de
+// status/transacaoId/valor. Não é chamada por nenhum lugar do robô. Remover
+// (ou proteger) depois que o campo do link estiver identificado.
 app.post('/api/pacto/teste-pix', async (req, res) => {
     const { movparcela, nrParcelas, convenio } = req.body;
     if (!movparcela) return res.status(400).json({ error: 'Informe "movparcela" (código da parcela a pagar).' });
@@ -1281,10 +1282,10 @@ client.on('message', async (msg) => {
         io.emit('message_in', { from: numLimpo, nome: nomeContato, text: textoExibir, ts: Date.now() });
 
         // Comando interno TEMPORÁRIO de teste — não documentado pra clientes.
-        // Valida manualmente o encadeamento experimental de
-        // gerarLinkPagamentoPixSantander antes de expor isso de verdade aos
-        // alunos. Roda sempre (ignora horário/modo humano) pra facilitar teste.
-        // Remover depois que o encadeamento estiver confirmado com a Pacto.
+        // Mostra a resposta CRUA de gerarLinkPagamentoPixSantander pra
+        // descobrir onde está o link/QR Code do Pix antes de expor isso de
+        // verdade aos alunos. Roda sempre (ignora horário/modo humano) pra
+        // facilitar teste. Remover depois que o campo do link for identificado.
         if (msg.body && msg.body.trim().toLowerCase().startsWith('/testepix')) {
             const matricula = msg.body.trim().slice('/testepix'.length).trim();
             if (!matricula) {

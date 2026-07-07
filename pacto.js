@@ -103,45 +103,37 @@ async function matricularAluno({
 }
 
 // =====================================
-// PAGAMENTO — LINK PIX VIA CAIXA EM ABERTO (EXPERIMENTAL, NÃO CONFIRMADO PELA PACTO)
+// PAGAMENTO — COBRANÇA ONLINE VIA CAIXA EM ABERTO (Pix Santander)
 // =====================================
-// Encadeamento hipotético levantado a partir da doc pública
-// (api-docs.pactosolucoes.com.br), NÃO confirmado com o suporte/gerente de
-// conta da Pacto:
-//   1) POST /pagamento/realizarCobrancaOnline -> retorna transacaoId
-//   2) GET  /pix/visualizar/{token}           -> usa o transacaoId como token
-// Antes de usar em produção: validar esse encadeamento com a Pacto e testar
-// contra uma parcela de homologação. O formato de resposta de
-// /pix/visualizar/{token} não está documentado com exemplo — o campo "pix"
-// devolvido abaixo pode precisar de ajuste após o primeiro teste real.
+// POST /pagamento/realizarCobrancaOnline é confirmado no Swagger oficial
+// (api-docs.pactosolucoes.com.br, seção "Pagamento"): aceita convenio,
+// movparcela e nrParcelas como query params. Exemplo de resposta documentado:
+// { retorno: { status: "sucesso", transacaoId, valor } }.
+//
+// O QUE NÃO ESTÁ CONFIRMADO: se a resposta real traz também um link/QR Code
+// do Pix, já que o exemplo do Swagger só mostra esses 3 campos — é comum a
+// resposta real trazer mais campos do que o exemplo mínimo documentado.
+// Não existe (pelo menos não achamos) um endpoint separado tipo
+// "/pix/visualizar/{transacaoId}" — a seção Pix da doc é só "PIX Automático"
+// (autorização de débito recorrente), uma feature diferente desta.
+//
+// Por isso esta função só faz a chamada e devolve a resposta CRUA, sem supor
+// nenhum campo além do documentado. Use a rota /api/pacto/teste-pix ou o
+// comando /testepix no WhatsApp com uma parcela de teste pra ver o JSON real
+// e então decidir onde está o link/QR Code (ou se precisa de outro endpoint).
 const PACTO_CONVENIO_PIX_SANTANDER = process.env.PACTO_CONVENIO_PIX_SANTANDER;
 
 async function gerarLinkPagamentoPixSantander({ movparcela, nrParcelas = 1, convenio = PACTO_CONVENIO_PIX_SANTANDER } = {}) {
     if (!convenio) throw new Error('gerarLinkPagamentoPixSantander: defina PACTO_CONVENIO_PIX_SANTANDER no .env ou informe "convenio".');
     if (!movparcela) throw new Error('gerarLinkPagamentoPixSantander: "movparcela" é obrigatório.');
 
-    const cobranca = await pactoRequest('POST', '/pagamento/realizarCobrancaOnline', {
+    return pactoRequest('POST', '/pagamento/realizarCobrancaOnline', {
         params: { convenio, movparcela, nrParcelas }
     });
-
-    const transacaoId = cobranca?.retorno?.transacaoId;
-    if (cobranca?.retorno?.status !== 'sucesso' || !transacaoId) {
-        throw new Error(`Falha ao realizar cobrança online: ${JSON.stringify(cobranca)}`);
-    }
-
-    const pix = await pactoRequest('GET', `/pix/visualizar/${transacaoId}`);
-    return { transacaoId, valor: cobranca.retorno.valor, pix };
-}
-
-// Variante para obter o QR Code em vez do link de visualização.
-async function gerarQrCodePixSantander(opcoes) {
-    const { transacaoId, valor } = await gerarLinkPagamentoPixSantander(opcoes);
-    const qrcode = await pactoRequest('GET', `/pix/qrcode/${transacaoId}`);
-    return { transacaoId, valor, qrcode };
 }
 
 module.exports = {
     buscarAlunoPorMatricula, buscarAlunoPorCodigo, obterParcelasEmAberto,
     criarCliente, matricularAluno,
-    gerarLinkPagamentoPixSantander, gerarQrCodePixSantander
+    gerarLinkPagamentoPixSantander
 };
