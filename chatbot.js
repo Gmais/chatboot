@@ -61,6 +61,7 @@ const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 const path = require('path');
+const os = require('os');
 const qrcode = require('qrcode');
 const fs = require('fs');
 const sqlite3 = require('sqlite3');
@@ -1123,6 +1124,45 @@ async function simularDigitando(chatOuGetter) {
     } catch (_) {}
 }
 
+// Transcreve áudio/nota de voz recebida via Whisper. Sempre usa a Groq
+// (whisper-large-v3, gratuita e rápida), independente do provider escolhido
+// para a IA de chat — usa a groq_api_key cadastrada em Configurações → IA
+// mesmo que o provider selecionado ali seja OpenAI. Sem chave configurada,
+// retorna null e a mensagem segue tratada como antes (sem texto).
+const EXTENSAO_POR_MIME = { 'audio/ogg': 'ogg', 'audio/mp4': 'm4a', 'audio/mpeg': 'mp3', 'audio/wav': 'wav', 'audio/webm': 'webm' };
+async function transcreverAudio(msg) {
+    let tmpPath = null;
+    try {
+        const confRows = await db.all("SELECT * FROM configuracoes WHERE chave = 'groq_api_key'");
+        const apiKey = confRows[0]?.valor;
+        if (!apiKey) return null;
+
+        const media = await Promise.race([
+            msg.downloadMedia(),
+            new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 15000))
+        ]);
+        if (!media || !media.data) return null;
+
+        const ext = EXTENSAO_POR_MIME[(media.mimetype || '').split(';')[0].trim()] || 'ogg';
+        tmpPath = path.join(os.tmpdir(), `audio_${Date.now()}_${Math.round(Math.random() * 1e6)}.${ext}`);
+        fs.writeFileSync(tmpPath, Buffer.from(media.data, 'base64'));
+
+        const groq = new OpenAI({ apiKey, baseURL: 'https://api.groq.com/openai/v1' });
+        const transcricao = await groq.audio.transcriptions.create({
+            file: fs.createReadStream(tmpPath),
+            model: 'whisper-large-v3',
+            language: 'pt'
+        });
+
+        return transcricao.text ? transcricao.text.trim() : null;
+    } catch (e) {
+        console.error('❌ Erro ao transcrever áudio:', e.message);
+        return null;
+    } finally {
+        if (tmpPath && fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
+    }
+}
+
 // Quando o WhatsApp usa @lid (privacidade), resolve o número de telefone real.
 // contact.number NÃO serve aqui: para contatos @lid ele devolve o próprio lid,
 // não o telefone. getContactLidAndPhone() consulta o mapeamento real do WhatsApp.
@@ -1195,7 +1235,7 @@ client.on('message', async (msg) => {
         } catch(_) {}
 
         await registerLead(telefoneReal);
-        const texto = msg.body ? msg.body.trim().toLowerCase() : '';
+        let texto = msg.body ? msg.body.trim().toLowerCase() : '';
 
         // Determina tipo da mensagem
         let tipoMsg = 'text';
@@ -1205,15 +1245,24 @@ client.on('message', async (msg) => {
         else if (msg.type === 'document') tipoMsg = 'document';
         else if (msg.type === 'sticker') tipoMsg = 'sticker';
 
+        // Áudio/nota de voz: transcreve via Whisper para o robô conseguir entender
+        // e responder normalmente (regras exatas e IA). Sem API key configurada,
+        // transcreverAudio() retorna null e a mensagem segue como antes (sem texto).
+        let transcricaoAudio = null;
+        if (tipoMsg === 'audio' && !texto) {
+            transcricaoAudio = await transcreverAudio(msg);
+            if (transcricaoAudio) texto = transcricaoAudio.trim().toLowerCase();
+        }
+
         // Salva na tabela de conversas (mensagens recebidas)
-        const textoExibir = msg.body || `[${tipoMsg}]`;
+        const textoExibir = transcricaoAudio ? `🎤 ${transcricaoAudio}` : (msg.body || `[${tipoMsg}]`);
         await salvarNaConversa(numLimpo, nomeContato, 'in', textoExibir, tipoMsg);
 
-        // Ignora mensagens sem texto (stickers, áudios, imagens sem legenda)
+        // Ignora mensagens sem texto (stickers, imagens sem legenda, áudio sem transcrição)
         if (!texto && !msg.body) return;
 
-        console.log(`📨 Mensagem de ${numLimpo} (${nomeContato}): "${msg.body}"`);
-        io.emit('message_in', { from: numLimpo, nome: nomeContato, text: msg.body || '', ts: Date.now() });
+        console.log(`📨 Mensagem de ${numLimpo} (${nomeContato}): "${textoExibir}"`);
+        io.emit('message_in', { from: numLimpo, nome: nomeContato, text: textoExibir, ts: Date.now() });
 
         // Modo Humano: a mensagem já foi salva em "conversas" (o operador pode
         // responder manualmente pelo painel), mas o robô não dispara fluxos
