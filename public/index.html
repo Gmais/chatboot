@@ -277,6 +277,25 @@
 
         <!-- ===================== DISPAROS ===================== -->
         <div id="disparos-section" class="page-section hidden">
+            <div class="card glass" style="margin-bottom:1.5rem">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem;flex-wrap:wrap;gap:.6rem">
+                    <h3>📇 Lista de Contatos</h3>
+                    <div style="display:flex;gap:.8rem;align-items:center;flex-wrap:wrap">
+                        <input type="text" id="contatos-busca" placeholder="Buscar por nome ou telefone..." style="background:var(--input-bg);border:1px solid rgba(255,255,255,0.1);border-radius:var(--radius-sm);padding:.5rem .8rem;color:var(--text-1);font-size:.85rem;min-width:220px">
+                        <label style="display:flex;align-items:center;gap:.4rem;cursor:pointer;font-size:.85rem;color:var(--text-2)">
+                            <input type="checkbox" id="contatos-select-all" style="accent-color:var(--green)"> Selecionar todos
+                        </label>
+                    </div>
+                </div>
+                <div id="contatos-lista" style="max-height:320px;overflow-y:auto;display:flex;flex-direction:column;gap:.2rem">
+                    <p style="color:var(--text-3);text-align:center;padding:2rem">Carregando contatos...</p>
+                </div>
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-top:1rem;padding-top:1rem;border-top:1px solid rgba(255,255,255,0.08);flex-wrap:wrap;gap:.6rem">
+                    <span id="contatos-contador" style="color:var(--text-2);font-size:.85rem">0 contatos selecionados</span>
+                    <button class="btn-primary" id="btn-usar-selecionados" style="padding:.5rem 1rem;font-size:.85rem">✅ Usar selecionados no disparo</button>
+                </div>
+            </div>
+
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:1.5rem">
                 <div class="card glass">
                     <h3>Configurar Disparo</h3>

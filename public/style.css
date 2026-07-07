@@ -390,6 +390,8 @@ header h1 {
 }
 .robo-tempo-opcao:hover { background: rgba(255,255,255,0.08); }
 
+.contato-row:hover { background: rgba(255,255,255,0.04); }
+
 .btn-cancel {
     background: transparent;
     color: var(--text-2);

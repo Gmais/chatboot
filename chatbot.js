@@ -490,6 +490,39 @@ app.get('/api/leads/export', async (req, res) => {
 });
 
 // =====================================
+// API REST — LISTA DE CONTATOS (SELEÇÃO PARA DISPAROS)
+// =====================================
+// Junta os leads capturados com o melhor nome conhecido de cada telefone
+// (o nome mais recente salvo em "conversas"), pra montar uma lista de
+// contatos com nome pra seleção manual nos disparos em massa.
+app.get('/api/contatos', async (req, res) => {
+    try {
+        const leads = await db.all('SELECT telefone, data_captura, mensagens_recebidas FROM leads ORDER BY data_captura DESC');
+        const nomes = await db.all(`
+            SELECT c.telefone, c.nome
+            FROM conversas c
+            INNER JOIN (SELECT telefone, MAX(ts) AS max_ts FROM conversas GROUP BY telefone) latest
+                ON c.telefone = latest.telefone AND c.ts = latest.max_ts
+        `);
+        const nomePorTelefone = new Map(nomes.map(n => [n.telefone, n.nome]));
+
+        const contatos = leads.map(l => {
+            const telefone = l.telefone.replace('@c.us', '').replace('@lid', '');
+            return {
+                telefone,
+                nome: nomePorTelefone.get(telefone) || telefone,
+                data_captura: l.data_captura,
+                mensagens_recebidas: l.mensagens_recebidas
+            };
+        });
+        res.json(contatos);
+    } catch (err) {
+        console.error('Erro /api/contatos:', err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// =====================================
 // API REST — HISTÓRICO DE MENSAGENS ENVIADAS
 // =====================================
 app.get('/api/mensagens/enviadas', async (req, res) => {

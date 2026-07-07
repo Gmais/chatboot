@@ -357,6 +357,7 @@ navBtns.forEach(btn => {
         if (targetId === 'ia-section') loadIaConfig();
         if (targetId === 'configuracoes-section') loadHorarioConfig();
         if (targetId === 'conversas-section') CM.onEnterSection();
+        if (targetId === 'disparos-section') loadContatos();
     });
 });
 
@@ -798,6 +799,91 @@ async function loadRegras() {
 socket.on('respostas_updated', () => {
     const s = document.getElementById('mensagens-section');
     if (s && !s.classList.contains('hidden')) loadRegras();
+});
+
+// =====================================
+// LISTA DE CONTATOS (SELEÇÃO PARA DISPAROS)
+// =====================================
+const contatosLista       = document.getElementById('contatos-lista');
+const contatosBusca       = document.getElementById('contatos-busca');
+const contatosSelectAll   = document.getElementById('contatos-select-all');
+const contatosContador    = document.getElementById('contatos-contador');
+const btnUsarSelecionados = document.getElementById('btn-usar-selecionados');
+
+let todosContatos = [];
+const contatosSelecionados = new Set();
+
+function contatosFiltrados() {
+    const termo = (contatosBusca?.value || '').trim().toLowerCase();
+    if (!termo) return todosContatos;
+    return todosContatos.filter(c =>
+        c.nome.toLowerCase().includes(termo) || c.telefone.includes(termo)
+    );
+}
+
+function atualizarContadorContatos() {
+    const n = contatosSelecionados.size;
+    if (contatosContador) contatosContador.textContent = `${n} contato${n !== 1 ? 's' : ''} selecionado${n !== 1 ? 's' : ''}`;
+}
+
+function renderContatos() {
+    if (!contatosLista) return;
+    const filtrados = contatosFiltrados();
+    if (filtrados.length === 0) {
+        contatosLista.innerHTML = '<p style="color:var(--text-3);text-align:center;padding:2rem">Nenhum contato encontrado.</p>';
+        atualizarContadorContatos();
+        return;
+    }
+    contatosLista.innerHTML = filtrados.map(c => `
+        <label class="contato-row" style="display:flex;align-items:center;gap:.7rem;padding:.6rem .7rem;border-radius:8px;cursor:pointer">
+            <input type="checkbox" class="contato-check" data-telefone="${c.telefone}" ${contatosSelecionados.has(c.telefone) ? 'checked' : ''} style="accent-color:var(--green);width:16px;height:16px;flex-shrink:0">
+            <div style="flex:1;min-width:0">
+                <div style="font-size:.88rem;color:var(--text-1);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${c.nome}</div>
+                <div style="font-size:.75rem;color:var(--text-3)">${c.telefone}</div>
+            </div>
+            <span style="font-size:.72rem;color:var(--text-3);flex-shrink:0">${c.mensagens_recebidas} msg${c.mensagens_recebidas !== 1 ? 's' : ''}</span>
+        </label>
+    `).join('');
+    atualizarContadorContatos();
+}
+
+async function loadContatos() {
+    if (!contatosLista) return;
+    try {
+        const res = await fetch('/api/contatos');
+        todosContatos = await res.json();
+        renderContatos();
+    } catch (e) {
+        console.error('Erro ao carregar contatos', e);
+        contatosLista.innerHTML = '<p style="color:var(--text-3);text-align:center;padding:2rem">Erro ao carregar contatos.</p>';
+    }
+}
+
+contatosLista?.addEventListener('change', (e) => {
+    const check = e.target.closest('.contato-check');
+    if (!check) return;
+    if (check.checked) contatosSelecionados.add(check.dataset.telefone);
+    else contatosSelecionados.delete(check.dataset.telefone);
+    atualizarContadorContatos();
+});
+
+contatosBusca?.addEventListener('input', renderContatos);
+
+contatosSelectAll?.addEventListener('change', () => {
+    const visiveis = contatosFiltrados();
+    if (contatosSelectAll.checked) visiveis.forEach(c => contatosSelecionados.add(c.telefone));
+    else visiveis.forEach(c => contatosSelecionados.delete(c.telefone));
+    renderContatos();
+});
+
+btnUsarSelecionados?.addEventListener('click', () => {
+    if (contatosSelecionados.size === 0) {
+        showToast('Nenhum contato selecionado', 'Marque ao menos um contato na lista.', 'error');
+        return;
+    }
+    const broadcastNumeros = document.getElementById('broadcast-numeros');
+    if (broadcastNumeros) broadcastNumeros.value = Array.from(contatosSelecionados).join('\n');
+    showToast('Contatos aplicados!', `${contatosSelecionados.size} número(s) inserido(s) no campo de disparo.`, 'success');
 });
 
 // =====================================
