@@ -43,6 +43,10 @@
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
                 Inteligência Artificial
             </a>
+            <a href="#" class="nav-btn" data-target="integracoes-section">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18.37 5.63 5.63 18.37M9 6H6a3 3 0 0 0-3 3v0a3 3 0 0 0 3 3h1"/><path d="M15 18h3a3 3 0 0 0 3-3v0a3 3 0 0 0-3-3h-1"/><path d="m14 7 3 3-3 3M10 17l-3-3 3-3"/></svg>
+                Integração
+            </a>
             <a href="#" class="nav-btn" data-target="configuracoes-section">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
                 Configurações
@@ -406,6 +410,40 @@ Sempre tente agendar uma aula experimental."></textarea>
                     <div style="display:flex;justify-content:flex-end;margin-top:1rem">
                         <button class="btn-primary" id="btn-salvar-ia">💾 Salvar Configurações da IA</button>
                     </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ===================== INTEGRAÇÃO ===================== -->
+        <div id="integracoes-section" class="page-section hidden">
+            <div style="display:flex;flex-direction:column;gap:1.5rem">
+                <div class="card glass">
+                    <h3>🔌 Central de Integrações</h3>
+                    <p style="color:var(--text-2);font-size:.88rem">Conecte o Chatboot a outros sistemas e canais. O robô passa a atuar dentro do fluxo desses sistemas, sempre conversando pelo mesmo número de WhatsApp que você já usa.</p>
+                </div>
+
+                <div class="card glass">
+                    <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:.8rem;margin-bottom:1rem">
+                        <div>
+                            <h3 style="margin-bottom:.3rem">🏋️ CRM Pacto</h3>
+                            <p style="color:var(--text-2);font-size:.85rem;max-width:520px">O robô assume o papel de atendente dentro do CRM da Pacto: consulta a fila de leads/conversas aguardando atendimento e conduz o atendimento pelo WhatsApp da academia.</p>
+                        </div>
+                        <span style="background:rgba(245,158,11,0.12);color:var(--amber);border:1px solid rgba(245,158,11,0.3);padding:.3rem .8rem;border-radius:50px;font-size:.75rem;font-weight:600;white-space:nowrap">🔬 Em pesquisa</span>
+                    </div>
+                    <div style="background:rgba(255,255,255,0.03);border-radius:var(--radius-sm);padding:1rem;font-size:.82rem;color:var(--text-2);line-height:1.6">
+                        <strong style="color:var(--text-1)">Como vai funcionar:</strong>
+                        <ol style="margin:.5rem 0 0 1.2rem;padding:0">
+                            <li>O robô consulta periodicamente a fila de atendimento do CRM Pacto</li>
+                            <li>Para cada lead pendente, inicia/continua a conversa pelo WhatsApp de sempre</li>
+                            <li>O atendimento é conduzido pelas mesmas Regras e IA já configuradas</li>
+                        </ol>
+                        <p style="margin-top:.7rem;color:var(--text-3)">Ainda não temos o endpoint confirmado da fila de atendimento na API da Pacto — essa etapa está em pesquisa antes de ligar a integração de verdade (evitando repetir problemas que já tivemos com endpoints da Pacto que não bateram com a documentação).</p>
+                    </div>
+                </div>
+
+                <div class="card glass" style="opacity:.6">
+                    <h3 style="margin-bottom:.3rem">➕ Mais integrações em breve</h3>
+                    <p style="color:var(--text-2);font-size:.85rem">Outros canais e sistemas serão adicionados aqui conforme a necessidade.</p>
                 </div>
             </div>
         </div>
