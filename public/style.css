@@ -392,6 +392,44 @@ header h1 {
 
 .contato-row:hover { background: rgba(255,255,255,0.04); }
 
+.etiqueta-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: .3rem;
+    padding: .2rem .6rem;
+    border-radius: 50px;
+    font-size: .72rem;
+    font-weight: 600;
+    white-space: nowrap;
+}
+.etiqueta-chip-remove {
+    background: none;
+    border: none;
+    color: inherit;
+    cursor: pointer;
+    font-size: .85rem;
+    line-height: 1;
+    padding: 0;
+    opacity: .7;
+}
+.etiqueta-chip-remove:hover { opacity: 1; }
+
+.etiqueta-filtro-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: .3rem;
+    padding: .3rem .7rem;
+    border-radius: 50px;
+    font-size: .78rem;
+    font-weight: 600;
+    cursor: pointer;
+    border: 1px solid transparent;
+    background: rgba(255,255,255,0.05);
+    color: var(--text-2);
+    transition: var(--transition);
+}
+.etiqueta-filtro-chip.active { color: #fff; }
+
 .btn-cancel {
     background: transparent;
     color: var(--text-2);

@@ -223,8 +223,12 @@
                         <div class="chat-header-info">
                             <div class="chat-header-name" id="chat-header-name">–</div>
                             <div class="chat-header-status" id="chat-header-status">–</div>
+                            <div id="chat-header-tags" style="display:flex;gap:.4rem;flex-wrap:wrap;align-items:center;margin-top:.4rem"></div>
                         </div>
-                        <div class="chat-header-actions">
+                        <div class="chat-header-actions" style="display:flex;gap:.5rem;align-items:center">
+                            <select id="chat-header-add-tag" style="background:var(--input-bg);border:1px solid rgba(255,255,255,0.1);border-radius:var(--radius-sm);padding:.35rem .6rem;color:var(--text-1);font-size:.75rem">
+                                <option value="">🏷️ Etiqueta...</option>
+                            </select>
                             <button id="btn-chat-reload" class="btn-secondary" style="padding:.35rem .7rem;font-size:.75rem" title="Recarregar histórico">↻</button>
                         </div>
                     </div>
@@ -287,6 +291,7 @@
                         </label>
                     </div>
                 </div>
+                <div id="contatos-filtro-etiquetas" style="display:flex;gap:.5rem;flex-wrap:wrap;margin-bottom:.8rem"></div>
                 <div id="contatos-lista" style="max-height:320px;overflow-y:auto;display:flex;flex-direction:column;gap:.2rem">
                     <p style="color:var(--text-3);text-align:center;padding:2rem">Carregando contatos...</p>
                 </div>
@@ -520,6 +525,15 @@ Sempre tente agendar uma aula experimental."></textarea>
             <div class="form-group">
                 <label>Prioridade (menor = maior prioridade)</label>
                 <input type="number" id="modal-ordem" value="99" min="1" max="99">
+            </div>
+            <div class="form-group">
+                <label>🏷️ Etiqueta aplicada ao contato quando esta regra bater (opcional)</label>
+                <div style="display:flex;gap:.5rem;align-items:center">
+                    <select id="modal-etiqueta" style="flex:1;background:var(--input-bg);border:1px solid rgba(255,255,255,0.1);border-radius:var(--radius-sm);padding:.7rem 1rem;color:var(--text-1);font-family:'Inter',sans-serif">
+                        <option value="">Nenhuma</option>
+                    </select>
+                    <button type="button" class="btn-secondary" id="btn-modal-nova-etiqueta" style="padding:.65rem 1rem;font-size:.8rem;white-space:nowrap">+ Nova</button>
+                </div>
             </div>
             <div class="form-group">
                 <div class="checkbox-row">

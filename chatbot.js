@@ -166,11 +166,23 @@ async function initDB() {
             fim TEXT NOT NULL,
             modo TEXT NOT NULL DEFAULT 'robo'
         );
+        CREATE TABLE IF NOT EXISTS etiquetas (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            nome TEXT NOT NULL UNIQUE,
+            cor TEXT NOT NULL DEFAULT '#25D366'
+        );
+        CREATE TABLE IF NOT EXISTS contato_etiquetas (
+            telefone TEXT NOT NULL,
+            etiqueta_id INTEGER NOT NULL,
+            PRIMARY KEY (telefone, etiqueta_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_contato_etiquetas_telefone ON contato_etiquetas(telefone);
     `);
 
     // Adiciona colunas novas se migrando de versão anterior
     try { await db.exec(`ALTER TABLE respostas ADD COLUMN media_path TEXT DEFAULT NULL`); } catch(e) {}
     try { await db.exec(`ALTER TABLE respostas ADD COLUMN media_tipo TEXT DEFAULT NULL`); } catch(e) {}
+    try { await db.exec(`ALTER TABLE respostas ADD COLUMN etiqueta_id INTEGER DEFAULT NULL`); } catch(e) {}
     // Garante tabela conversas em instalações antigas
     try { await db.exec(`CREATE TABLE IF NOT EXISTS conversas (id INTEGER PRIMARY KEY AUTOINCREMENT, telefone TEXT NOT NULL, nome TEXT, direcao TEXT NOT NULL, texto TEXT, tipo TEXT DEFAULT 'text', ts DATETIME DEFAULT CURRENT_TIMESTAMP, lida INTEGER DEFAULT 0)`); } catch(e) {}
     try { await db.exec(`CREATE INDEX IF NOT EXISTS idx_conversas_tel ON conversas(telefone, ts)`); } catch(e) {}
@@ -327,11 +339,11 @@ app.get('/api/respostas', async (req, res) => {
 });
 
 app.post('/api/respostas', async (req, res) => {
-    const { keywords, resposta, ordem, enviar_audio, media_path, media_tipo } = req.body;
+    const { keywords, resposta, ordem, enviar_audio, media_path, media_tipo, etiqueta_id } = req.body;
     if (!keywords || !resposta) return res.status(400).json({ error: 'Campos obrigatórios.' });
     const result = await db.run(
-        'INSERT INTO respostas (keywords, resposta, ativo, ordem, enviar_audio, media_path, media_tipo) VALUES (?, ?, 1, ?, ?, ?, ?)',
-        [keywords, resposta, ordem || 99, enviar_audio ? 1 : 0, media_path || null, media_tipo || null]
+        'INSERT INTO respostas (keywords, resposta, ativo, ordem, enviar_audio, media_path, media_tipo, etiqueta_id) VALUES (?, ?, 1, ?, ?, ?, ?, ?)',
+        [keywords, resposta, ordem || 99, enviar_audio ? 1 : 0, media_path || null, media_tipo || null, etiqueta_id || null]
     );
     const nova = await db.get('SELECT * FROM respostas WHERE id = ?', result.lastID);
     io.emit('respostas_updated');
@@ -340,10 +352,10 @@ app.post('/api/respostas', async (req, res) => {
 
 app.put('/api/respostas/:id', async (req, res) => {
     const { id } = req.params;
-    const { keywords, resposta, ativo, ordem, enviar_audio, media_path, media_tipo } = req.body;
+    const { keywords, resposta, ativo, ordem, enviar_audio, media_path, media_tipo, etiqueta_id } = req.body;
     await db.run(
-        'UPDATE respostas SET keywords=?, resposta=?, ativo=?, ordem=?, enviar_audio=?, media_path=?, media_tipo=? WHERE id=?',
-        [keywords, resposta, ativo !== undefined ? ativo : 1, ordem || 99, enviar_audio ? 1 : 0, media_path || null, media_tipo || null, id]
+        'UPDATE respostas SET keywords=?, resposta=?, ativo=?, ordem=?, enviar_audio=?, media_path=?, media_tipo=?, etiqueta_id=? WHERE id=?',
+        [keywords, resposta, ativo !== undefined ? ativo : 1, ordem || 99, enviar_audio ? 1 : 0, media_path || null, media_tipo || null, etiqueta_id || null, id]
     );
     const atualizada = await db.get('SELECT * FROM respostas WHERE id = ?', id);
     io.emit('respostas_updated');
@@ -506,13 +518,25 @@ app.get('/api/contatos', async (req, res) => {
         `);
         const nomePorTelefone = new Map(nomes.map(n => [n.telefone, n.nome]));
 
+        const etiquetasPorTelefone = new Map();
+        const etiquetasRows = await db.all(`
+            SELECT ce.telefone, e.id, e.nome, e.cor
+            FROM contato_etiquetas ce
+            INNER JOIN etiquetas e ON e.id = ce.etiqueta_id
+        `);
+        etiquetasRows.forEach(r => {
+            if (!etiquetasPorTelefone.has(r.telefone)) etiquetasPorTelefone.set(r.telefone, []);
+            etiquetasPorTelefone.get(r.telefone).push({ id: r.id, nome: r.nome, cor: r.cor });
+        });
+
         const contatos = leads.map(l => {
             const telefone = l.telefone.replace('@c.us', '').replace('@lid', '');
             return {
                 telefone,
                 nome: nomePorTelefone.get(telefone) || telefone,
                 data_captura: l.data_captura,
-                mensagens_recebidas: l.mensagens_recebidas
+                mensagens_recebidas: l.mensagens_recebidas,
+                etiquetas: etiquetasPorTelefone.get(telefone) || []
             };
         });
         res.json(contatos);
@@ -520,6 +544,67 @@ app.get('/api/contatos', async (req, res) => {
         console.error('Erro /api/contatos:', err.message);
         res.status(500).json({ error: err.message });
     }
+});
+
+// =====================================
+// API REST — ETIQUETAS
+// =====================================
+app.get('/api/etiquetas', async (req, res) => {
+    const etiquetas = await db.all(`
+        SELECT e.*, COUNT(ce.telefone) AS total_contatos
+        FROM etiquetas e
+        LEFT JOIN contato_etiquetas ce ON ce.etiqueta_id = e.id
+        GROUP BY e.id
+        ORDER BY e.nome ASC
+    `);
+    res.json(etiquetas);
+});
+
+app.post('/api/etiquetas', async (req, res) => {
+    const { nome, cor } = req.body;
+    if (!nome || !nome.trim()) return res.status(400).json({ error: 'Nome da etiqueta é obrigatório.' });
+    try {
+        const result = await db.run('INSERT INTO etiquetas (nome, cor) VALUES (?, ?)', [nome.trim(), cor || '#25D366']);
+        const nova = await db.get('SELECT *, 0 AS total_contatos FROM etiquetas WHERE id = ?', result.lastID);
+        res.json(nova);
+    } catch (err) {
+        res.status(400).json({ error: err.message.includes('UNIQUE') ? 'Já existe uma etiqueta com esse nome.' : err.message });
+    }
+});
+
+app.delete('/api/etiquetas/:id', async (req, res) => {
+    const { id } = req.params;
+    await db.run('DELETE FROM contato_etiquetas WHERE etiqueta_id = ?', id);
+    await db.run('DELETE FROM etiquetas WHERE id = ?', id);
+    res.json({ success: true });
+});
+
+// Etiquetas aplicadas manualmente a um contato específico (tela de Conversas)
+app.get('/api/contatos/:telefone/etiquetas', async (req, res) => {
+    const { telefone } = req.params;
+    const etiquetas = await db.all(`
+        SELECT e.* FROM contato_etiquetas ce
+        INNER JOIN etiquetas e ON e.id = ce.etiqueta_id
+        WHERE ce.telefone = ?
+        ORDER BY e.nome ASC
+    `, telefone);
+    res.json(etiquetas);
+});
+
+app.post('/api/contatos/:telefone/etiquetas', async (req, res) => {
+    const { telefone } = req.params;
+    const { etiqueta_id } = req.body;
+    if (!etiqueta_id) return res.status(400).json({ error: 'etiqueta_id é obrigatório.' });
+    await db.run('INSERT OR IGNORE INTO contato_etiquetas (telefone, etiqueta_id) VALUES (?, ?)', [telefone, etiqueta_id]);
+    io.emit('etiqueta_atualizada', { telefone });
+    res.json({ success: true });
+});
+
+app.delete('/api/contatos/:telefone/etiquetas/:etiquetaId', async (req, res) => {
+    const { telefone, etiquetaId } = req.params;
+    await db.run('DELETE FROM contato_etiquetas WHERE telefone = ? AND etiqueta_id = ?', [telefone, etiquetaId]);
+    io.emit('etiqueta_atualizada', { telefone });
+    res.json({ success: true });
 });
 
 // =====================================
@@ -1462,6 +1547,13 @@ client.on('message', async (msg) => {
 
         const textoFinal = regraAtiva.resposta.replace(/{saudacao}/g, saudacao);
         console.log(`📤 Regra #${regraAtiva.id} ativada → respondendo para ${numLimpo}`);
+
+        // Aplica automaticamente a etiqueta configurada nesta regra (se houver)
+        if (regraAtiva.etiqueta_id) {
+            await db.run('INSERT OR IGNORE INTO contato_etiquetas (telefone, etiqueta_id) VALUES (?, ?)', [numLimpo, regraAtiva.etiqueta_id]);
+            io.emit('etiqueta_atualizada', { telefone: numLimpo });
+        }
+
         const sent = await enviarResposta(msg, textoFinal);
         io.emit('bot_digitando', { telefone: numLimpo, ativo: false });
         if (sent) await registrarMensagemEnviada(telefoneReal, textoFinal, nomeContato);

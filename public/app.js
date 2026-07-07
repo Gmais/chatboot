@@ -653,6 +653,62 @@ btnSalvarHorario?.addEventListener('click', async () => {
 });
 
 // =====================================
+// ETIQUETAS (compartilhado entre Regras, Conversas e Lista de Contatos)
+// =====================================
+const ETIQUETA_PALETA = ['#25D366', '#3b7de8', '#f59e0b', '#ef4444', '#a855f7', '#14b8a6', '#ec4899', '#84cc16'];
+let todasEtiquetas = [];
+
+async function loadEtiquetas() {
+    try {
+        const res = await fetch('/api/etiquetas');
+        todasEtiquetas = await res.json();
+    } catch (e) {
+        console.error('Erro ao carregar etiquetas', e);
+    }
+    return todasEtiquetas;
+}
+
+async function criarEtiquetaRapida() {
+    const nome = prompt('Nome da nova etiqueta:');
+    if (!nome || !nome.trim()) return null;
+    const cor = ETIQUETA_PALETA[todasEtiquetas.length % ETIQUETA_PALETA.length];
+    try {
+        const res = await fetch('/api/etiquetas', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ nome: nome.trim(), cor })
+        });
+        const nova = await res.json();
+        if (!res.ok) { showToast('Erro', nova.error || 'Não foi possível criar a etiqueta', 'error'); return null; }
+        todasEtiquetas.push(nova);
+        return nova;
+    } catch (e) {
+        showToast('Erro', 'Não foi possível criar a etiqueta', 'error');
+        return null;
+    }
+}
+
+function etiquetaChipHtml(etiqueta, removivel) {
+    return `<span class="etiqueta-chip" style="background:${etiqueta.cor}22;color:${etiqueta.cor};border:1px solid ${etiqueta.cor}55">
+        ${etiqueta.nome}${removivel ? `<button type="button" class="etiqueta-chip-remove" data-etiqueta-id="${etiqueta.id}">×</button>` : ''}
+    </span>`;
+}
+
+async function aplicarEtiquetaContato(telefone, etiquetaId) {
+    await fetch(`/api/contatos/${telefone}/etiquetas`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ etiqueta_id: etiquetaId })
+    });
+}
+
+async function removerEtiquetaContato(telefone, etiquetaId) {
+    await fetch(`/api/contatos/${telefone}/etiquetas/${etiquetaId}`, { method: 'DELETE' });
+}
+
+loadEtiquetas();
+
+// =====================================
 // GERENCIADOR DE REGRAS
 // =====================================
 const modalOverlay    = document.getElementById('modal-overlay');
@@ -662,6 +718,7 @@ const modalKeywords   = document.getElementById('modal-keywords');
 const modalResposta   = document.getElementById('modal-resposta');
 const modalOrdem      = document.getElementById('modal-ordem');
 const modalAudio      = document.getElementById('modal-audio');
+const modalEtiqueta   = document.getElementById('modal-etiqueta');
 const modalMediaPath  = document.getElementById('modal-media-path');
 const modalMediaTipo  = document.getElementById('modal-media-tipo');
 const uploadArea      = document.getElementById('upload-area');
@@ -698,7 +755,14 @@ async function handleFileUpload(file) {
     }
 }
 
-function openModal(regra = null) {
+function renderModalEtiquetaOptions(selecionadaId) {
+    if (!modalEtiqueta) return;
+    modalEtiqueta.innerHTML = '<option value="">Nenhuma</option>' +
+        todasEtiquetas.map(e => `<option value="${e.id}">${e.nome}</option>`).join('');
+    modalEtiqueta.value = selecionadaId || '';
+}
+
+async function openModal(regra = null) {
     modalEditId.value   = regra ? regra.id : '';
     modalTitle.textContent = regra ? '✏️ Editar Regra' : '✨ Nova Regra de Resposta';
     modalKeywords.value = regra ? regra.keywords : '';
@@ -712,10 +776,18 @@ function openModal(regra = null) {
     if (regra?.media_path) uploadArea.classList.add('has-file');
     uploadPreview.style.display = 'none';
     uploadPreview.innerHTML = '';
+    await loadEtiquetas();
+    renderModalEtiquetaOptions(regra?.etiqueta_id);
     modalOverlay.classList.add('open');
 }
 
 function closeModal() { modalOverlay.classList.remove('open'); }
+
+document.getElementById('btn-modal-nova-etiqueta')?.addEventListener('click', async () => {
+    const nova = await criarEtiquetaRapida();
+    if (!nova) return;
+    renderModalEtiquetaOptions(nova.id);
+});
 
 document.getElementById('btn-nova-regra')?.addEventListener('click', () => openModal());
 document.getElementById('modal-cancelar')?.addEventListener('click', closeModal);
@@ -730,6 +802,7 @@ document.getElementById('modal-salvar')?.addEventListener('click', async () => {
         enviar_audio: modalAudio.checked,
         media_path: modalMediaPath.value || null,
         media_tipo: modalMediaTipo.value || null,
+        etiqueta_id: modalEtiqueta.value ? Number(modalEtiqueta.value) : null,
         ativo: 1
     };
     if (!payload.keywords || !payload.resposta) { alert('Preencha as palavras-chave e a resposta!'); return; }
@@ -762,7 +835,7 @@ async function loadRegras() {
     if (!regrasLista) return;
     regrasLista.innerHTML = '<p style="color:var(--text-3);text-align:center;padding:2rem">Carregando...</p>';
     try {
-        const res = await fetch('/api/respostas');
+        const [res] = await Promise.all([fetch('/api/respostas'), loadEtiquetas()]);
         const regras = await res.json();
         if (regras.length === 0) {
             regrasLista.innerHTML = '<p style="color:var(--text-3);text-align:center;padding:2rem">Nenhuma regra ainda. Clique em "Nova Regra"!</p>';
@@ -777,6 +850,8 @@ async function loadRegras() {
                 ? `<span class="regra-audio-badge">${regra.media_tipo==='image'?'🖼️':regra.media_tipo==='video'?'🎥':'📂'} Mídia</span>`
                 : '';
             const audioBadge = regra.enviar_audio ? `<span class="regra-audio-badge">🎙️ Áudio</span>` : '';
+            const etiquetaAplicada = regra.etiqueta_id ? todasEtiquetas.find(e => e.id === regra.etiqueta_id) : null;
+            const etiquetaBadge = etiquetaAplicada ? etiquetaChipHtml(etiquetaAplicada, false) : '';
             div.innerHTML = `
                 <div class="regra-header">
                     <div class="regra-keywords">${kws.map(kw=>`<span class="keyword-tag">${kw}</span>`).join('')}</div>
@@ -787,7 +862,7 @@ async function loadRegras() {
                     </div>
                 </div>
                 <div class="regra-resposta">${regra.resposta}</div>
-                <div style="margin-top:.4rem;display:flex;gap:.3rem">${audioBadge}${mediaBadge}</div>
+                <div style="margin-top:.4rem;display:flex;gap:.3rem;align-items:center">${audioBadge}${mediaBadge}${etiquetaBadge}</div>
             `;
             regrasLista.appendChild(div);
         });
@@ -809,22 +884,47 @@ const contatosBusca       = document.getElementById('contatos-busca');
 const contatosSelectAll   = document.getElementById('contatos-select-all');
 const contatosContador    = document.getElementById('contatos-contador');
 const btnUsarSelecionados = document.getElementById('btn-usar-selecionados');
+const contatosFiltroEtiquetas = document.getElementById('contatos-filtro-etiquetas');
 
 let todosContatos = [];
 const contatosSelecionados = new Set();
+const etiquetasFiltroAtivas = new Set();
 
 function contatosFiltrados() {
     const termo = (contatosBusca?.value || '').trim().toLowerCase();
-    if (!termo) return todosContatos;
-    return todosContatos.filter(c =>
-        c.nome.toLowerCase().includes(termo) || c.telefone.includes(termo)
-    );
+    return todosContatos.filter(c => {
+        const bateBusca = !termo || c.nome.toLowerCase().includes(termo) || c.telefone.includes(termo);
+        const bateEtiqueta = etiquetasFiltroAtivas.size === 0 || c.etiquetas.some(e => etiquetasFiltroAtivas.has(e.id));
+        return bateBusca && bateEtiqueta;
+    });
 }
 
 function atualizarContadorContatos() {
     const n = contatosSelecionados.size;
     if (contatosContador) contatosContador.textContent = `${n} contato${n !== 1 ? 's' : ''} selecionado${n !== 1 ? 's' : ''}`;
 }
+
+function renderFiltroEtiquetas() {
+    if (!contatosFiltroEtiquetas) return;
+    if (todasEtiquetas.length === 0) { contatosFiltroEtiquetas.innerHTML = ''; return; }
+    contatosFiltroEtiquetas.innerHTML = todasEtiquetas.map(e => `
+        <button type="button" class="etiqueta-filtro-chip${etiquetasFiltroAtivas.has(e.id) ? ' active' : ''}"
+            data-etiqueta-id="${e.id}"
+            style="${etiquetasFiltroAtivas.has(e.id) ? `background:${e.cor};border-color:${e.cor}` : `border-color:${e.cor}55;color:${e.cor}`}">
+            ${e.nome}
+        </button>
+    `).join('');
+}
+
+contatosFiltroEtiquetas?.addEventListener('click', (e) => {
+    const chip = e.target.closest('.etiqueta-filtro-chip');
+    if (!chip) return;
+    const id = Number(chip.dataset.etiquetaId);
+    if (etiquetasFiltroAtivas.has(id)) etiquetasFiltroAtivas.delete(id);
+    else etiquetasFiltroAtivas.add(id);
+    renderFiltroEtiquetas();
+    renderContatos();
+});
 
 function renderContatos() {
     if (!contatosLista) return;
@@ -838,7 +938,7 @@ function renderContatos() {
         <label class="contato-row" style="display:flex;align-items:center;gap:.7rem;padding:.6rem .7rem;border-radius:8px;cursor:pointer">
             <input type="checkbox" class="contato-check" data-telefone="${c.telefone}" ${contatosSelecionados.has(c.telefone) ? 'checked' : ''} style="accent-color:var(--green);width:16px;height:16px;flex-shrink:0">
             <div style="flex:1;min-width:0">
-                <div style="font-size:.88rem;color:var(--text-1);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${c.nome}</div>
+                <div style="font-size:.88rem;color:var(--text-1);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${c.nome} ${c.etiquetas.map(e => etiquetaChipHtml(e, false)).join(' ')}</div>
                 <div style="font-size:.75rem;color:var(--text-3)">${c.telefone}</div>
             </div>
             <span style="font-size:.72rem;color:var(--text-3);flex-shrink:0">${c.mensagens_recebidas} msg${c.mensagens_recebidas !== 1 ? 's' : ''}</span>
@@ -850,8 +950,9 @@ function renderContatos() {
 async function loadContatos() {
     if (!contatosLista) return;
     try {
-        const res = await fetch('/api/contatos');
+        const [res] = await Promise.all([fetch('/api/contatos'), loadEtiquetas()]);
         todosContatos = await res.json();
+        renderFiltroEtiquetas();
         renderContatos();
     } catch (e) {
         console.error('Erro ao carregar contatos', e);
@@ -981,6 +1082,8 @@ const CM = (() => {
     const chatHeaderAvatar = document.getElementById('chat-header-avatar');
     const chatHeaderName = document.getElementById('chat-header-name');
     const chatHeaderStatus = document.getElementById('chat-header-status');
+    const chatHeaderTags = document.getElementById('chat-header-tags');
+    const chatHeaderAddTag = document.getElementById('chat-header-add-tag');
     const chatMessages   = document.getElementById('chat-messages');
     const chatInputBar   = document.getElementById('chat-input-bar');
     const chatTypingBar  = document.getElementById('chat-typing-bar');
@@ -1110,6 +1213,7 @@ const CM = (() => {
         if (chatHeaderAvatar)   chatHeaderAvatar.textContent = avatarLetter(nome);
         if (chatHeaderName)     chatHeaderName.textContent = nome;
         if (chatHeaderStatus)   chatHeaderStatus.textContent = telefone;
+        renderChatHeaderTags(telefone);
         if (chatMessages)       { chatMessages.style.display = 'flex'; chatMessages.innerHTML = '<div style="text-align:center;color:var(--text-3);padding:2rem;font-size:.82rem">Carregando...</div>'; }
         if (chatInputBar)       chatInputBar.style.display = 'flex';
         if (chatTypingBar)      chatTypingBar.style.display = 'none';
@@ -1128,6 +1232,53 @@ const CM = (() => {
         // Carrega histórico
         await loadHistory(telefone);
     }
+
+    // ---- Etiquetas do contato ativo ----
+    async function renderChatHeaderTags(telefone) {
+        if (!chatHeaderTags || !chatHeaderAddTag) return;
+        chatHeaderTags.innerHTML = '';
+        chatHeaderAddTag.innerHTML = '<option value="">🏷️ Etiqueta...</option>';
+        try {
+            const [res] = await Promise.all([fetch(`/api/contatos/${encodeURIComponent(telefone)}/etiquetas`), loadEtiquetas()]);
+            const aplicadas = await res.json();
+            if (activePhone !== telefone) return; // usuário já trocou de contato
+
+            chatHeaderTags.innerHTML = aplicadas.map(e => etiquetaChipHtml(e, true)).join('');
+            const aplicadasIds = new Set(aplicadas.map(e => e.id));
+            todasEtiquetas.filter(e => !aplicadasIds.has(e.id)).forEach(e => {
+                const opt = document.createElement('option');
+                opt.value = e.id;
+                opt.textContent = e.nome;
+                chatHeaderAddTag.appendChild(opt);
+            });
+            const optNova = document.createElement('option');
+            optNova.value = '__nova__';
+            optNova.textContent = '➕ Criar nova etiqueta...';
+            chatHeaderAddTag.appendChild(optNova);
+        } catch (e) {
+            console.error('Erro ao carregar etiquetas do contato', e);
+        }
+    }
+
+    chatHeaderTags?.addEventListener('click', async (e) => {
+        const btn = e.target.closest('.etiqueta-chip-remove');
+        if (!btn || !activePhone) return;
+        await removerEtiquetaContato(activePhone, btn.dataset.etiquetaId);
+        renderChatHeaderTags(activePhone);
+    });
+
+    chatHeaderAddTag?.addEventListener('change', async () => {
+        const val = chatHeaderAddTag.value;
+        if (!val || !activePhone) return;
+        const telefone = activePhone;
+        if (val === '__nova__') {
+            const nova = await criarEtiquetaRapida();
+            if (nova) await aplicarEtiquetaContato(telefone, nova.id);
+        } else {
+            await aplicarEtiquetaContato(telefone, Number(val));
+        }
+        renderChatHeaderTags(telefone);
+    });
 
     // ---- Carrega e exibe histórico de mensagens ----
     async function loadHistory(telefone) {
@@ -1313,6 +1464,10 @@ const CM = (() => {
             if (activePhone === telefone && chatTypingBar) {
                 chatTypingBar.style.display = ativo ? 'block' : 'none';
             }
+        });
+
+        socket.on('etiqueta_atualizada', ({ telefone }) => {
+            if (activePhone === telefone) renderChatHeaderTags(telefone);
         });
 
         socket.on('conversa_lida', ({ telefone }) => {
