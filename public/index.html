@@ -47,7 +47,7 @@
         <nav class="menu">
             <a href="#" class="nav-btn active" data-target="dashboard-section">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
-                Dashboard
+                Painel de Controle
             </a>
             <a href="#" class="nav-btn" data-target="mensagens-section">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
@@ -99,7 +99,7 @@
     <!-- MAIN CONTENT -->
     <main class="content">
         <header>
-            <h1 id="page-title">Dashboard</h1>
+            <h1 id="page-title">Painel de Controle</h1>
             <div style="display: flex; align-items: center; gap: 1rem;">
                 <div id="robo-toggle-wrap" style="position:relative">
                     <button id="btn-robo-toggle" class="btn-primary" style="padding:.5rem 1rem;font-size:.85rem">🤖 Ativar Robô</button>
@@ -146,6 +146,17 @@
                         <span class="metric-value" id="leads-count">0</span>
                     </div>
                 </div>
+            </div>
+
+            <!-- Novos Contatos por Dia -->
+            <div class="card glass" style="margin-bottom:1.5rem">
+                <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:.2rem">
+                    <h3 style="margin-bottom:0">📈 Novos Contatos</h3>
+                    <span id="novos-contatos-total" style="font-size:.85rem;color:var(--text-2);font-weight:600"></span>
+                </div>
+                <p style="color:var(--text-3);font-size:.78rem;margin-bottom:1.2rem">Pessoas que falaram com o robô pela primeira vez, últimos 14 dias</p>
+                <div id="novos-contatos-chart" style="display:flex;align-items:flex-end;gap:4px;height:120px"></div>
+                <div id="novos-contatos-eixo" style="display:flex;gap:4px;margin-top:.4rem"></div>
             </div>
 
             <!-- QR Code -->

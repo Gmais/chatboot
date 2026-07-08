@@ -307,7 +307,87 @@ socket.on('new_lead', (lead) => {
     const num = lead.telefone.replace('@c.us', '');
     addActivity('👥', `Novo lead: ${num}`, new Date(lead.data_captura).toLocaleString('pt-BR'));
     showToast('🎯 Novo Lead Capturado!', `Número: ${num}`, 'success', 5000);
+    loadNovosContatosChart();
 });
+
+// =====================================
+// GRÁFICO: NOVOS CONTATOS POR DIA
+// =====================================
+function mostrarChartTooltip(el, valor, rotulo) {
+    let tip = document.getElementById('chart-tooltip');
+    if (!tip) {
+        tip = document.createElement('div');
+        tip.id = 'chart-tooltip';
+        tip.style.cssText = 'position:fixed;z-index:2000;background:var(--card-bg);border:1px solid rgba(255,255,255,0.12);border-radius:6px;padding:.4rem .6rem;font-size:.75rem;pointer-events:none;box-shadow:var(--shadow);white-space:nowrap;text-align:center';
+        const strong = document.createElement('strong');
+        strong.id = 'chart-tooltip-valor';
+        strong.style.cssText = 'color:var(--text-1);display:block';
+        const span = document.createElement('span');
+        span.id = 'chart-tooltip-rotulo';
+        span.style.color = 'var(--text-3)';
+        tip.append(strong, span);
+        document.body.appendChild(tip);
+    }
+    tip.querySelector('#chart-tooltip-valor').textContent = valor;
+    tip.querySelector('#chart-tooltip-rotulo').textContent = rotulo;
+    const rect = el.getBoundingClientRect();
+    tip.style.left = (rect.left + rect.width / 2) + 'px';
+    tip.style.top = (rect.top - 8) + 'px';
+    tip.style.transform = 'translate(-50%, -100%)';
+    tip.style.display = 'block';
+    el.style.filter = 'brightness(1.25)';
+}
+function esconderChartTooltip(e) {
+    const tip = document.getElementById('chart-tooltip');
+    if (tip) tip.style.display = 'none';
+    if (e?.currentTarget) e.currentTarget.style.filter = '';
+}
+
+async function loadNovosContatosChart() {
+    const container = document.getElementById('novos-contatos-chart');
+    const eixo = document.getElementById('novos-contatos-eixo');
+    const totalEl = document.getElementById('novos-contatos-total');
+    if (!container) return;
+    try {
+        const res = await fetch('/api/leads/por-dia?dias=14');
+        const dias = await res.json();
+        const max = Math.max(1, ...dias.map(d => d.total));
+        const total = dias.reduce((soma, d) => soma + d.total, 0);
+        if (totalEl) totalEl.textContent = `${total} no período`;
+
+        container.innerHTML = '';
+        dias.forEach(d => {
+            const alturaPerc = Math.max(4, Math.round((d.total / max) * 100));
+            const bar = document.createElement('div');
+            bar.className = 'novos-contatos-bar';
+            bar.tabIndex = 0;
+            bar.style.cssText = `flex:1;height:${alturaPerc}%;background:var(--green);border-radius:4px 4px 0 0;min-width:4px;cursor:pointer;transition:filter .15s`;
+            const dataFmt = new Date(d.data + 'T12:00:00').toLocaleDateString('pt-BR', { day: '2-digit', month: 'short' });
+            const rotularEValor = d.total === 1 ? '1 contato' : `${d.total} contatos`;
+            const mostrar = () => mostrarChartTooltip(bar, rotularEValor, dataFmt);
+            bar.addEventListener('mouseenter', mostrar);
+            bar.addEventListener('focus', mostrar);
+            bar.addEventListener('mouseleave', esconderChartTooltip);
+            bar.addEventListener('blur', esconderChartTooltip);
+            container.appendChild(bar);
+        });
+
+        if (eixo) {
+            eixo.innerHTML = '';
+            dias.forEach(d => {
+                const lbl = document.createElement('span');
+                lbl.style.cssText = 'flex:1;text-align:center;font-size:.65rem;color:var(--text-3);min-width:4px';
+                lbl.textContent = d.diaMes;
+                eixo.appendChild(lbl);
+            });
+        }
+    } catch (e) {
+        console.error('Erro ao carregar gráfico de novos contatos', e);
+        container.innerHTML = '<p style="color:var(--text-3);text-align:center;width:100%;font-size:.85rem">Erro ao carregar.</p>';
+    }
+}
+
+loadNovosContatosChart();
 
 // =====================================
 // BOTÃO DESCONECTAR

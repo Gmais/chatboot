@@ -593,6 +593,32 @@ app.get('/api/leads', async (req, res) => {
     res.json(leads);
 });
 
+// Novos contatos por dia (horário de Brasília), pro gráfico do Painel de
+// Controle. Sempre devolve um ponto por dia no período, mesmo com 0 leads.
+app.get('/api/leads/por-dia', async (req, res) => {
+    const dias = Math.min(parseInt(req.query.dias) || 14, 60);
+    try {
+        const desde = moment.tz('America/Sao_Paulo').subtract(dias - 1, 'days').startOf('day').utc().format('YYYY-MM-DD HH:mm:ss');
+        const rows = await db.all('SELECT data_captura FROM leads WHERE data_captura >= ?', desde);
+
+        const contagem = new Map();
+        rows.forEach(r => {
+            const dia = moment.utc(r.data_captura).tz('America/Sao_Paulo').format('YYYY-MM-DD');
+            contagem.set(dia, (contagem.get(dia) || 0) + 1);
+        });
+
+        const resultado = [];
+        for (let i = dias - 1; i >= 0; i--) {
+            const m = moment.tz('America/Sao_Paulo').subtract(i, 'days');
+            const chave = m.format('YYYY-MM-DD');
+            resultado.push({ data: chave, diaMes: m.format('DD'), total: contagem.get(chave) || 0 });
+        }
+        res.json(resultado);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
 // Export Leads como CSV
 app.get('/api/leads/export', async (req, res) => {
     const leads = await db.all('SELECT telefone, data_captura, mensagens_recebidas FROM leads ORDER BY data_captura DESC');
