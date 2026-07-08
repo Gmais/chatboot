@@ -264,6 +264,24 @@ async function initDB() {
             PRIMARY KEY (telefone, automacao_id)
         );
         CREATE INDEX IF NOT EXISTS idx_contato_automacao_proxima ON contato_automacao_estado(proxima_execucao_em);
+        CREATE TABLE IF NOT EXISTS mensagens_personalizadas (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            nome TEXT NOT NULL,
+            texto TEXT NOT NULL,
+            media_path TEXT,
+            media_tipo TEXT,
+            horario_envio TEXT NOT NULL DEFAULT '09:00',
+            ativo INTEGER DEFAULT 1,
+            total_enviados INTEGER DEFAULT 0,
+            criado_em DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE IF NOT EXISTS mensagem_personalizada_enviada (
+            mensagem_id INTEGER NOT NULL,
+            telefone TEXT NOT NULL,
+            ano INTEGER NOT NULL,
+            enviado_em DATETIME DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (mensagem_id, telefone, ano)
+        );
     `);
 
     // Adiciona colunas novas se migrando de versão anterior
@@ -1369,6 +1387,137 @@ app.get('/api/automacoes', async (req, res) => {
         ORDER BY a.criado_em DESC
     `);
     res.json(automacoes);
+});
+
+// =====================================
+// MENSAGENS PERSONALIZADAS — aniversário automático
+// =====================================
+app.get('/api/mensagens-personalizadas', async (req, res) => {
+    const mensagens = await db.all('SELECT * FROM mensagens_personalizadas ORDER BY criado_em DESC');
+    res.json(mensagens);
+});
+
+app.post('/api/mensagens-personalizadas', async (req, res) => {
+    const { nome, texto, media_path, media_tipo, horario_envio, ativo } = req.body;
+    if (!nome || !nome.trim()) return res.status(400).json({ error: 'Nome é obrigatório.' });
+    if (!texto || !texto.trim()) return res.status(400).json({ error: 'Mensagem é obrigatória.' });
+    try {
+        const result = await db.run(
+            'INSERT INTO mensagens_personalizadas (nome, texto, media_path, media_tipo, horario_envio, ativo) VALUES (?, ?, ?, ?, ?, ?)',
+            [nome.trim(), texto.trim(), media_path || null, media_tipo || null, horario_envio || '09:00', ativo === false ? 0 : 1]
+        );
+        res.json({ success: true, id: result.lastID });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.put('/api/mensagens-personalizadas/:id', async (req, res) => {
+    const { id } = req.params;
+    const { nome, texto, media_path, media_tipo, horario_envio, ativo } = req.body;
+    if (!nome || !nome.trim()) return res.status(400).json({ error: 'Nome é obrigatório.' });
+    if (!texto || !texto.trim()) return res.status(400).json({ error: 'Mensagem é obrigatória.' });
+    try {
+        const result = await db.run(
+            'UPDATE mensagens_personalizadas SET nome = ?, texto = ?, media_path = ?, media_tipo = ?, horario_envio = ?, ativo = ? WHERE id = ?',
+            [nome.trim(), texto.trim(), media_path || null, media_tipo || null, horario_envio || '09:00', ativo === false ? 0 : 1, id]
+        );
+        if (result.changes === 0) return res.status(404).json({ error: 'Mensagem não encontrada.' });
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.delete('/api/mensagens-personalizadas/:id', async (req, res) => {
+    const { id } = req.params;
+    try {
+        await db.run('DELETE FROM mensagens_personalizadas WHERE id = ?', id);
+        await db.run('DELETE FROM mensagem_personalizada_enviada WHERE mensagem_id = ?', id);
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Roda periodicamente: manda cada mensagem ativa pra quem faz aniversário
+// hoje (data_nascimento em leads) e ainda não recebeu ESSA mensagem este
+// ano. Só marca como enviado se o envio realmente deu certo — falha (WhatsApp
+// instável, mídia ausente etc.) tenta de novo no próximo ciclo, mesmo dia.
+async function processarMensagensAniversario() {
+    if (!db || !isConnected) return;
+    try {
+        const agora = moment.tz('America/Sao_Paulo');
+        const hojeMD = agora.format('MM-DD');
+        const anoAtual = agora.year();
+        const horaAtual = agora.format('HH:mm');
+
+        const mensagens = await db.all('SELECT * FROM mensagens_personalizadas WHERE ativo = 1');
+        for (const msg of mensagens) {
+            if (horaAtual < msg.horario_envio) continue;
+
+            const aniversariantes = await db.all(
+                `SELECT telefone, nome FROM leads WHERE data_nascimento IS NOT NULL AND strftime('%m-%d', data_nascimento) = ?`,
+                hojeMD
+            );
+
+            for (const lead of aniversariantes) {
+                const numLimpo = lead.telefone.replace('@c.us', '').replace('@lid', '');
+                const jaEnviado = await db.get(
+                    'SELECT 1 FROM mensagem_personalizada_enviada WHERE mensagem_id = ? AND telefone = ? AND ano = ?',
+                    [msg.id, numLimpo, anoAtual]
+                );
+                if (jaEnviado) continue;
+
+                let sucesso = false;
+                try {
+                    const chatId = await resolverChatId(numLimpo);
+                    const primeiroNome = (lead.nome && lead.nome !== numLimpo) ? lead.nome.split(' ')[0] : '';
+                    const matricula = await resolverMatriculaContato(numLimpo);
+                    const texto = (msg.texto || '')
+                        .replace(/\{nome\}/gi, primeiroNome).replace(/\[nome\]/gi, primeiroNome)
+                        .replace(/\{matricula\}/gi, matricula).replace(/\[matricula\]/gi, matricula);
+
+                    if (msg.media_path) {
+                        const mediaFullPath = path.join(__dirname, 'public', msg.media_path.replace(/^\//, ''));
+                        if (fs.existsSync(mediaFullPath)) {
+                            const media = MessageMedia.fromFilePath(mediaFullPath);
+                            const sent = await client.sendMessage(chatId, media, texto ? { caption: texto } : undefined);
+                            await registrarMensagemEnviada(numLimpo, texto || '[mídia]', lead.nome, sent.id?._serialized);
+                            sucesso = true;
+                        } else {
+                            console.error(`Mensagem personalizada #${msg.id}: arquivo de mídia não encontrado (${msg.media_path}) pra ${numLimpo}`);
+                        }
+                    } else if (texto) {
+                        const sent = await client.sendMessage(chatId, texto);
+                        await registrarMensagemEnviada(numLimpo, texto, lead.nome, sent.id?._serialized);
+                        sucesso = true;
+                    }
+                } catch (err) {
+                    console.error(`❌ Falha ao enviar mensagem de aniversário #${msg.id} pra ${numLimpo}:`, err.message);
+                }
+
+                if (sucesso) {
+                    await db.run('INSERT INTO mensagem_personalizada_enviada (mensagem_id, telefone, ano) VALUES (?, ?, ?)', [msg.id, numLimpo, anoAtual]);
+                    await db.run('UPDATE mensagens_personalizadas SET total_enviados = total_enviados + 1 WHERE id = ?', msg.id);
+                }
+                await delay(3000);
+            }
+        }
+    } catch (e) {
+        console.error('Erro ao processar mensagens de aniversário:', e.message);
+    }
+}
+setInterval(processarMensagensAniversario, 30 * 60 * 1000);
+setTimeout(processarMensagensAniversario, 90 * 1000);
+
+app.post('/api/mensagens-personalizadas/processar-agora', async (req, res) => {
+    try {
+        await processarMensagensAniversario();
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
 app.post('/api/automacoes', async (req, res) => {

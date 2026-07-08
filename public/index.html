@@ -66,6 +66,10 @@
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M3 12h3m12 0h3M12 3v3m0 12v3M5.6 5.6l2.1 2.1m8.6 8.6 2.1 2.1M5.6 18.4l2.1-2.1m8.6-8.6 2.1-2.1"/></svg>
                 Automação
             </a>
+            <a href="#" class="nav-btn" data-target="mensagens-personalizadas-section">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12v6a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-6"/><path d="M12 2v13M8 6l4-4 4 4"/><rect x="2" y="7" width="20" height="5" rx="1"/></svg>
+                Mensagens Personalizadas
+            </a>
             <a href="#" class="nav-btn" data-target="ia-section">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
                 Inteligência Artificial
@@ -340,6 +344,59 @@
                 <div class="modal-footer" style="background:var(--card-bg);padding:1rem 1.5rem;margin-top:0;border-top:1px solid rgba(255,255,255,0.06)">
                     <button class="btn-secondary" id="modal-etapas-fechar">Cancelar</button>
                     <button class="btn-primary" id="btn-salvar-etapas">💾 Salvar Etapas</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- ===================== MENSAGENS PERSONALIZADAS (ANIVERSÁRIO) ===================== -->
+        <div id="mensagens-personalizadas-section" class="page-section hidden">
+            <div class="card glass">
+                <div class="section-header">
+                    <h3>🎂 Mensagens Personalizadas</h3>
+                    <button class="btn-primary" id="btn-nova-mensagem-personalizada">➕ Nova Mensagem</button>
+                </div>
+                <p style="color:var(--text-3);font-size:.8rem;margin:-.6rem 0 1rem">
+                    Mensagens de aniversário disparadas sozinhas: todo dia, no horário escolhido, o robô manda pra quem faz aniversário — usando a Data de Nascimento cadastrada em Contatos. Cada contato recebe cada mensagem no máximo uma vez por ano.
+                </p>
+                <div id="mensagens-personalizadas-lista" style="display:flex;flex-direction:column;gap:.8rem">
+                    <div style="padding:2rem;text-align:center;color:var(--text-3)">Carregando mensagens...</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- MODAL: NOVA / EDITAR MENSAGEM PERSONALIZADA -->
+        <div class="modal-overlay" id="modal-mensagem-personalizada-overlay">
+            <div class="modal">
+                <h3 id="modal-mensagem-personalizada-titulo">➕ Nova Mensagem de Aniversário</h3>
+                <input type="hidden" id="mensagem-personalizada-id">
+                <label style="display:block;font-size:.78rem;color:var(--text-3);margin-bottom:.3rem">Nome (só pra identificar aqui no painel)</label>
+                <input type="text" id="mensagem-personalizada-nome" placeholder="Ex: Feliz Aniversário Padrão" style="width:100%;background:var(--input-bg);border:1px solid rgba(255,255,255,0.1);border-radius:var(--radius-sm);padding:.6rem .8rem;color:var(--text-1);font-size:.9rem;margin-bottom:1rem">
+                <div class="form-group">
+                    <label>Mensagem</label>
+                    <textarea id="mensagem-personalizada-texto" placeholder="Ex: Parabéns, {nome}! 🎉 A Academia Planeta Corpo Club+ deseja um feliz aniversário pra você!"></textarea>
+                    <span class="hint">Placeholders disponíveis: {nome} (primeiro nome) e {matricula} (se tiver vínculo com o Pacto).</span>
+                </div>
+                <div class="form-group">
+                    <label>Mídia (opcional)</label>
+                    <div class="upload-area" id="mp-upload-area">
+                        <span id="mp-upload-area-text">📎 Clique ou arraste um arquivo aqui</span>
+                        <input type="file" id="mp-modal-file" style="display:none" accept="image/*,video/*,.pdf,.doc,.docx,.ogg,.mp3">
+                    </div>
+                    <input type="hidden" id="mensagem-personalizada-media-path">
+                    <input type="hidden" id="mensagem-personalizada-media-tipo">
+                    <div id="mp-upload-preview" style="display:none;margin-top:.5rem"></div>
+                </div>
+                <label style="display:block;font-size:.78rem;color:var(--text-3);margin-bottom:.3rem">Horário de envio</label>
+                <input type="time" id="mensagem-personalizada-horario" value="09:00" style="width:100%;background:var(--input-bg);border:1px solid rgba(255,255,255,0.1);border-radius:var(--radius-sm);padding:.6rem .8rem;color:var(--text-1);font-size:.9rem;margin-bottom:1rem">
+                <div class="form-group">
+                    <div class="checkbox-row">
+                        <input type="checkbox" id="mensagem-personalizada-ativo" checked style="accent-color:var(--green)">
+                        <label for="mensagem-personalizada-ativo">Ativa</label>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button class="btn-cancel" id="modal-mensagem-personalizada-fechar">Fechar</button>
+                    <button class="btn-primary" id="btn-mensagem-personalizada-salvar">💾 Salvar</button>
                 </div>
             </div>
         </div>

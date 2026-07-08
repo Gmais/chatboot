@@ -441,6 +441,7 @@ navBtns.forEach(btn => {
         if (targetId === 'contatos-section' || targetId === 'disparos-section') loadContatos();
         if (targetId === 'integracoes-section') loadCrmColaboradores();
         if (targetId === 'automacoes-section') { loadEtiquetas().then(() => loadAutomacoes()); }
+        if (targetId === 'mensagens-personalizadas-section') loadMensagensPersonalizadas();
         if (targetId === 'disparos-section') { loadAcompanhamentoAutomacoes(); loadAutomacaoDelayConfig(); }
     });
 });
@@ -3093,6 +3094,181 @@ socket.on('automacoes_atualizadas', () => {
     }
     if (document.getElementById('disparos-section') && !document.getElementById('disparos-section').classList.contains('hidden')) {
         loadAcompanhamentoAutomacoes();
+    }
+});
+
+// =====================================
+// MENSAGENS PERSONALIZADAS (aniversário automático)
+// =====================================
+const mensagensPersonalizadasLista = document.getElementById('mensagens-personalizadas-lista');
+const btnNovaMensagemPersonalizada = document.getElementById('btn-nova-mensagem-personalizada');
+const modalMensagemPersonalizada = document.getElementById('modal-mensagem-personalizada-overlay');
+const modalMensagemPersonalizadaTitulo = document.getElementById('modal-mensagem-personalizada-titulo');
+const mensagemPersonalizadaId = document.getElementById('mensagem-personalizada-id');
+const mensagemPersonalizadaNome = document.getElementById('mensagem-personalizada-nome');
+const mensagemPersonalizadaTexto = document.getElementById('mensagem-personalizada-texto');
+const mensagemPersonalizadaHorario = document.getElementById('mensagem-personalizada-horario');
+const mensagemPersonalizadaAtivo = document.getElementById('mensagem-personalizada-ativo');
+const mensagemPersonalizadaMediaPath = document.getElementById('mensagem-personalizada-media-path');
+const mensagemPersonalizadaMediaTipo = document.getElementById('mensagem-personalizada-media-tipo');
+const mpUploadArea = document.getElementById('mp-upload-area');
+const mpUploadAreaText = document.getElementById('mp-upload-area-text');
+const mpModalFile = document.getElementById('mp-modal-file');
+const mpUploadPreview = document.getElementById('mp-upload-preview');
+const btnMensagemPersonalizadaSalvar = document.getElementById('btn-mensagem-personalizada-salvar');
+
+let mensagensPersonalizadasGlobais = [];
+
+async function loadMensagensPersonalizadas() {
+    if (!mensagensPersonalizadasLista) return;
+    try {
+        const res = await fetch('/api/mensagens-personalizadas');
+        mensagensPersonalizadasGlobais = await res.json();
+        renderMensagensPersonalizadasLista();
+    } catch (e) {
+        mensagensPersonalizadasLista.innerHTML = '<div style="padding:2rem;text-align:center;color:var(--text-3)">Erro ao carregar mensagens.</div>';
+    }
+}
+
+function renderMensagensPersonalizadasLista() {
+    if (!mensagensPersonalizadasLista) return;
+    if (mensagensPersonalizadasGlobais.length === 0) {
+        mensagensPersonalizadasLista.innerHTML = '<div style="padding:2rem;text-align:center;color:var(--text-3)">Nenhuma mensagem criada ainda. Crie a primeira!</div>';
+        return;
+    }
+    mensagensPersonalizadasLista.innerHTML = mensagensPersonalizadasGlobais.map(m => `
+        <div class="card glass" style="padding:1.1rem 1.3rem;display:flex;align-items:center;gap:1rem;flex-wrap:wrap" data-mensagem-id="${m.id}">
+            <div style="flex:1;min-width:200px">
+                <div style="font-weight:600;color:var(--text-1);font-size:.95rem;margin-bottom:.3rem">🎂 ${m.nome}</div>
+                <div style="display:flex;align-items:center;gap:.5rem;flex-wrap:wrap">
+                    <span style="font-size:.75rem;color:var(--text-3)">🕐 ${m.horario_envio}</span>
+                    <span style="font-size:.75rem;color:var(--text-3)">•</span>
+                    <span style="font-size:.75rem;color:var(--text-3)">${m.total_enviados} enviada${m.total_enviados !== 1 ? 's' : ''}</span>
+                    ${m.media_path ? '<span style="font-size:.75rem;color:var(--text-3)">• 📎 com mídia</span>' : ''}
+                </div>
+            </div>
+            <label style="display:flex;align-items:center;gap:.4rem;font-size:.78rem;color:var(--text-3);cursor:pointer">
+                <input type="checkbox" class="mp-toggle-ativo" data-id="${m.id}" ${m.ativo ? 'checked' : ''} style="accent-color:var(--green);width:16px;height:16px">
+                Ativa
+            </label>
+            <button type="button" class="btn-secondary btn-editar-mensagem-personalizada" data-id="${m.id}" style="padding:.5rem .8rem;font-size:.82rem">✏️ Editar</button>
+            <button type="button" class="btn-danger btn-excluir-mensagem-personalizada" data-id="${m.id}" style="padding:.5rem .7rem;font-size:.82rem">🗑️</button>
+        </div>
+    `).join('');
+}
+
+mensagensPersonalizadasLista?.addEventListener('change', async (e) => {
+    const toggle = e.target.closest('.mp-toggle-ativo');
+    if (!toggle) return;
+    const m = mensagensPersonalizadasGlobais.find(x => x.id == toggle.dataset.id);
+    if (!m) return;
+    try {
+        await fetch(`/api/mensagens-personalizadas/${m.id}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ...m, ativo: toggle.checked })
+        });
+        showToast(toggle.checked ? 'Mensagem ativada' : 'Mensagem pausada', '', 'success', 2000);
+    } catch (e) {
+        showToast('Erro', 'Não foi possível atualizar a mensagem', 'error');
+    }
+});
+
+mensagensPersonalizadasLista?.addEventListener('click', async (e) => {
+    const btnEditar = e.target.closest('.btn-editar-mensagem-personalizada');
+    if (btnEditar) { abrirModalMensagemPersonalizada(mensagensPersonalizadasGlobais.find(x => x.id == btnEditar.dataset.id)); return; }
+
+    const btnExcluir = e.target.closest('.btn-excluir-mensagem-personalizada');
+    if (btnExcluir) {
+        if (!confirm('Excluir esta mensagem de aniversário? Ela para de ser enviada automaticamente.')) return;
+        try {
+            await fetch(`/api/mensagens-personalizadas/${btnExcluir.dataset.id}`, { method: 'DELETE' });
+            showToast('Mensagem excluída', '', 'success', 2000);
+            loadMensagensPersonalizadas();
+        } catch (e) {
+            showToast('Erro', 'Não foi possível excluir a mensagem', 'error');
+        }
+    }
+});
+
+function abrirModalMensagemPersonalizada(m = null) {
+    mensagemPersonalizadaId.value = m ? m.id : '';
+    modalMensagemPersonalizadaTitulo.textContent = m ? '✏️ Editar Mensagem de Aniversário' : '➕ Nova Mensagem de Aniversário';
+    mensagemPersonalizadaNome.value = m ? m.nome : '';
+    mensagemPersonalizadaTexto.value = m ? m.texto : '';
+    mensagemPersonalizadaHorario.value = m ? m.horario_envio : '09:00';
+    mensagemPersonalizadaAtivo.checked = m ? !!m.ativo : true;
+    mensagemPersonalizadaMediaPath.value = m?.media_path || '';
+    mensagemPersonalizadaMediaTipo.value = m?.media_tipo || '';
+    mpUploadArea.classList.remove('has-file');
+    mpUploadAreaText.textContent = m?.media_path ? '✅ Mídia já configurada' : '📎 Clique ou arraste um arquivo aqui';
+    if (m?.media_path) mpUploadArea.classList.add('has-file');
+    mpUploadPreview.style.display = 'none';
+    mpUploadPreview.innerHTML = '';
+    modalMensagemPersonalizada?.classList.add('open');
+}
+function fecharModalMensagemPersonalizada() {
+    modalMensagemPersonalizada?.classList.remove('open');
+}
+
+btnNovaMensagemPersonalizada?.addEventListener('click', () => abrirModalMensagemPersonalizada());
+document.getElementById('modal-mensagem-personalizada-fechar')?.addEventListener('click', fecharModalMensagemPersonalizada);
+
+mpUploadArea?.addEventListener('click', () => mpModalFile?.click());
+mpUploadArea?.addEventListener('dragover', (e) => { e.preventDefault(); mpUploadArea.style.borderColor = 'var(--green)'; });
+mpUploadArea?.addEventListener('dragleave', () => { mpUploadArea.style.borderColor = ''; });
+mpUploadArea?.addEventListener('drop', (e) => { e.preventDefault(); if (e.dataTransfer.files[0]) handleFileUploadMensagemPersonalizada(e.dataTransfer.files[0]); });
+mpModalFile?.addEventListener('change', () => { if (mpModalFile.files[0]) handleFileUploadMensagemPersonalizada(mpModalFile.files[0]); });
+
+async function handleFileUploadMensagemPersonalizada(file) {
+    mpUploadAreaText.textContent = `⏳ Enviando ${file.name}...`;
+    mpUploadArea.classList.add('has-file');
+    const formData = new FormData();
+    formData.append('media', file);
+    try {
+        const res = await fetch('/api/upload', { method: 'POST', body: formData });
+        const data = await res.json();
+        mensagemPersonalizadaMediaPath.value = data.path;
+        mensagemPersonalizadaMediaTipo.value = data.tipo;
+        mpUploadAreaText.textContent = `✅ ${data.originalName}`;
+        mpUploadPreview.style.display = 'block';
+        mpUploadPreview.innerHTML = data.tipo === 'image'
+            ? `<img src="${data.path}" class="upload-preview-img">`
+            : `<span style="color:var(--text-2);font-size:.82rem">📄 ${data.originalName}</span>`;
+        showToast('Upload concluído', data.originalName, 'success', 3000);
+    } catch {
+        mpUploadAreaText.textContent = '❌ Erro no upload. Tente novamente.';
+        mpUploadArea.classList.remove('has-file');
+    }
+}
+
+btnMensagemPersonalizadaSalvar?.addEventListener('click', async () => {
+    const nome = mensagemPersonalizadaNome.value.trim();
+    const texto = mensagemPersonalizadaTexto.value.trim();
+    if (!nome) { showToast('Nome obrigatório', 'Digite um nome pra identificar a mensagem.', 'error'); return; }
+    if (!texto) { showToast('Mensagem obrigatória', 'Digite o texto da mensagem.', 'error'); return; }
+
+    const payload = {
+        nome, texto,
+        media_path: mensagemPersonalizadaMediaPath.value || null,
+        media_tipo: mensagemPersonalizadaMediaTipo.value || null,
+        horario_envio: mensagemPersonalizadaHorario.value || '09:00',
+        ativo: mensagemPersonalizadaAtivo.checked
+    };
+    const id = mensagemPersonalizadaId.value;
+    try {
+        const res = await fetch(id ? `/api/mensagens-personalizadas/${id}` : '/api/mensagens-personalizadas', {
+            method: id ? 'PUT' : 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Erro ao salvar');
+        showToast(id ? 'Mensagem atualizada!' : 'Mensagem criada!', '', 'success', 2500);
+        fecharModalMensagemPersonalizada();
+        loadMensagensPersonalizadas();
+    } catch (e) {
+        showToast('Erro ao salvar', e.message, 'error');
     }
 });
 
