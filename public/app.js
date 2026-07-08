@@ -2904,7 +2904,7 @@ document.getElementById('btn-nova-automacao-criar')?.addEventListener('click', a
 
 // ---- Modal: Configurar Etapas ----
 function etapaVazia() {
-    return { texto: '', media_path: null, media_tipo: null, dias_proxima_etapa: 1, unidade_tempo: 'dias' };
+    return { texto: '', media_path: null, media_tipo: null, dias_proxima_etapa: 1, unidade_tempo: 'dias', grupo_etiquetas: [], mensagens: [], envio_aleatorio: false };
 }
 
 async function abrirConfigurarEtapas(automacaoId, nome) {
@@ -2919,9 +2919,12 @@ async function abrirConfigurarEtapas(automacaoId, nome) {
     etapasAutomacaoLista.innerHTML = '<div style="padding:2rem;text-align:center;color:var(--text-3)">Carregando etapas...</div>';
     modalEtapasAutomacao?.classList.add('open');
     try {
+        await Promise.all([loadEtiquetas(), loadMensagensPersonalizadas()]);
         const res = await fetch(`/api/automacoes/${automacaoId}/etapas`);
         const etapas = await res.json();
-        etapasEditando = etapas.length > 0 ? etapas.map(e => ({ ...e })) : [etapaVazia()];
+        etapasEditando = etapas.length > 0
+            ? etapas.map(e => ({ ...e, grupo_etiquetas: e.grupo_etiquetas || [], mensagens: e.mensagens || [], envio_aleatorio: !!e.envio_aleatorio }))
+            : [etapaVazia()];
         renderEtapasLista();
     } catch (e) {
         etapasAutomacaoLista.innerHTML = '<div style="padding:2rem;text-align:center;color:var(--red)">Erro ao carregar etapas.</div>';
@@ -2958,6 +2961,43 @@ function renderEtapasLista() {
                     <button type="button" class="btn-secondary btn-inserir-nome" data-index="${i}" style="padding:.25rem .6rem;font-size:.72rem">➕ Nome do aluno</button>
                     <span style="font-size:.72rem;color:var(--text-3)">insere {nome} — vira o primeiro nome dele na hora de enviar</span>
                 </div>
+
+                <div style="margin-bottom:.6rem;background:rgba(255,255,255,0.02);border-radius:var(--radius-sm);padding:.7rem .8rem">
+                    <label style="display:block;font-size:.72rem;color:var(--text-3);margin-bottom:.4rem">🎯 Grupo de Alunos (opcional) — além da etiqueta da automação, só quem também tem uma dessas etiquetas recebe esta etapa</label>
+                    <div style="display:flex;gap:.4rem;flex-wrap:wrap;align-items:center;margin-bottom:.4rem">
+                        ${(etapa.grupo_etiquetas || []).map(etId => {
+                            const et = todasEtiquetas.find(x => x.id === etId);
+                            if (!et) return '';
+                            return `<span class="etiqueta-chip" style="background:${et.cor}22;color:${et.cor};border:1px solid ${et.cor}55">${et.nome}<button type="button" class="etapa-remover-grupo" data-index="${i}" data-etiqueta-id="${et.id}">×</button></span>`;
+                        }).join('')}
+                    </div>
+                    <select class="etapa-add-grupo" data-index="${i}" style="width:100%;background:var(--input-bg);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:.4rem .6rem;color:var(--text-1);font-size:.78rem">
+                        <option value="">+ Adicionar etiqueta ao grupo...</option>
+                        ${todasEtiquetas.filter(e => !(etapa.grupo_etiquetas || []).includes(e.id)).map(e => `<option value="${e.id}">${e.nome}</option>`).join('')}
+                    </select>
+                </div>
+
+                <div style="margin-bottom:.6rem;background:rgba(255,255,255,0.02);border-radius:var(--radius-sm);padding:.7rem .8rem">
+                    <label style="display:block;font-size:.72rem;color:var(--text-3);margin-bottom:.4rem">💬 Adicionar Mensagem — puxa mensagens prontas de "Mensagens Personalizadas"; se escolher uma ou mais, elas substituem o texto/anexo digitado acima</label>
+                    <div style="display:flex;gap:.4rem;flex-wrap:wrap;align-items:center;margin-bottom:.4rem">
+                        ${(etapa.mensagens || []).map(mId => {
+                            const msg = mensagensPersonalizadasGlobais.find(x => x.id === mId);
+                            if (!msg) return '';
+                            return `<span class="etiqueta-chip" style="background:rgba(37,211,102,0.12);color:var(--green);border:1px solid rgba(37,211,102,0.35)">${msg.nome}<button type="button" class="etapa-remover-mensagem" data-index="${i}" data-mensagem-id="${msg.id}">×</button></span>`;
+                        }).join('')}
+                    </div>
+                    <select class="etapa-add-mensagem" data-index="${i}" style="width:100%;background:var(--input-bg);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:.4rem .6rem;color:var(--text-1);font-size:.78rem;margin-bottom:.4rem">
+                        <option value="">+ Adicionar mensagem...</option>
+                        ${mensagensPersonalizadasGlobais.filter(m => !(etapa.mensagens || []).includes(m.id)).map(m => `<option value="${m.id}">${m.nome}</option>`).join('')}
+                    </select>
+                    ${(etapa.mensagens || []).length > 1 ? `
+                        <label style="display:flex;align-items:center;gap:.4rem;font-size:.75rem;color:var(--text-3);cursor:pointer">
+                            <input type="checkbox" class="etapa-envio-aleatorio" data-index="${i}" ${etapa.envio_aleatorio ? 'checked' : ''} style="accent-color:var(--green);width:15px;height:15px">
+                            🎲 Enviar de forma aleatória — cada aluno recebe uma mensagem diferente do grupo, em vez da mesma pra todo mundo
+                        </label>
+                    ` : ''}
+                </div>
+
                 <div style="display:flex;align-items:center;gap:.8rem;flex-wrap:wrap">
                     <label class="btn-secondary etapa-anexar-label" style="padding:.4rem .7rem;font-size:.78rem;cursor:pointer">
                         📎 Anexar arquivo
@@ -2999,6 +3039,27 @@ etapasAutomacaoLista?.addEventListener('change', async (e) => {
     const unidadeEl = e.target.closest('.etapa-unidade');
     if (unidadeEl) { etapasEditando[Number(unidadeEl.dataset.index)].unidade_tempo = unidadeEl.value; return; }
 
+    const addGrupoEl = e.target.closest('.etapa-add-grupo');
+    if (addGrupoEl && addGrupoEl.value) {
+        const index = Number(addGrupoEl.dataset.index);
+        const etapa = etapasEditando[index];
+        etapa.grupo_etiquetas = [...(etapa.grupo_etiquetas || []), Number(addGrupoEl.value)];
+        renderEtapasLista();
+        return;
+    }
+
+    const addMensagemEl = e.target.closest('.etapa-add-mensagem');
+    if (addMensagemEl && addMensagemEl.value) {
+        const index = Number(addMensagemEl.dataset.index);
+        const etapa = etapasEditando[index];
+        etapa.mensagens = [...(etapa.mensagens || []), Number(addMensagemEl.value)];
+        renderEtapasLista();
+        return;
+    }
+
+    const aleatorioEl = e.target.closest('.etapa-envio-aleatorio');
+    if (aleatorioEl) { etapasEditando[Number(aleatorioEl.dataset.index)].envio_aleatorio = aleatorioEl.checked; return; }
+
     const fileInput = e.target.closest('.etapa-anexo-input');
     if (!fileInput || !fileInput.files?.[0]) return;
     const index = Number(fileInput.dataset.index);
@@ -3020,6 +3081,22 @@ etapasAutomacaoLista?.addEventListener('change', async (e) => {
 });
 
 etapasAutomacaoLista?.addEventListener('click', (e) => {
+    const btnRemoverGrupo = e.target.closest('.etapa-remover-grupo');
+    if (btnRemoverGrupo) {
+        const index = Number(btnRemoverGrupo.dataset.index);
+        const etiquetaId = Number(btnRemoverGrupo.dataset.etiquetaId);
+        etapasEditando[index].grupo_etiquetas = (etapasEditando[index].grupo_etiquetas || []).filter(id => id !== etiquetaId);
+        renderEtapasLista();
+        return;
+    }
+    const btnRemoverMensagem = e.target.closest('.etapa-remover-mensagem');
+    if (btnRemoverMensagem) {
+        const index = Number(btnRemoverMensagem.dataset.index);
+        const mensagemId = Number(btnRemoverMensagem.dataset.mensagemId);
+        etapasEditando[index].mensagens = (etapasEditando[index].mensagens || []).filter(id => id !== mensagemId);
+        renderEtapasLista();
+        return;
+    }
     const btnRemover = e.target.closest('.btn-remover-etapa');
     if (btnRemover) {
         if (etapasEditando.length <= 1) { showToast('A automação precisa de pelo menos uma etapa', '', 'error'); return; }
@@ -3056,8 +3133,8 @@ btnAddEtapa?.addEventListener('click', () => {
 
 btnSalvarEtapas?.addEventListener('click', async () => {
     if (!automacaoEditandoId) return;
-    const semConteudo = etapasEditando.some(e => !e.texto?.trim() && !e.media_path);
-    if (semConteudo) { showToast('Etapa vazia', 'Toda etapa precisa de uma mensagem ou um arquivo anexado.', 'error'); return; }
+    const semConteudo = etapasEditando.some(e => !e.texto?.trim() && !e.media_path && (!e.mensagens || e.mensagens.length === 0));
+    if (semConteudo) { showToast('Etapa vazia', 'Toda etapa precisa de uma mensagem, um arquivo anexado ou mensagens personalizadas selecionadas.', 'error'); return; }
     btnSalvarEtapas.disabled = true;
     try {
         const res = await fetch(`/api/automacoes/${automacaoEditandoId}/etapas`, {

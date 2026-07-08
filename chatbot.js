@@ -255,6 +255,16 @@ async function initDB() {
             dias_proxima_etapa INTEGER DEFAULT 1
         );
         CREATE INDEX IF NOT EXISTS idx_automacao_etapas_automacao ON automacao_etapas(automacao_id, ordem);
+        CREATE TABLE IF NOT EXISTS automacao_etapa_grupos (
+            etapa_id INTEGER NOT NULL,
+            etiqueta_id INTEGER NOT NULL,
+            PRIMARY KEY (etapa_id, etiqueta_id)
+        );
+        CREATE TABLE IF NOT EXISTS automacao_etapa_mensagens (
+            etapa_id INTEGER NOT NULL,
+            mensagem_id INTEGER NOT NULL,
+            PRIMARY KEY (etapa_id, mensagem_id)
+        );
         CREATE TABLE IF NOT EXISTS contato_automacao_estado (
             telefone TEXT NOT NULL,
             automacao_id INTEGER NOT NULL,
@@ -296,6 +306,9 @@ async function initDB() {
     // com o Pacto ainda assim ter uma matrícula cadastrada (mesmo padrão do nome).
     try { await db.exec(`ALTER TABLE leads ADD COLUMN matricula TEXT DEFAULT NULL`); } catch(e) {}
     try { await db.exec(`ALTER TABLE leads ADD COLUMN data_nascimento TEXT DEFAULT NULL`); } catch(e) {}
+    // Se a etapa tem mensagens da biblioteca (Mensagens Personalizadas) anexadas
+    // e mais de uma, manda uma diferente por contato em vez de sempre a mesma.
+    try { await db.exec(`ALTER TABLE automacao_etapas ADD COLUMN envio_aleatorio INTEGER DEFAULT 0`); } catch(e) {}
     // Janela de horário permitida pra automação mandar mensagem (HH:mm) — vazio = sem restrição
     try { await db.exec(`ALTER TABLE automacoes ADD COLUMN horario_inicio TEXT DEFAULT NULL`); } catch(e) {}
     try { await db.exec(`ALTER TABLE automacoes ADD COLUMN horario_fim TEXT DEFAULT NULL`); } catch(e) {}
@@ -1226,24 +1239,62 @@ async function executarEtapaAutomacao(telefone, automacao, etapa) {
         return;
     }
 
+    // "Grupo de Alunos" da etapa (opcional): se preenchido, só quem tem PELO
+    // MENOS UMA dessas etiquetas (além da etiqueta que dispara a automação
+    // inteira) recebe esta etapa. Quem não pertence pula a etapa sem receber
+    // nada, mas segue o timing normal da automação pras próximas.
+    const gruposEtapa = await db.all('SELECT etiqueta_id FROM automacao_etapa_grupos WHERE etapa_id = ?', etapa.id);
+    let pertenceAoGrupo = true;
+    if (gruposEtapa.length > 0) {
+        const match = await db.get(
+            `SELECT 1 FROM contato_etiquetas WHERE telefone = ? AND etiqueta_id IN (${gruposEtapa.map(() => '?').join(',')})`,
+            [numLimpo, ...gruposEtapa.map(g => g.etiqueta_id)]
+        );
+        pertenceAoGrupo = !!match;
+    }
+
     let sucesso = false;
+    if (!pertenceAoGrupo) {
+        sucesso = true; // etapa "cumprida" sem enviar nada — não pertence ao grupo alvo
+    } else {
     try {
         const chatId = await resolverChatId(numLimpo);
         const nome = await resolverNomeContato(numLimpo);
         const primeiroNome = (nome && nome !== numLimpo) ? nome.split(' ')[0] : '';
         const matricula = await resolverMatriculaContato(numLimpo);
-        const texto = (etapa.texto || '')
+
+        // Se a etapa tem mensagens da biblioteca "Mensagens Personalizadas"
+        // anexadas, usa uma delas (aleatória ou sempre a primeira) em vez do
+        // texto/mídia digitado direto na etapa — mantém compatibilidade com
+        // etapas antigas que só têm texto/mídia próprios.
+        const mensagensEtapa = await db.all(
+            `SELECT mp.* FROM automacao_etapa_mensagens aem
+             INNER JOIN mensagens_personalizadas mp ON mp.id = aem.mensagem_id
+             WHERE aem.etapa_id = ?`,
+            etapa.id
+        );
+        let textoBase = etapa.texto;
+        let mediaPathBase = etapa.media_path;
+        if (mensagensEtapa.length > 0) {
+            const escolhida = etapa.envio_aleatorio
+                ? mensagensEtapa[Math.floor(Math.random() * mensagensEtapa.length)]
+                : mensagensEtapa[0];
+            textoBase = escolhida.texto;
+            mediaPathBase = escolhida.media_path;
+        }
+
+        const texto = (textoBase || '')
             .replace(/\{nome\}/gi, primeiroNome).replace(/\[nome\]/gi, primeiroNome)
             .replace(/\{matricula\}/gi, matricula).replace(/\[matricula\]/gi, matricula);
-        if (etapa.media_path) {
-            const mediaFullPath = path.join(__dirname, 'public', etapa.media_path.replace(/^\//, ''));
+        if (mediaPathBase) {
+            const mediaFullPath = path.join(__dirname, 'public', mediaPathBase.replace(/^\//, ''));
             if (fs.existsSync(mediaFullPath)) {
                 const media = MessageMedia.fromFilePath(mediaFullPath);
                 const sent = await client.sendMessage(chatId, media, texto ? { caption: texto } : undefined);
                 await registrarMensagemEnviada(numLimpo, texto || '[mídia]', nome, sent.id?._serialized);
                 sucesso = true;
             } else {
-                console.error(`Automação #${automacao.id}: arquivo de mídia não encontrado (${etapa.media_path}) pra ${numLimpo}`);
+                console.error(`Automação #${automacao.id}: arquivo de mídia não encontrado (${mediaPathBase}) pra ${numLimpo}`);
             }
         } else if (texto) {
             const sent = await client.sendMessage(chatId, texto);
@@ -1252,6 +1303,7 @@ async function executarEtapaAutomacao(telefone, automacao, etapa) {
         }
     } catch (e) {
         console.error(`Erro ao enviar etapa de automação #${automacao.id} pra ${numLimpo}:`, e.message);
+    }
     }
 
     if (!sucesso) {
@@ -1619,6 +1671,10 @@ app.delete('/api/automacoes/:id', async (req, res) => {
 app.get('/api/automacoes/:id/etapas', async (req, res) => {
     const { id } = req.params;
     const etapas = await db.all('SELECT * FROM automacao_etapas WHERE automacao_id = ? ORDER BY ordem ASC', id);
+    for (const etapa of etapas) {
+        etapa.grupo_etiquetas = (await db.all('SELECT etiqueta_id FROM automacao_etapa_grupos WHERE etapa_id = ?', etapa.id)).map(r => r.etiqueta_id);
+        etapa.mensagens = (await db.all('SELECT mensagem_id FROM automacao_etapa_mensagens WHERE etapa_id = ?', etapa.id)).map(r => r.mensagem_id);
+    }
     res.json(etapas);
 });
 
@@ -1672,15 +1728,31 @@ app.put('/api/automacoes/:id/etapas', async (req, res) => {
     const { id } = req.params;
     const { etapas } = req.body;
     if (!Array.isArray(etapas) || etapas.length === 0) return res.status(400).json({ error: 'A automação precisa de pelo menos uma etapa.' });
-    if (etapas.some(e => !e.texto?.trim() && !e.media_path)) return res.status(400).json({ error: 'Toda etapa precisa de uma mensagem ou um arquivo anexado.' });
+    if (etapas.some(e => !e.texto?.trim() && !e.media_path && (!e.mensagens || e.mensagens.length === 0))) {
+        return res.status(400).json({ error: 'Toda etapa precisa de uma mensagem, um arquivo anexado ou mensagens personalizadas selecionadas.' });
+    }
     try {
+        // Etapas são recriadas do zero a cada save (IDs novos) — limpa os vínculos
+        // de grupo/mensagens das etapas antigas antes de apagá-las, senão sobra lixo.
+        const etapasAntigas = await db.all('SELECT id FROM automacao_etapas WHERE automacao_id = ?', id);
+        for (const ea of etapasAntigas) {
+            await db.run('DELETE FROM automacao_etapa_grupos WHERE etapa_id = ?', ea.id);
+            await db.run('DELETE FROM automacao_etapa_mensagens WHERE etapa_id = ?', ea.id);
+        }
         await db.run('DELETE FROM automacao_etapas WHERE automacao_id = ?', id);
         let ordem = 1;
         for (const etapa of etapas) {
-            await db.run(
-                'INSERT INTO automacao_etapas (automacao_id, ordem, texto, media_path, media_tipo, dias_proxima_etapa, unidade_tempo) VALUES (?, ?, ?, ?, ?, ?, ?)',
-                [id, ordem, etapa.texto || null, etapa.media_path || null, etapa.media_tipo || null, parseInt(etapa.dias_proxima_etapa) || 1, etapa.unidade_tempo === 'horas' ? 'horas' : 'dias']
+            const result = await db.run(
+                'INSERT INTO automacao_etapas (automacao_id, ordem, texto, media_path, media_tipo, dias_proxima_etapa, unidade_tempo, envio_aleatorio) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+                [id, ordem, etapa.texto || null, etapa.media_path || null, etapa.media_tipo || null, parseInt(etapa.dias_proxima_etapa) || 1, etapa.unidade_tempo === 'horas' ? 'horas' : 'dias', etapa.envio_aleatorio ? 1 : 0]
             );
+            const etapaId = result.lastID;
+            for (const etiquetaId of (etapa.grupo_etiquetas || [])) {
+                await db.run('INSERT OR IGNORE INTO automacao_etapa_grupos (etapa_id, etiqueta_id) VALUES (?, ?)', [etapaId, etiquetaId]);
+            }
+            for (const mensagemId of (etapa.mensagens || [])) {
+                await db.run('INSERT OR IGNORE INTO automacao_etapa_mensagens (etapa_id, mensagem_id) VALUES (?, ?)', [etapaId, mensagemId]);
+            }
             ordem++;
         }
         io.emit('automacoes_atualizadas');
