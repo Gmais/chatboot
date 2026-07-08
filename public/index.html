@@ -49,6 +49,11 @@
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
                 Painel de Controle
             </a>
+            <a href="#" class="nav-btn" data-target="conversas-section" id="nav-conversas">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 8h2a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2h-2v4l-4-4H9a1.994 1.994 0 0 1-1.414-.586"/><path d="M15 2H6a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h2v4l4-4h3a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2z"/></svg>
+                Bate Papo ao Vivo
+                <span id="badge-nao-lidas" style="display:none;background:var(--red);color:#fff;border-radius:50px;padding:0.1rem 0.45rem;font-size:0.7rem;font-weight:700;margin-left:auto;">0</span>
+            </a>
             <a href="#" class="nav-btn" data-target="mensagens-section">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
                 Mensagem Rápida
@@ -60,11 +65,6 @@
             <a href="#" class="nav-btn" data-target="automacoes-section">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M3 12h3m12 0h3M12 3v3m0 12v3M5.6 5.6l2.1 2.1m8.6 8.6 2.1 2.1M5.6 18.4l2.1-2.1m8.6-8.6 2.1-2.1"/></svg>
                 Automação
-            </a>
-            <a href="#" class="nav-btn" data-target="conversas-section" id="nav-conversas">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 8h2a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2h-2v4l-4-4H9a1.994 1.994 0 0 1-1.414-.586"/><path d="M15 2H6a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h2v4l4-4h3a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2z"/></svg>
-                Bate Papo ao Vivo
-                <span id="badge-nao-lidas" style="display:none;background:var(--red);color:#fff;border-radius:50px;padding:0.1rem 0.45rem;font-size:0.7rem;font-weight:700;margin-left:auto;">0</span>
             </a>
             <a href="#" class="nav-btn" data-target="contatos-section">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20"/></svg>
@@ -395,6 +395,7 @@
                         <div style="display:flex;gap:.4rem;margin-top:.7rem">
                             <button type="button" class="chat-status-tab active" id="tab-chat-abertas" data-status="aberta">Abertas</button>
                             <button type="button" class="chat-status-tab" id="tab-chat-fechadas" data-status="fechada">Fechadas</button>
+                            <button type="button" class="chat-status-tab" id="tab-chat-aguardando" data-status="aguardando">Aguardando</button>
                         </div>
                     </div>
                     <div id="chat-contact-list">
@@ -426,7 +427,7 @@
                                 <option value="">🏷️ Etiqueta...</option>
                             </select>
                             <button id="btn-chat-assumir" class="btn-secondary" style="padding:.35rem .8rem;font-size:.75rem;white-space:nowrap">🙋 Assumir Conversa</button>
-                            <button id="btn-chat-resolver" class="btn-secondary" style="padding:.35rem .7rem;font-size:.75rem;white-space:nowrap" title="Marcar como resolvida">✅ Resolver</button>
+                            <button id="btn-chat-resolver" class="btn-secondary" style="padding:.35rem .7rem;font-size:.75rem;white-space:nowrap" title="Marcar como finalizada">✅ Finalizar</button>
                             <button id="btn-chat-excluir" class="btn-danger" style="padding:.35rem .7rem;font-size:.75rem" title="Excluir conversa (irreversível)">🗑️</button>
                             <button id="btn-chat-reload" class="btn-secondary" style="padding:.35rem .7rem;font-size:.75rem" title="Recarregar histórico">↻</button>
                         </div>
