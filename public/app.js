@@ -975,9 +975,16 @@ const contatosContador    = document.getElementById('contatos-contador');
 const btnUsarSelecionados = document.getElementById('btn-usar-selecionados');
 const contatosFiltroEtiquetas = document.getElementById('contatos-filtro-etiquetas');
 
+// Elementos da nova página "Contatos"
+const contatosPageBusca       = document.getElementById('contatos-page-busca');
+const contatosPageFiltroEtiquetas = document.getElementById('contatos-page-filtro-etiquetas');
+const contatosPageTableBody   = document.getElementById('contatos-page-table-body');
+const btnGerenciarEtiquetasPage = document.getElementById('btn-gerenciar-etiquetas-page');
+
 let todosContatos = [];
 const contatosSelecionados = new Set();
 const etiquetasFiltroAtivas = new Set();
+const etiquetasFiltroAtivasPage = new Set();
 
 function contatosFiltrados() {
     const termo = (contatosBusca?.value || '').trim().toLowerCase();
@@ -1015,7 +1022,6 @@ contatosFiltroEtiquetas?.addEventListener('click', (e) => {
     renderContatos();
 });
 
-const etiquetasFiltroAtivasPage = new Set();
 function renderFiltroEtiquetasPage() {
     if (!contatosPageFiltroEtiquetas) return;
     if (todasEtiquetas.length === 0) { contatosPageFiltroEtiquetas.innerHTML = ''; return; }
