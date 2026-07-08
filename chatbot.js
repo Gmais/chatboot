@@ -1393,7 +1393,13 @@ async function enrolarContatosExistentesNaAutomacao(automacaoId) {
         if (jaMatriculado) continue;
         if (!primeiro) await delay(await obterProximoDelayAutomacao());
         primeiro = false;
-        await executarEtapaAutomacao(c.telefone, automacao, etapa1);
+        // Um erro num contato não pode abortar o lote inteiro — os demais nunca
+        // mais seriam pegos, já que essa varredura não roda sozinha de novo.
+        try {
+            await executarEtapaAutomacao(c.telefone, automacao, etapa1);
+        } catch (e) {
+            console.error(`Erro ao matricular ${c.telefone} na automação #${automacaoId}:`, e.message);
+        }
     }
 }
 
@@ -1432,7 +1438,13 @@ async function processarAutomacoesPendentes() {
                 await db.run('DELETE FROM contato_automacao_estado WHERE telefone = ? AND automacao_id = ?', [estado.telefone, estado.automacao_id]);
                 continue;
             }
-            await executarEtapaAutomacao(estado.telefone, automacao, proximaEtapa);
+            // Um erro num contato não pode travar o lote inteiro — os demais ficariam
+            // esperando mais 30min à toa por causa de um só que deu problema.
+            try {
+                await executarEtapaAutomacao(estado.telefone, automacao, proximaEtapa);
+            } catch (e) {
+                console.error(`Erro ao processar etapa de ${estado.telefone} na automação #${automacao.id}:`, e.message);
+            }
         }
     } catch (e) {
         console.error('Erro ao processar automações pendentes:', e.message);
@@ -1552,7 +1564,11 @@ async function processarEtiquetaAniversariantes() {
             if (jaTem) continue;
             if (!primeiro) await delay(await obterProximoDelayAutomacao());
             primeiro = false;
-            await aplicarEtiquetaContato(numLimpo, etiquetaId);
+            try {
+                await aplicarEtiquetaContato(numLimpo, etiquetaId);
+            } catch (e) {
+                console.error(`Erro ao etiquetar aniversariante ${numLimpo}:`, e.message);
+            }
         }
 
         // Some com a etiqueta de quem a tem mas não faz aniversário hoje — o dia virou.
