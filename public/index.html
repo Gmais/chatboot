@@ -35,6 +35,10 @@
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
                 Leads
             </a>
+            <a href="#" class="nav-btn" data-target="contatos-section">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20"/></svg>
+                Contatos
+            </a>
             <a href="#" class="nav-btn" data-target="disparos-section">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
                 Disparos
@@ -284,6 +288,34 @@
             </div>
         </div>
 
+        <!-- ===================== CONTATOS ===================== -->
+        <div id="contatos-section" class="page-section hidden">
+            <div class="card glass">
+                <div class="section-header">
+                    <h3>📇 Gerenciador de Contatos</h3>
+                    <div style="display:flex;gap:.8rem;align-items:center;flex-wrap:wrap">
+                        <input type="text" id="contatos-page-busca" placeholder="Buscar por nome ou telefone..." style="background:var(--input-bg);border:1px solid rgba(255,255,255,0.1);border-radius:var(--radius-sm);padding:.5rem .8rem;color:var(--text-1);font-size:.85rem;min-width:220px">
+                        <button type="button" class="btn-secondary" id="btn-gerenciar-etiquetas-page" style="padding:.5rem 1rem;font-size:.85rem">⚙️ Etiquetas</button>
+                    </div>
+                </div>
+                <div style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:center;margin-bottom:1rem" id="contatos-page-filtro-etiquetas"></div>
+                
+                <table class="leads-table">
+                    <thead>
+                        <tr>
+                            <th>Contato</th>
+                            <th>Etiquetas</th>
+                            <th>Capturado em</th>
+                            <th style="text-align:right">Interações</th>
+                        </tr>
+                    </thead>
+                    <tbody id="contatos-page-table-body">
+                        <tr><td colspan="4" style="padding:2rem;text-align:center;color:var(--text-3)">Carregando contatos...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
         <!-- ===================== DISPAROS ===================== -->
         <div id="disparos-section" class="page-section hidden">
             <div class="card glass" style="margin-bottom:1.5rem">
@@ -296,7 +328,10 @@
                         </label>
                     </div>
                 </div>
-                <div id="contatos-filtro-etiquetas" style="display:flex;gap:.5rem;flex-wrap:wrap;margin-bottom:.8rem"></div>
+                <div style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:center;margin-bottom:.8rem">
+                    <div id="contatos-filtro-etiquetas" style="display:flex;gap:.5rem;flex-wrap:wrap"></div>
+                    <button type="button" class="btn-secondary" id="btn-gerenciar-etiquetas-disparos" style="padding:.3rem .7rem;font-size:.75rem" title="Gerenciar etiquetas">⚙️ Etiquetas</button>
+                </div>
                 <div id="contatos-lista" style="max-height:320px;overflow-y:auto;display:flex;flex-direction:column;gap:.2rem">
                     <p style="color:var(--text-3);text-align:center;padding:2rem">Carregando contatos...</p>
                 </div>
@@ -574,6 +609,7 @@ Sempre tente agendar uma aula experimental."></textarea>
                         <option value="">Nenhuma</option>
                     </select>
                     <button type="button" class="btn-secondary" id="btn-modal-nova-etiqueta" style="padding:.65rem 1rem;font-size:.8rem;white-space:nowrap">+ Nova</button>
+                    <button type="button" class="btn-secondary" id="btn-modal-gerenciar-etiqueta" style="padding:.65rem .8rem;font-size:.8rem" title="Gerenciar etiquetas">⚙️</button>
                 </div>
             </div>
             <div class="form-group">
@@ -585,6 +621,20 @@ Sempre tente agendar uma aula experimental."></textarea>
             <div class="modal-footer">
                 <button class="btn-cancel" id="modal-cancelar">Cancelar</button>
                 <button class="btn-primary" id="modal-salvar">💾 Salvar Regra</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- MODAL: GERENCIAR ETIQUETAS -->
+    <div class="modal-overlay" id="modal-etiquetas-overlay">
+        <div class="modal">
+            <h3>🏷️ Gerenciar Etiquetas</h3>
+            <div id="etiquetas-gerenciar-lista" style="display:flex;flex-direction:column;gap:.6rem;max-height:340px;overflow-y:auto;margin:1rem 0">
+                <p style="color:var(--text-3);text-align:center;padding:1rem">Carregando...</p>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-cancel" id="modal-etiquetas-fechar">Fechar</button>
+                <button class="btn-primary" id="btn-etiquetas-nova">+ Nova Etiqueta</button>
             </div>
         </div>
     </div>

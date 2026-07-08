@@ -357,7 +357,7 @@ navBtns.forEach(btn => {
         if (targetId === 'ia-section') loadIaConfig();
         if (targetId === 'configuracoes-section') loadHorarioConfig();
         if (targetId === 'conversas-section') CM.onEnterSection();
-        if (targetId === 'disparos-section') loadContatos();
+        if (targetId === 'contatos-section' || targetId === 'disparos-section') loadContatos();
         if (targetId === 'integracoes-section') loadCrmColaboradores();
     });
 });
@@ -707,6 +707,94 @@ async function removerEtiquetaContato(telefone, etiquetaId) {
     await fetch(`/api/contatos/${telefone}/etiquetas/${etiquetaId}`, { method: 'DELETE' });
 }
 
+// =====================================
+// MODAL: GERENCIAR ETIQUETAS (editar/excluir)
+// =====================================
+const modalEtiquetasOverlay = document.getElementById('modal-etiquetas-overlay');
+const etiquetasGerenciarLista = document.getElementById('etiquetas-gerenciar-lista');
+
+function renderGerenciarEtiquetasLista() {
+    if (!etiquetasGerenciarLista) return;
+    if (todasEtiquetas.length === 0) {
+        etiquetasGerenciarLista.innerHTML = '<p style="color:var(--text-3);text-align:center;padding:1rem">Nenhuma etiqueta ainda.</p>';
+        return;
+    }
+    etiquetasGerenciarLista.innerHTML = todasEtiquetas.map(e => `
+        <div class="etiqueta-gerenciar-row" data-id="${e.id}" style="display:flex;align-items:center;gap:.6rem;padding:.6rem;background:rgba(255,255,255,0.03);border-radius:8px">
+            <input type="color" class="etiqueta-cor-input" value="${e.cor}" style="width:34px;height:34px;border:none;border-radius:6px;cursor:pointer;background:none;flex-shrink:0">
+            <input type="text" class="etiqueta-nome-input" value="${e.nome}" style="flex:1;min-width:0;background:var(--input-bg);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:.4rem .6rem;color:var(--text-1);font-family:'Inter',sans-serif">
+            <span style="color:var(--text-3);font-size:.72rem;white-space:nowrap">${e.total_contatos} contato${e.total_contatos !== 1 ? 's' : ''}</span>
+            <button type="button" class="btn-secondary etiqueta-salvar-btn" style="padding:.4rem .6rem;font-size:.75rem" title="Salvar">💾</button>
+            <button type="button" class="btn-danger etiqueta-excluir-btn" style="padding:.4rem .6rem;font-size:.75rem" title="Excluir">🗑️</button>
+        </div>
+    `).join('');
+}
+
+async function abrirGerenciarEtiquetas() {
+    await loadEtiquetas();
+    renderGerenciarEtiquetasLista();
+    modalEtiquetasOverlay?.classList.add('open');
+}
+
+function fecharGerenciarEtiquetas() { modalEtiquetasOverlay?.classList.remove('open'); }
+
+document.getElementById('modal-etiquetas-fechar')?.addEventListener('click', fecharGerenciarEtiquetas);
+modalEtiquetasOverlay?.addEventListener('click', (e) => { if (e.target === modalEtiquetasOverlay) fecharGerenciarEtiquetas(); });
+
+document.getElementById('btn-etiquetas-nova')?.addEventListener('click', async () => {
+    const nova = await criarEtiquetaRapida();
+    if (nova) renderGerenciarEtiquetasLista();
+});
+
+etiquetasGerenciarLista?.addEventListener('click', async (e) => {
+    const row = e.target.closest('.etiqueta-gerenciar-row');
+    if (!row) return;
+    const id = row.dataset.id;
+
+    if (e.target.closest('.etiqueta-salvar-btn')) {
+        const nome = row.querySelector('.etiqueta-nome-input').value.trim();
+        const cor = row.querySelector('.etiqueta-cor-input').value;
+        if (!nome) { showToast('Erro', 'Nome não pode ficar em branco', 'error'); return; }
+        try {
+            const res = await fetch(`/api/etiquetas/${id}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ nome, cor })
+            });
+            const atualizada = await res.json();
+            if (!res.ok) throw new Error(atualizada.error || 'Erro ao salvar');
+            showToast('Etiqueta atualizada', nome, 'success', 2500);
+        } catch (err) {
+            showToast('Erro', err.message, 'error');
+        }
+    }
+
+    if (e.target.closest('.etiqueta-excluir-btn')) {
+        const nome = row.querySelector('.etiqueta-nome-input').value.trim();
+        if (!confirm(`Excluir a etiqueta "${nome}"? Ela será removida de todos os contatos e regras.`)) return;
+        await fetch(`/api/etiquetas/${id}`, { method: 'DELETE' });
+        showToast('Etiqueta excluída', nome, 'info', 2500);
+    }
+});
+
+// Reflete mudanças de etiquetas (criadas/editadas/excluídas de qualquer lugar,
+// inclusive por outro operador) em todas as telas que usam etiquetas.
+socket.on('etiquetas_atualizadas', async () => {
+    await loadEtiquetas();
+    if (modalEtiquetasOverlay?.classList.contains('open')) renderGerenciarEtiquetasLista();
+    if (typeof renderFiltroEtiquetas === 'function') renderFiltroEtiquetas();
+    if (typeof renderContatos === 'function') renderContatos();
+    if (typeof renderModalEtiquetaOptions === 'function' && !modalOverlay?.classList.contains('open')) {
+        // não mexe no select se o operador estiver editando uma regra agora
+    }
+    if (typeof renderChatHeaderTags === 'function' && typeof activePhone !== 'undefined') {
+        // tratado dentro do módulo CM via seu próprio listener, se necessário
+    }
+});
+
+document.getElementById('btn-gerenciar-etiquetas-disparos')?.addEventListener('click', abrirGerenciarEtiquetas);
+document.getElementById('btn-modal-gerenciar-etiqueta')?.addEventListener('click', abrirGerenciarEtiquetas);
+
 loadEtiquetas();
 
 // =====================================
@@ -927,6 +1015,39 @@ contatosFiltroEtiquetas?.addEventListener('click', (e) => {
     renderContatos();
 });
 
+const etiquetasFiltroAtivasPage = new Set();
+function renderFiltroEtiquetasPage() {
+    if (!contatosPageFiltroEtiquetas) return;
+    if (todasEtiquetas.length === 0) { contatosPageFiltroEtiquetas.innerHTML = ''; return; }
+    contatosPageFiltroEtiquetas.innerHTML = todasEtiquetas.map(e => `
+        <button type="button" class="etiqueta-filtro-chip${etiquetasFiltroAtivasPage.has(e.id) ? ' active' : ''}"
+            data-etiqueta-id="${e.id}"
+            style="${etiquetasFiltroAtivasPage.has(e.id) ? `background:${e.cor};border-color:${e.cor}` : `border-color:${e.cor}55;color:${e.cor}`}">
+            ${e.nome}
+        </button>
+    `).join('');
+}
+
+contatosPageFiltroEtiquetas?.addEventListener('click', (e) => {
+    const chip = e.target.closest('.etiqueta-filtro-chip');
+    if (!chip) return;
+    const id = Number(chip.dataset.etiquetaId);
+    if (etiquetasFiltroAtivasPage.has(id)) etiquetasFiltroAtivasPage.delete(id);
+    else etiquetasFiltroAtivasPage.add(id);
+    renderFiltroEtiquetasPage();
+    renderContatosPage();
+});
+
+function atualizarContadorContatos() {
+    const n = contatosSelecionados.size;
+    if (!contatosContador) return;
+    contatosContador.textContent = `${n} contato${n !== 1 ? 's' : ''} selecionado${n !== 1 ? 's' : ''}`;
+    if (contatosSelectAll) {
+        const visiveis = contatosFiltrados();
+        contatosSelectAll.checked = visiveis.length > 0 && visiveis.every(c => contatosSelecionados.has(c.telefone));
+    }
+}
+
 function renderContatos() {
     if (!contatosLista) return;
     const filtrados = contatosFiltrados();
@@ -948,16 +1069,46 @@ function renderContatos() {
     atualizarContadorContatos();
 }
 
+function renderContatosPage() {
+    if (!contatosPageTableBody) return;
+    const filtrados = contatosPageFiltrados();
+    if (filtrados.length === 0) {
+        contatosPageTableBody.innerHTML = '<tr><td colspan="4" style="padding:2rem;text-align:center;color:var(--text-3)">Nenhum contato encontrado.</td></tr>';
+        return;
+    }
+    contatosPageTableBody.innerHTML = filtrados.map(c => {
+        const dataStr = c.data_captura ? new Date(c.data_captura).toLocaleString('pt-BR') : '-';
+        return `
+            <tr>
+                <td>
+                    <div style="font-weight:500;color:var(--text-1)">${c.nome}</div>
+                    <div style="font-size:.75rem;color:var(--text-3)">${c.telefone}</div>
+                </td>
+                <td>
+                    <div style="display:flex;gap:.3rem;flex-wrap:wrap">
+                        ${c.etiquetas.length > 0 ? c.etiquetas.map(e => etiquetaChipHtml(e, false)).join('') : '<span style="color:var(--text-3);font-size:.75rem">Nenhuma</span>'}
+                    </div>
+                </td>
+                <td style="color:var(--text-2);font-size:.85rem">${dataStr}</td>
+                <td style="text-align:right;color:var(--text-2)">
+                    <span style="background:rgba(255,255,255,0.05);padding:.2rem .5rem;border-radius:4px">${c.mensagens_recebidas} msg${c.mensagens_recebidas !== 1 ? 's' : ''}</span>
+                </td>
+            </tr>
+        `;
+    }).join('');
+}
+
 async function loadContatos() {
-    if (!contatosLista) return;
     try {
         const [res] = await Promise.all([fetch('/api/contatos'), loadEtiquetas()]);
         todosContatos = await res.json();
         renderFiltroEtiquetas();
         renderContatos();
+        renderContatosPage();
     } catch (e) {
         console.error('Erro ao carregar contatos', e);
-        contatosLista.innerHTML = '<p style="color:var(--text-3);text-align:center;padding:2rem">Erro ao carregar contatos.</p>';
+        if (contatosLista) contatosLista.innerHTML = '<p style="color:var(--text-3);text-align:center;padding:2rem">Erro ao carregar contatos.</p>';
+        if (contatosPageTableBody) contatosPageTableBody.innerHTML = '<tr><td colspan="4" style="padding:2rem;text-align:center;color:var(--text-3)">Erro ao carregar contatos.</td></tr>';
     }
 }
 
@@ -970,6 +1121,7 @@ contatosLista?.addEventListener('change', (e) => {
 });
 
 contatosBusca?.addEventListener('input', renderContatos);
+contatosPageBusca?.addEventListener('input', renderContatosPage);
 
 contatosSelectAll?.addEventListener('change', () => {
     const visiveis = contatosFiltrados();
