@@ -732,13 +732,19 @@ app.get('/api/contatos', async (req, res) => {
     }
 });
 
-// Edita o nome de um contato na Audiência (usado pela modal de edição)
+// Edita o nome de um contato na Audiência (usado pela modal de edição).
+// leads.telefone vem de fontes diferentes com formatos diferentes: mensagens do
+// WhatsApp gravam com sufixo (@c.us/@lid), importação por planilha grava limpo
+// — por isso o WHERE tenta todos os formatos, não só o número limpo que o front manda.
 app.put('/api/contatos/:telefone', async (req, res) => {
     const { telefone } = req.params;
     const { nome } = req.body;
     if (!nome || !nome.trim()) return res.status(400).json({ error: 'Nome é obrigatório.' });
     try {
-        const result = await db.run('UPDATE leads SET nome = ? WHERE telefone = ?', [nome.trim(), telefone]);
+        const result = await db.run(
+            'UPDATE leads SET nome = ? WHERE telefone = ? OR telefone = ? OR telefone = ?',
+            [nome.trim(), telefone, `${telefone}@c.us`, `${telefone}@lid`]
+        );
         if (result.changes === 0) return res.status(404).json({ error: 'Contato não encontrado.' });
         res.json({ success: true, nome: nome.trim() });
     } catch (err) {
@@ -821,10 +827,16 @@ app.post('/api/contatos/importar', uploadCsv.single('planilha'), async (req, res
             if (!telefone) { ignorados++; continue; }
 
             const nome = (linha.nome || '').trim() || null;
-            const existente = await db.get('SELECT telefone FROM leads WHERE telefone = ?', telefone);
+            // leads.telefone pode estar salvo limpo (import anterior) ou com sufixo
+            // @c.us/@lid (contato que já mandou mensagem pelo WhatsApp) — sem checar
+            // os dois formatos, um contato que já existe vira duplicado no import.
+            const existente = await db.get(
+                'SELECT telefone FROM leads WHERE telefone = ? OR telefone = ? OR telefone = ?',
+                [telefone, `${telefone}@c.us`, `${telefone}@lid`]
+            );
 
             if (existente) {
-                if (nome) await db.run('UPDATE leads SET nome = ? WHERE telefone = ?', [nome, telefone]);
+                if (nome) await db.run('UPDATE leads SET nome = ? WHERE telefone = ?', [nome, existente.telefone]);
                 atualizados++;
             } else {
                 await db.run('INSERT INTO leads (telefone, nome, origem) VALUES (?, ?, ?)', [telefone, nome, 'planilha']);
