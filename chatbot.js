@@ -1168,12 +1168,21 @@ async function processarAutomacoesPendentes() {
         );
         // Se muitos contatos vencerem a etapa ao mesmo tempo (ex: todos entraram no
         // mesmo dia), manda um de cada vez com um respiro entre eles — evita um
-        // estouro de mensagens simultâneas (risco de bloqueio no WhatsApp).
-        const configDelay = await db.get("SELECT valor FROM configuracoes WHERE chave = 'automacao_delay_segundos'");
-        const delayEntreEnviosMs = (parseInt(configDelay?.valor) || 5) * 1000;
+        // estouro de mensagens simultâneas (risco de bloqueio no WhatsApp). Modo
+        // fixo usa sempre o mesmo intervalo; aleatório sorteia um novo a cada envio.
+        const configRows = await db.all(
+            "SELECT chave, valor FROM configuracoes WHERE chave IN ('automacao_delay_segundos', 'automacao_delay_modo', 'automacao_delay_velocidade')"
+        );
+        const configMap = Object.fromEntries(configRows.map(r => [r.chave, r.valor]));
+        const delayFixoMs = (parseInt(configMap.automacao_delay_segundos) || 5) * 1000;
+        function proximoDelayAutomacao() {
+            if (configMap.automacao_delay_modo !== 'aleatorio') return delayFixoMs;
+            const [min, max] = FAIXAS_VELOCIDADE[configMap.automacao_delay_velocidade] || FAIXAS_VELOCIDADE.medio;
+            return Math.floor(min + Math.random() * (max - min));
+        }
         let primeiro = true;
         for (const estado of pendentes) {
-            if (!primeiro) await delay(delayEntreEnviosMs);
+            if (!primeiro) await delay(proximoDelayAutomacao());
             primeiro = false;
             const automacao = await db.get('SELECT * FROM automacoes WHERE id = ?', estado.automacao_id);
             if (!automacao || !automacao.ativo) {
@@ -1550,12 +1559,6 @@ app.post('/api/broadcast/start', upload.single('media'), async (req, res) => {
 
     // Modo fixo: mesmo intervalo sempre. Modo aleatório: um valor novo dentro
     // da faixa escolhida a cada mensagem — menos previsível, reduz risco de bloqueio.
-    const FAIXAS_VELOCIDADE = {
-        curto: [5000, 10000],
-        medio: [10000, 30000],
-        longo: [30000, 120000],
-        muito_longo: [120000, 320000]
-    };
     const delayFixoMs = parseInt(delay_ms) || 5000;
     function proximoDelay() {
         if (delay_modo !== 'aleatorio') return delayFixoMs;
@@ -2113,6 +2116,16 @@ async function handleCadastroFlow(telefone, texto, textoOriginal) {
 // FUNIL DE MENSAGENS — DINÂMICO
 // =====================================
 const delay = (ms) => new Promise((res) => setTimeout(res, ms));
+
+// Faixas de intervalo "aleatório" (ms) — compartilhadas entre Disparos e
+// Automação: cada mensagem espera um valor novo dentro da faixa escolhida,
+// menos previsível que um intervalo fixo, reduz risco de bloqueio no WhatsApp.
+const FAIXAS_VELOCIDADE = {
+    curto: [5000, 10000],
+    medio: [10000, 30000],
+    longo: [30000, 120000],
+    muito_longo: [120000, 320000]
+};
 
 // Simula o tempo de "digitando...": resposta curta pausa pouco, resposta longa
 // pausa mais — enviar tudo instantâneo soa robótico demais.

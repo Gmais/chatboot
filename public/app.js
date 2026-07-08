@@ -2960,32 +2960,54 @@ socket.on('automacoes_atualizadas', () => {
 // ACOMPANHAMENTO DE AUTOMAÇÕES (tela de Disparos)
 // =====================================
 const acompanhamentoAutomacoesLista = document.getElementById('acompanhamento-automacoes-lista');
+const automacaoDelayModo = document.getElementById('automacao-delay-modo');
 const automacaoDelaySegundos = document.getElementById('automacao-delay-segundos');
+const automacaoDelayVelocidade = document.getElementById('automacao-delay-velocidade');
+const automacaoDelayFixoGroup = document.getElementById('automacao-delay-fixo-group');
+const automacaoDelayAleatorioGroup = document.getElementById('automacao-delay-aleatorio-group');
 const progressoAbertoPorAutomacao = new Set();
 
+function atualizarGruposDelayAutomacao() {
+    const aleatorio = automacaoDelayModo?.value === 'aleatorio';
+    if (automacaoDelayFixoGroup) automacaoDelayFixoGroup.style.display = aleatorio ? 'none' : 'flex';
+    if (automacaoDelayAleatorioGroup) automacaoDelayAleatorioGroup.style.display = aleatorio ? 'flex' : 'none';
+}
+
 async function loadAutomacaoDelayConfig() {
-    if (!automacaoDelaySegundos) return;
+    if (!automacaoDelayModo) return;
     try {
         const res = await fetch('/api/configuracoes');
         const config = await res.json();
+        automacaoDelayModo.value = config.automacao_delay_modo || 'fixo';
         automacaoDelaySegundos.value = config.automacao_delay_segundos || 5;
+        automacaoDelayVelocidade.value = config.automacao_delay_velocidade || 'medio';
+        atualizarGruposDelayAutomacao();
     } catch (e) {}
 }
 
-automacaoDelaySegundos?.addEventListener('change', async () => {
-    const valor = Math.max(1, parseInt(automacaoDelaySegundos.value) || 5);
-    automacaoDelaySegundos.value = valor;
+async function salvarAutomacaoDelayConfig() {
     try {
         await fetch('/api/configuracoes', {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ automacao_delay_segundos: valor })
+            body: JSON.stringify({
+                automacao_delay_modo: automacaoDelayModo.value,
+                automacao_delay_segundos: Math.max(1, parseInt(automacaoDelaySegundos.value) || 5),
+                automacao_delay_velocidade: automacaoDelayVelocidade.value
+            })
         });
-        showToast('Intervalo salvo', `${valor}s entre mensagens de automação.`, 'success', 2000);
+        showToast('Intervalo salvo', '', 'success', 2000);
     } catch (e) {
         showToast('Erro', 'Não foi possível salvar o intervalo', 'error');
     }
+}
+
+automacaoDelayModo?.addEventListener('change', () => { atualizarGruposDelayAutomacao(); salvarAutomacaoDelayConfig(); });
+automacaoDelaySegundos?.addEventListener('change', () => {
+    automacaoDelaySegundos.value = Math.max(1, parseInt(automacaoDelaySegundos.value) || 5);
+    salvarAutomacaoDelayConfig();
 });
+automacaoDelayVelocidade?.addEventListener('change', salvarAutomacaoDelayConfig);
 
 async function loadAcompanhamentoAutomacoes() {
     if (!acompanhamentoAutomacoesLista) return;
