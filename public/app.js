@@ -1174,7 +1174,7 @@ function renderContatosPage() {
     if (!contatosPageTableBody) return;
     const filtrados = contatosPageFiltrados();
     if (filtrados.length === 0) {
-        contatosPageTableBody.innerHTML = '<tr><td colspan="3" style="padding:2rem;text-align:center;color:var(--text-3)">Nenhum contato encontrado.</td></tr>';
+        contatosPageTableBody.innerHTML = '<tr><td colspan="4" style="padding:2rem;text-align:center;color:var(--text-3)">Nenhum contato encontrado.</td></tr>';
         return;
     }
     contatosPageTableBody.innerHTML = filtrados.map(c => {
@@ -1192,6 +1192,9 @@ function renderContatosPage() {
                 <td style="text-align:right;color:var(--text-2)">
                     <span style="background:rgba(255,255,255,0.05);padding:.2rem .5rem;border-radius:4px">${c.mensagens_recebidas} msg${c.mensagens_recebidas !== 1 ? 's' : ''}</span>
                 </td>
+                <td style="text-align:right">
+                    <button type="button" class="btn-danger btn-excluir-contato" data-telefone="${c.telefone}" data-nome="${c.nome}" style="padding:.35rem .6rem;font-size:.75rem" title="Excluir contato">🗑️</button>
+                </td>
             </tr>
         `;
     }).join('');
@@ -1207,7 +1210,7 @@ async function loadContatos() {
     } catch (e) {
         console.error('Erro ao carregar contatos', e);
         if (contatosLista) contatosLista.innerHTML = '<p style="color:var(--text-3);text-align:center;padding:2rem">Erro ao carregar contatos.</p>';
-        if (contatosPageTableBody) contatosPageTableBody.innerHTML = '<tr><td colspan="3" style="padding:2rem;text-align:center;color:var(--text-3)">Erro ao carregar contatos.</td></tr>';
+        if (contatosPageTableBody) contatosPageTableBody.innerHTML = '<tr><td colspan="4" style="padding:2rem;text-align:center;color:var(--text-3)">Erro ao carregar contatos.</td></tr>';
     }
 }
 
@@ -1262,7 +1265,21 @@ function fecharEditarContato() {
     modalEditarContatoOverlay?.classList.remove('open');
 }
 
-contatosPageTableBody?.addEventListener('click', (e) => {
+contatosPageTableBody?.addEventListener('click', async (e) => {
+    const btnExcluir = e.target.closest('.btn-excluir-contato');
+    if (btnExcluir) {
+        if (!confirm(`Excluir o contato "${btnExcluir.dataset.nome}"? Ele some da lista de Contatos, etiquetas e automações em andamento (o histórico de conversa no Bate Papo ao Vivo continua).`)) return;
+        try {
+            const res = await fetch(`/api/contatos/${encodeURIComponent(btnExcluir.dataset.telefone)}`, { method: 'DELETE' });
+            if (!res.ok) throw new Error('Falha ao excluir');
+            showToast('Contato excluído', '', 'success', 2500);
+            loadContatos();
+        } catch (err) {
+            showToast('Erro', 'Não foi possível excluir o contato', 'error');
+        }
+        return;
+    }
+
     const row = e.target.closest('.contatos-page-row');
     if (!row) return;
     abrirEditarContato(row.dataset.telefone);

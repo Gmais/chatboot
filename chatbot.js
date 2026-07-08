@@ -799,6 +799,23 @@ app.get('/api/contatos', async (req, res) => {
     }
 });
 
+// Exclui um contato da Audiência — some da lista de Contatos, das etiquetas
+// aplicadas e de qualquer automação em andamento. Não apaga o histórico de
+// conversa (isso é outra ação, no Bate Papo ao Vivo).
+app.delete('/api/contatos/:telefone', async (req, res) => {
+    const { telefone } = req.params;
+    const variantes = [telefone, `${telefone}@c.us`, `${telefone}@lid`];
+    try {
+        await db.run('DELETE FROM leads WHERE telefone = ? OR telefone = ? OR telefone = ?', variantes);
+        await db.run('DELETE FROM contato_etiquetas WHERE telefone = ?', telefone);
+        await db.run('DELETE FROM contato_automacao_estado WHERE telefone = ?', telefone);
+        variantes.forEach(v => leadsSet.delete(v));
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
 // Cria um contato manualmente (botão "+ Novo Contato" na tela de Contatos) —
 // mesmo caminho de dados de quem chega pelo WhatsApp: fica disponível na hora
 // pra Disparos, Fluxos e Automação.
