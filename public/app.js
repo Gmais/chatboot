@@ -1795,6 +1795,18 @@ function marcarFluxoStatus(estado) {
 }
 function marcarFluxoSujo() { marcarFluxoStatus('nao-salvo'); }
 
+// Pinta de verde o ponto de entrada de todo nó que tem uma conexão chegando —
+// o Drawflow não faz essa confirmação visual sozinho, então fazemos na mão.
+function atualizarIndicadoresConexao() {
+    if (!editor) return;
+    const nodes = editor.drawflow.drawflow.Home.data;
+    Object.values(nodes).forEach(node => {
+        const conectado = !!(node.inputs?.input_1?.connections?.length);
+        const el = document.querySelector(`#node-${node.id} .input`);
+        if (el) el.classList.toggle('input-conectado', conectado);
+    });
+}
+
 // ==========================================
 // INICIALIZAÇÃO DO DRAWFLOW
 // ==========================================
@@ -1814,6 +1826,13 @@ function initDrawflow() {
     editor.on('nodeDataChanged', marcarFluxoSujo);
     editor.on('connectionCreated', marcarFluxoSujo);
     editor.on('connectionRemoved', marcarFluxoSujo);
+
+    // Atualiza o indicador visual de conexão (ponto verde na entrada) sempre
+    // que uma conexão ou nó muda. setTimeout(0) garante que o DOM do Drawflow
+    // já terminou de atualizar antes da gente ler/pintar os elementos.
+    ['nodeCreated', 'nodeRemoved', 'connectionCreated', 'connectionRemoved'].forEach(evento => {
+        editor.on(evento, () => setTimeout(atualizarIndicadoresConexao, 0));
+    });
 }
 
 // Garante que o fluxo sempre tenha o bloco Inicial — obrigatório em fluxos
@@ -1857,6 +1876,7 @@ window.editarFluxo = (id) => {
     }
     garantirBlocoInicial(); // fluxos criados antes dessa versão não tinham o bloco Inicial
     marcarFluxoStatus('salvo'); // acabou de carregar do banco, não é "alteração não salva"
+    setTimeout(atualizarIndicadoresConexao, 0);
 };
 
 // ==========================================

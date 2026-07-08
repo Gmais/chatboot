@@ -20,6 +20,9 @@
         .drawflow .drawflow-node .outputs .output { background: var(--green); border: 2px solid #fff; }
         .drawflow .connection .main-path { stroke: var(--text-3); stroke-width: 3px; }
         .drawflow .connection .main-path:hover { stroke: var(--green); }
+        /* Confirmação visual: o ponto de entrada fica verde quando há uma conexão
+           chegando nele — o Drawflow não faz isso por padrão. */
+        .drawflow .drawflow-node .inputs .input.input-conectado { background: var(--green) !important; border-color: #fff !important; }
         .drawflow-node .title-box { display: flex; align-items: center; gap: 8px; padding: 10px; background: rgba(255,255,255,0.02); border-bottom: 1px solid rgba(255,255,255,0.05); font-weight: 600; font-size: 0.9rem; border-radius: 8px 8px 0 0; }
         .drawflow-node .box { padding: 15px; display: flex; flex-direction: column; gap: 8px; }
         
