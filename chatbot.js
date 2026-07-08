@@ -280,6 +280,8 @@ async function initDB() {
     try { await db.exec(`ALTER TABLE automacoes ADD COLUMN remove_etiqueta_ao_concluir INTEGER DEFAULT 1`); } catch(e) {}
     // Contador histórico de quantos contatos já terminaram a automação inteira
     try { await db.exec(`ALTER TABLE automacoes ADD COLUMN total_concluidos INTEGER DEFAULT 0`); } catch(e) {}
+    // Unidade do "Aguardar X" de cada etapa — 'dias' (produção) ou 'horas' (testar rápido)
+    try { await db.exec(`ALTER TABLE automacao_etapas ADD COLUMN unidade_tempo TEXT DEFAULT 'dias'`); } catch(e) {}
     // Garante tabela conversas em instalações antigas
     try { await db.exec(`CREATE TABLE IF NOT EXISTS conversas (id INTEGER PRIMARY KEY AUTOINCREMENT, telefone TEXT NOT NULL, nome TEXT, direcao TEXT NOT NULL, texto TEXT, tipo TEXT DEFAULT 'text', ts DATETIME DEFAULT CURRENT_TIMESTAMP, lida INTEGER DEFAULT 0)`); } catch(e) {}
     try { await db.exec(`CREATE INDEX IF NOT EXISTS idx_conversas_tel ON conversas(telefone, ts)`); } catch(e) {}
@@ -1171,7 +1173,8 @@ async function executarEtapaAutomacao(telefone, automacao, etapa) {
 
     const proximaEtapa = await db.get('SELECT * FROM automacao_etapas WHERE automacao_id = ? AND ordem = ?', [automacao.id, etapa.ordem + 1]);
     if (proximaEtapa) {
-        const proximaExecucao = moment().add(etapa.dias_proxima_etapa || 1, 'days').toISOString();
+        const unidade = etapa.unidade_tempo === 'horas' ? 'hours' : 'days';
+        const proximaExecucao = moment().add(etapa.dias_proxima_etapa || 1, unidade).toISOString();
         await db.run(
             `INSERT INTO contato_automacao_estado (telefone, automacao_id, etapa_atual, entrou_em, proxima_execucao_em)
              VALUES (?, ?, ?, CURRENT_TIMESTAMP, ?)
@@ -1386,8 +1389,8 @@ app.put('/api/automacoes/:id/etapas', async (req, res) => {
         let ordem = 1;
         for (const etapa of etapas) {
             await db.run(
-                'INSERT INTO automacao_etapas (automacao_id, ordem, texto, media_path, media_tipo, dias_proxima_etapa) VALUES (?, ?, ?, ?, ?, ?)',
-                [id, ordem, etapa.texto || null, etapa.media_path || null, etapa.media_tipo || null, parseInt(etapa.dias_proxima_etapa) || 1]
+                'INSERT INTO automacao_etapas (automacao_id, ordem, texto, media_path, media_tipo, dias_proxima_etapa, unidade_tempo) VALUES (?, ?, ?, ?, ?, ?, ?)',
+                [id, ordem, etapa.texto || null, etapa.media_path || null, etapa.media_tipo || null, parseInt(etapa.dias_proxima_etapa) || 1, etapa.unidade_tempo === 'horas' ? 'horas' : 'dias']
             );
             ordem++;
         }

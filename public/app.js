@@ -2770,7 +2770,7 @@ document.getElementById('btn-nova-automacao-criar')?.addEventListener('click', a
 
 // ---- Modal: Configurar Etapas ----
 function etapaVazia() {
-    return { texto: '', media_path: null, media_tipo: null, dias_proxima_etapa: 1 };
+    return { texto: '', media_path: null, media_tipo: null, dias_proxima_etapa: 1, unidade_tempo: 'dias' };
 }
 
 async function abrirConfigurarEtapas(automacaoId, nome) {
@@ -2835,7 +2835,11 @@ function renderEtapasLista() {
                         <span style="margin-left:auto;display:flex;align-items:center;gap:.4rem;font-size:.78rem;color:var(--text-3)">
                             Aguardar
                             <input type="number" class="etapa-dias" data-index="${i}" min="0" value="${etapa.dias_proxima_etapa ?? 1}" style="width:56px;background:var(--input-bg);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:.3rem .4rem;color:var(--text-1);text-align:center">
-                            dia(s) e passar pra etapa ${i + 2}
+                            <select class="etapa-unidade" data-index="${i}" style="background:var(--input-bg);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:.3rem .4rem;color:var(--text-1);font-family:'Inter',sans-serif;font-size:.78rem">
+                                <option value="dias" ${(etapa.unidade_tempo || 'dias') === 'dias' ? 'selected' : ''}>dia(s)</option>
+                                <option value="horas" ${etapa.unidade_tempo === 'horas' ? 'selected' : ''}>hora(s)</option>
+                            </select>
+                            e passar pra etapa ${i + 2}
                         </span>
                     ` : `<label style="margin-left:auto;display:flex;align-items:center;gap:.4rem;font-size:.78rem;color:var(--text-3);cursor:pointer">
                             <input type="checkbox" id="etapa-final-remover-etiqueta" ${removerEtiquetaAoConcluir ? 'checked' : ''} style="accent-color:var(--green);width:15px;height:15px">
@@ -2857,6 +2861,9 @@ etapasAutomacaoLista?.addEventListener('input', (e) => {
 etapasAutomacaoLista?.addEventListener('change', async (e) => {
     const checkboxRemover = e.target.closest('#etapa-final-remover-etiqueta');
     if (checkboxRemover) { removerEtiquetaAoConcluir = checkboxRemover.checked; return; }
+
+    const unidadeEl = e.target.closest('.etapa-unidade');
+    if (unidadeEl) { etapasEditando[Number(unidadeEl.dataset.index)].unidade_tempo = unidadeEl.value; return; }
 
     const fileInput = e.target.closest('.etapa-anexo-input');
     if (!fileInput || !fileInput.files?.[0]) return;
