@@ -371,6 +371,7 @@ const iaProvider   = document.getElementById('ia-provider');
 const iaApikey     = document.getElementById('ia-apikey');
 const iaModelo     = document.getElementById('ia-modelo');
 const iaTreinamento = document.getElementById('ia-treinamento');
+const iaCampanhaMes = document.getElementById('ia-campanha-mes');
 const btnSalvarIa  = document.getElementById('btn-salvar-ia');
 
 const GROQ_MODELS = [
@@ -415,6 +416,7 @@ async function loadIaConfig() {
         updateIaProviderUI(provider);
         if (iaStatus)      iaStatus.checked  = config.openai_status === 'true';
         if (iaTreinamento) iaTreinamento.value = config.openai_treinamento || '';
+        if (iaCampanhaMes) iaCampanhaMes.value = config.ia_campanha_mes || '';
         if (provider === 'groq') {
             if (iaApikey) iaApikey.value = config.groq_api_key || '';
             if (iaModelo) iaModelo.value = config.groq_modelo || 'llama-3.1-8b-instant';
@@ -433,6 +435,7 @@ btnSalvarIa?.addEventListener('click', async () => {
         ia_provider: provider,
         openai_status: iaStatus.checked ? 'true' : 'false',
         openai_treinamento: iaTreinamento.value.trim(),
+        ia_campanha_mes: iaCampanhaMes.value.trim(),
         ...(provider === 'groq'
             ? { groq_api_key: iaApikey.value.trim(), groq_modelo: iaModelo.value }
             : { openai_api_key: iaApikey.value.trim(), openai_modelo: iaModelo.value }
@@ -1206,16 +1209,32 @@ socket.on('broadcast_done', (p) => {
     addActivity('🚀', `Disparo concluído: ${p.sent} msgs`, new Date().toLocaleString('pt-BR'));
 });
 
+const broadcastDelayModo   = document.getElementById('broadcast-delay-modo');
+const broadcastDelayFixoGroup = document.getElementById('broadcast-delay-fixo-group');
+const broadcastDelayAleatorioGroup = document.getElementById('broadcast-delay-aleatorio-group');
+
+broadcastDelayModo?.addEventListener('change', () => {
+    const aleatorio = broadcastDelayModo.value === 'aleatorio';
+    if (broadcastDelayFixoGroup) broadcastDelayFixoGroup.style.display = aleatorio ? 'none' : 'block';
+    if (broadcastDelayAleatorioGroup) broadcastDelayAleatorioGroup.style.display = aleatorio ? 'block' : 'none';
+});
+
 btnDisparar?.addEventListener('click', async () => {
     const numeros  = document.getElementById('broadcast-numeros')?.value;
     const mensagem = document.getElementById('broadcast-mensagem')?.value;
-    const delay_ms = (parseInt(document.getElementById('broadcast-delay')?.value) || 6) * 1000;
     if (!numeros?.trim())  { alert('Cole os números!'); return; }
     if (!mensagem?.trim()) { alert('Digite a mensagem!'); return; }
     const formData = new FormData();
     formData.append('numeros', numeros);
     formData.append('mensagem', mensagem);
-    formData.append('delay_ms', delay_ms);
+    if (broadcastDelayModo?.value === 'aleatorio') {
+        formData.append('delay_modo', 'aleatorio');
+        formData.append('delay_velocidade', document.getElementById('broadcast-delay-velocidade')?.value || 'medio');
+    } else {
+        const delay_ms = (parseInt(document.getElementById('broadcast-delay')?.value) || 6) * 1000;
+        formData.append('delay_modo', 'fixo');
+        formData.append('delay_ms', delay_ms);
+    }
     if (broadcastFile?.files[0]) formData.append('media', broadcastFile.files[0]);
     const res = await fetch('/api/broadcast/start', { method: 'POST', body: formData });
     const data = await res.json();

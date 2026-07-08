@@ -849,14 +849,28 @@ app.post('/api/broadcast/start', upload.single('media'), async (req, res) => {
     if (broadcastRunning) return res.status(400).json({ error: 'Um disparo já está em andamento.' });
     if (!isConnected) return res.status(400).json({ error: 'WhatsApp não está conectado.' });
 
-    const { numeros, mensagem, delay_ms } = req.body;
+    const { numeros, mensagem, delay_ms, delay_modo, delay_velocidade } = req.body;
     const listaNumeros = numeros.split('\n').map(n => n.trim().replace(/\D/g, '')).filter(n => n.length >= 10);
 
     if (listaNumeros.length === 0) return res.status(400).json({ error: 'Nenhum número válido encontrado.' });
     if (!mensagem) return res.status(400).json({ error: 'Mensagem obrigatória.' });
 
     const mediaFile = req.file ? { path: req.file.path, mimetype: req.file.mimetype, filename: req.file.originalname } : null;
-    const delayMs = parseInt(delay_ms) || 5000;
+
+    // Modo fixo: mesmo intervalo sempre. Modo aleatório: um valor novo dentro
+    // da faixa escolhida a cada mensagem — menos previsível, reduz risco de bloqueio.
+    const FAIXAS_VELOCIDADE = {
+        curto: [5000, 10000],
+        medio: [10000, 30000],
+        longo: [30000, 120000],
+        muito_longo: [120000, 320000]
+    };
+    const delayFixoMs = parseInt(delay_ms) || 5000;
+    function proximoDelay() {
+        if (delay_modo !== 'aleatorio') return delayFixoMs;
+        const [min, max] = FAIXAS_VELOCIDADE[delay_velocidade] || FAIXAS_VELOCIDADE.medio;
+        return Math.floor(min + Math.random() * (max - min));
+    }
 
     broadcastRunning = true;
     broadcastProgress = { total: listaNumeros.length, sent: 0, failed: 0, running: true };
@@ -883,7 +897,7 @@ app.post('/api/broadcast/start', upload.single('media'), async (req, res) => {
                 broadcastProgress.failed++;
             }
             io.emit('broadcast_progress', broadcastProgress);
-            await delay(delayMs);
+            await delay(proximoDelay());
         }
 
         broadcastProgress.running = false;
@@ -1862,6 +1876,11 @@ client.on('message', async (msg) => {
                         ? nomeContato.split(' ')[0]  // usa só o primeiro nome
                         : null;
                     let systemContent = config.openai_treinamento || '';
+                    if (config.ia_campanha_mes) {
+                        systemContent = systemContent
+                            ? `${systemContent}\n\n# CAMPANHA DO MÊS (promoção vigente)\n${config.ia_campanha_mes}`
+                            : `# CAMPANHA DO MÊS (promoção vigente)\n${config.ia_campanha_mes}`;
+                    }
                     if (nomeParaIA) {
                         systemContent = systemContent
                             ? `${systemContent}\n\nVocê está conversando com ${nomeParaIA}. Ao personalizar a mensagem, use esse nome diretamente — nunca use [nome] ou {nome} como placeholder.`
