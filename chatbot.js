@@ -1656,9 +1656,11 @@ client.on('message', async (msg) => {
             return;
         }
 
-        const hora = new Date().getHours();
+        // Usa moment-timezone para garantir o horário de Brasília
+        // — o servidor (Railway) roda em UTC, então new Date().getHours() daria errado.
+        const hora = moment.tz('America/Sao_Paulo').hours();
         let saudacao = 'Olá';
-        if (hora >= 5 && hora < 12) saudacao = 'Bom dia';
+        if (hora >= 5  && hora < 12) saudacao = 'Bom dia';
         else if (hora >= 12 && hora < 18) saudacao = 'Boa tarde';
         else saudacao = 'Boa noite';
 
