@@ -1366,6 +1366,57 @@ btnImportarContatosEnviar?.addEventListener('click', async () => {
     }
 });
 
+// =====================================
+// NOVO CONTATO (criação manual)
+// =====================================
+const modalNovoContato = document.getElementById('modal-novo-contato-overlay');
+const novoContatoNome = document.getElementById('novo-contato-nome');
+const novoContatoTelefone = document.getElementById('novo-contato-telefone');
+const novoContatoEtiqueta = document.getElementById('novo-contato-etiqueta');
+const btnNovoContatoSalvar = document.getElementById('btn-novo-contato-salvar');
+
+async function abrirModalNovoContato() {
+    if (novoContatoNome) novoContatoNome.value = '';
+    if (novoContatoTelefone) novoContatoTelefone.value = '';
+    if (novoContatoEtiqueta) {
+        await loadEtiquetas();
+        novoContatoEtiqueta.innerHTML = '<option value="">Nenhuma</option>' +
+            todasEtiquetas.map(e => `<option value="${e.id}">${e.nome}</option>`).join('');
+    }
+    modalNovoContato?.classList.add('open');
+}
+function fecharModalNovoContato() {
+    modalNovoContato?.classList.remove('open');
+}
+
+document.getElementById('btn-novo-contato')?.addEventListener('click', abrirModalNovoContato);
+document.getElementById('modal-novo-contato-fechar')?.addEventListener('click', fecharModalNovoContato);
+
+btnNovoContatoSalvar?.addEventListener('click', async () => {
+    const nome = (novoContatoNome?.value || '').trim();
+    const telefone = (novoContatoTelefone?.value || '').trim();
+    const etiqueta_id = novoContatoEtiqueta?.value;
+    if (!nome) { showToast('Nome obrigatório', 'Digite o nome do contato.', 'error'); return; }
+    if (!telefone) { showToast('Telefone obrigatório', 'Digite o telefone com DDD.', 'error'); return; }
+    btnNovoContatoSalvar.disabled = true;
+    try {
+        const res = await fetch('/api/contatos', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ nome, telefone, etiqueta_id: etiqueta_id ? Number(etiqueta_id) : null })
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Erro ao criar contato');
+        showToast('Contato criado!', '', 'success', 2500);
+        fecharModalNovoContato();
+        loadContatos();
+    } catch (e) {
+        showToast('Erro ao criar contato', e.message, 'error');
+    } finally {
+        btnNovoContatoSalvar.disabled = false;
+    }
+});
+
 contatosSelectAll?.addEventListener('change', () => {
     const visiveis = contatosFiltrados();
     if (contatosSelectAll.checked) visiveis.forEach(c => contatosSelecionados.add(c.telefone));

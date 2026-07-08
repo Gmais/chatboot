@@ -493,6 +493,7 @@
                     <h3>👥 Contatos</h3>
                     <div style="display:flex;gap:.8rem;align-items:center;flex-wrap:wrap">
                         <input type="text" id="contatos-page-busca" placeholder="Buscar por nome ou telefone..." style="background:var(--input-bg);border:1px solid rgba(255,255,255,0.1);border-radius:var(--radius-sm);padding:.5rem .8rem;color:var(--text-1);font-size:.85rem;min-width:220px">
+                        <button type="button" class="btn-primary" id="btn-novo-contato" style="padding:.5rem 1rem;font-size:.85rem">➕ Novo Contato</button>
                         <button type="button" class="btn-secondary" id="btn-importar-contatos" style="padding:.5rem 1rem;font-size:.85rem">📥 Importar Contatos</button>
                         <button type="button" class="btn-secondary" id="btn-gerenciar-etiquetas-page" style="padding:.5rem 1rem;font-size:.85rem">⚙️ Etiquetas</button>
                     </div>
@@ -895,6 +896,24 @@ Sempre tente agendar uma aula experimental."></textarea>
             <div class="modal-footer">
                 <button class="btn-cancel" id="modal-importar-contatos-fechar">Fechar</button>
                 <button class="btn-primary" id="btn-importar-contatos-enviar">Importar</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal-overlay" id="modal-novo-contato-overlay">
+        <div class="modal">
+            <h3>➕ Novo Contato</h3>
+            <label style="display:block;font-size:.78rem;color:var(--text-3);margin-bottom:.3rem">Nome</label>
+            <input type="text" id="novo-contato-nome" placeholder="Nome do contato" style="width:100%;background:var(--input-bg);border:1px solid rgba(255,255,255,0.1);border-radius:var(--radius-sm);padding:.6rem .8rem;color:var(--text-1);font-size:.9rem;margin-bottom:1rem">
+            <label style="display:block;font-size:.78rem;color:var(--text-3);margin-bottom:.3rem">Telefone (com DDD)</label>
+            <input type="text" id="novo-contato-telefone" placeholder="Ex: 46999998888" style="width:100%;background:var(--input-bg);border:1px solid rgba(255,255,255,0.1);border-radius:var(--radius-sm);padding:.6rem .8rem;color:var(--text-1);font-size:.9rem;margin-bottom:1rem">
+            <label style="display:block;font-size:.78rem;color:var(--text-3);margin-bottom:.3rem">Etiqueta (opcional)</label>
+            <select id="novo-contato-etiqueta" style="width:100%;background:var(--input-bg);border:1px solid rgba(255,255,255,0.1);border-radius:var(--radius-sm);padding:.6rem .8rem;color:var(--text-1);font-size:.9rem">
+                <option value="">Nenhuma</option>
+            </select>
+            <div class="modal-footer">
+                <button class="btn-cancel" id="modal-novo-contato-fechar">Fechar</button>
+                <button class="btn-primary" id="btn-novo-contato-salvar">Criar</button>
             </div>
         </div>
     </div>

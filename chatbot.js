@@ -763,6 +763,31 @@ app.get('/api/contatos', async (req, res) => {
     }
 });
 
+// Cria um contato manualmente (botão "+ Novo Contato" na tela de Contatos) —
+// mesmo caminho de dados de quem chega pelo WhatsApp: fica disponível na hora
+// pra Disparos, Fluxos e Automação.
+app.post('/api/contatos', async (req, res) => {
+    const { nome, telefone, etiqueta_id } = req.body;
+    if (!nome || !nome.trim()) return res.status(400).json({ error: 'Nome é obrigatório.' });
+    const telefoneNormalizado = normalizarTelefoneImportado(telefone);
+    if (!telefoneNormalizado) return res.status(400).json({ error: 'Telefone inválido. Informe com DDD (ex: 46999998888).' });
+    try {
+        const existente = await db.get(
+            'SELECT telefone FROM leads WHERE telefone = ? OR telefone = ? OR telefone = ?',
+            [telefoneNormalizado, `${telefoneNormalizado}@c.us`, `${telefoneNormalizado}@lid`]
+        );
+        if (existente) return res.status(400).json({ error: 'Já existe um contato com esse telefone.' });
+        await db.run('INSERT INTO leads (telefone, nome, origem) VALUES (?, ?, ?)', [telefoneNormalizado, nome.trim(), 'manual']);
+        leadsSet.add(telefoneNormalizado);
+        stats.leads++;
+        io.emit('stats', stats);
+        if (etiqueta_id) await aplicarEtiquetaContato(telefoneNormalizado, etiqueta_id);
+        res.json({ success: true, telefone: telefoneNormalizado });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
 // Edita o nome de um contato na Audiência (usado pela modal de edição).
 // leads.telefone vem de fontes diferentes com formatos diferentes: mensagens do
 // WhatsApp gravam com sufixo (@c.us/@lid), importação por planilha grava limpo
