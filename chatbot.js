@@ -1886,13 +1886,23 @@ app.post('/api/pacto/importar-contatos', async (req, res) => {
                 const telefone = normalizarTelefoneImportado(aluno.pessoa?.telefones?.[0]?.numero);
                 if (!telefone) { pactoImportProgress.sem_telefone++; return; }
 
+                const dataNascimento = aluno.pessoa?.datanasc ? String(aluno.pessoa.datanasc).slice(0, 10) : null;
+
                 const existente = await db.get(
-                    'SELECT telefone FROM leads WHERE telefone = ? OR telefone = ? OR telefone = ?',
+                    'SELECT telefone, data_nascimento FROM leads WHERE telefone = ? OR telefone = ? OR telefone = ?',
                     [telefone, `${telefone}@c.us`, `${telefone}@lid`]
                 );
-                if (existente) { pactoImportProgress.ja_existiam++; return; }
+                if (existente) {
+                    // Contato já existia (de um import anterior, do WhatsApp, etc.) — só
+                    // completa a data de nascimento se estiver faltando, sem tocar em
+                    // nome/matrícula pra não sobrescrever edição manual.
+                    if (!existente.data_nascimento && dataNascimento) {
+                        await db.run('UPDATE leads SET data_nascimento = ? WHERE telefone = ?', [dataNascimento, existente.telefone]);
+                    }
+                    pactoImportProgress.ja_existiam++;
+                    return;
+                }
 
-                const dataNascimento = aluno.pessoa?.datanasc ? String(aluno.pessoa.datanasc).slice(0, 10) : null;
                 await db.run(
                     'INSERT INTO leads (telefone, nome, origem, matricula, data_nascimento) VALUES (?, ?, ?, ?, ?)',
                     [telefone, aluno.pessoa?.nome || null, 'pacto', aluno.matricula || matricula, dataNascimento]
