@@ -1205,6 +1205,7 @@ async function loadContatos() {
         const [res] = await Promise.all([fetch('/api/contatos'), loadEtiquetas()]);
         todosContatos = await res.json();
         renderFiltroEtiquetas();
+        renderFiltroEtiquetasPage();
         renderContatos();
         renderContatosPage();
     } catch (e) {
