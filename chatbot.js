@@ -1398,13 +1398,13 @@ app.get('/api/mensagens-personalizadas', async (req, res) => {
 });
 
 app.post('/api/mensagens-personalizadas', async (req, res) => {
-    const { nome, texto, media_path, media_tipo, horario_envio, ativo } = req.body;
+    const { nome, texto, media_path, media_tipo, ativo } = req.body;
     if (!nome || !nome.trim()) return res.status(400).json({ error: 'Nome é obrigatório.' });
     if (!texto || !texto.trim()) return res.status(400).json({ error: 'Mensagem é obrigatória.' });
     try {
         const result = await db.run(
-            'INSERT INTO mensagens_personalizadas (nome, texto, media_path, media_tipo, horario_envio, ativo) VALUES (?, ?, ?, ?, ?, ?)',
-            [nome.trim(), texto.trim(), media_path || null, media_tipo || null, horario_envio || '09:00', ativo === false ? 0 : 1]
+            'INSERT INTO mensagens_personalizadas (nome, texto, media_path, media_tipo, ativo) VALUES (?, ?, ?, ?, ?)',
+            [nome.trim(), texto.trim(), media_path || null, media_tipo || null, ativo === false ? 0 : 1]
         );
         res.json({ success: true, id: result.lastID });
     } catch (err) {
@@ -1414,13 +1414,13 @@ app.post('/api/mensagens-personalizadas', async (req, res) => {
 
 app.put('/api/mensagens-personalizadas/:id', async (req, res) => {
     const { id } = req.params;
-    const { nome, texto, media_path, media_tipo, horario_envio, ativo } = req.body;
+    const { nome, texto, media_path, media_tipo, ativo } = req.body;
     if (!nome || !nome.trim()) return res.status(400).json({ error: 'Nome é obrigatório.' });
     if (!texto || !texto.trim()) return res.status(400).json({ error: 'Mensagem é obrigatória.' });
     try {
         const result = await db.run(
-            'UPDATE mensagens_personalizadas SET nome = ?, texto = ?, media_path = ?, media_tipo = ?, horario_envio = ?, ativo = ? WHERE id = ?',
-            [nome.trim(), texto.trim(), media_path || null, media_tipo || null, horario_envio || '09:00', ativo === false ? 0 : 1, id]
+            'UPDATE mensagens_personalizadas SET nome = ?, texto = ?, media_path = ?, media_tipo = ?, ativo = ? WHERE id = ?',
+            [nome.trim(), texto.trim(), media_path || null, media_tipo || null, ativo === false ? 0 : 1, id]
         );
         if (result.changes === 0) return res.status(404).json({ error: 'Mensagem não encontrada.' });
         res.json({ success: true });
@@ -1440,6 +1440,50 @@ app.delete('/api/mensagens-personalizadas/:id', async (req, res) => {
     }
 });
 
+// Etiqueta "Aniversariante" — aplicada sozinha em quem faz aniversário hoje,
+// removida sozinha assim que o dia vira (mesmo ciclo que dispara as mensagens
+// de aniversário). Fica disponível pra filtrar Contatos ou disparar outras
+// Automações vinculadas a ela.
+const NOME_ETIQUETA_ANIVERSARIANTE = 'Aniversariante';
+
+async function garantirEtiquetaAniversariante() {
+    const existente = await db.get('SELECT id FROM etiquetas WHERE LOWER(nome) = LOWER(?)', NOME_ETIQUETA_ANIVERSARIANTE);
+    if (existente) return existente.id;
+    const result = await db.run('INSERT INTO etiquetas (nome, cor) VALUES (?, ?)', [NOME_ETIQUETA_ANIVERSARIANTE, '#EC4899']);
+    return result.lastID;
+}
+
+async function processarEtiquetaAniversariantes() {
+    if (!db) return;
+    try {
+        const etiquetaId = await garantirEtiquetaAniversariante();
+        const hojeMD = moment.tz('America/Sao_Paulo').format('MM-DD');
+
+        const aniversariantesHoje = await db.all(
+            `SELECT telefone FROM leads WHERE data_nascimento IS NOT NULL AND strftime('%m-%d', data_nascimento) = ?`,
+            hojeMD
+        );
+        for (const lead of aniversariantesHoje) {
+            const numLimpo = lead.telefone.replace('@c.us', '').replace('@lid', '');
+            const jaTem = await db.get('SELECT 1 FROM contato_etiquetas WHERE telefone = ? AND etiqueta_id = ?', [numLimpo, etiquetaId]);
+            if (!jaTem) await aplicarEtiquetaContato(numLimpo, etiquetaId);
+        }
+
+        // Some com a etiqueta de quem a tem mas não faz aniversário hoje — o dia virou.
+        const comEtiqueta = await db.all('SELECT telefone FROM contato_etiquetas WHERE etiqueta_id = ?', etiquetaId);
+        for (const c of comEtiqueta) {
+            const lead = await db.get(
+                'SELECT data_nascimento FROM leads WHERE telefone = ? OR telefone = ? OR telefone = ?',
+                [c.telefone, `${c.telefone}@c.us`, `${c.telefone}@lid`]
+            );
+            const aniversarioHoje = lead?.data_nascimento && String(lead.data_nascimento).slice(5, 10) === hojeMD;
+            if (!aniversarioHoje) await removerEtiquetaContato(c.telefone, etiquetaId);
+        }
+    } catch (e) {
+        console.error('Erro ao processar etiqueta de aniversariantes:', e.message);
+    }
+}
+
 // Roda periodicamente: manda cada mensagem ativa pra quem faz aniversário
 // hoje (data_nascimento em leads) e ainda não recebeu ESSA mensagem este
 // ano. Só marca como enviado se o envio realmente deu certo — falha (WhatsApp
@@ -1450,12 +1494,9 @@ async function processarMensagensAniversario() {
         const agora = moment.tz('America/Sao_Paulo');
         const hojeMD = agora.format('MM-DD');
         const anoAtual = agora.year();
-        const horaAtual = agora.format('HH:mm');
 
         const mensagens = await db.all('SELECT * FROM mensagens_personalizadas WHERE ativo = 1');
         for (const msg of mensagens) {
-            if (horaAtual < msg.horario_envio) continue;
-
             const aniversariantes = await db.all(
                 `SELECT telefone, nome FROM leads WHERE data_nascimento IS NOT NULL AND strftime('%m-%d', data_nascimento) = ?`,
                 hojeMD
@@ -1508,12 +1549,17 @@ async function processarMensagensAniversario() {
         console.error('Erro ao processar mensagens de aniversário:', e.message);
     }
 }
-setInterval(processarMensagensAniversario, 30 * 60 * 1000);
-setTimeout(processarMensagensAniversario, 90 * 1000);
+
+async function processarAniversariantes() {
+    await processarEtiquetaAniversariantes();
+    await processarMensagensAniversario();
+}
+setInterval(processarAniversariantes, 30 * 60 * 1000);
+setTimeout(processarAniversariantes, 90 * 1000);
 
 app.post('/api/mensagens-personalizadas/processar-agora', async (req, res) => {
     try {
-        await processarMensagensAniversario();
+        await processarAniversariantes();
         res.json({ success: true });
     } catch (err) {
         res.status(500).json({ error: err.message });

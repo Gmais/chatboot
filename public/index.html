@@ -356,7 +356,7 @@
                     <button class="btn-primary" id="btn-nova-mensagem-personalizada">➕ Nova Mensagem</button>
                 </div>
                 <p style="color:var(--text-3);font-size:.8rem;margin:-.6rem 0 1rem">
-                    Mensagens de aniversário disparadas sozinhas: todo dia, no horário escolhido, o robô manda pra quem faz aniversário — usando a Data de Nascimento cadastrada em Contatos. Cada contato recebe cada mensagem no máximo uma vez por ano.
+                    Mensagens de aniversário disparadas sozinhas: todo dia o robô manda pra quem faz aniversário — usando a Data de Nascimento cadastrada em Contatos — e etiqueta o contato como "Aniversariante" (a etiqueta some sozinha no dia seguinte). Cada contato recebe cada mensagem no máximo uma vez por ano.
                 </p>
                 <div id="mensagens-personalizadas-lista" style="display:flex;flex-direction:column;gap:.8rem">
                     <div style="padding:2rem;text-align:center;color:var(--text-3)">Carregando mensagens...</div>
@@ -386,8 +386,6 @@
                     <input type="hidden" id="mensagem-personalizada-media-tipo">
                     <div id="mp-upload-preview" style="display:none;margin-top:.5rem"></div>
                 </div>
-                <label style="display:block;font-size:.78rem;color:var(--text-3);margin-bottom:.3rem">Horário de envio</label>
-                <input type="time" id="mensagem-personalizada-horario" value="09:00" style="width:100%;background:var(--input-bg);border:1px solid rgba(255,255,255,0.1);border-radius:var(--radius-sm);padding:.6rem .8rem;color:var(--text-1);font-size:.9rem;margin-bottom:1rem">
                 <div class="form-group">
                     <div class="checkbox-row">
                         <input type="checkbox" id="mensagem-personalizada-ativo" checked style="accent-color:var(--green)">

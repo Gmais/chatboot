@@ -3107,7 +3107,6 @@ const modalMensagemPersonalizadaTitulo = document.getElementById('modal-mensagem
 const mensagemPersonalizadaId = document.getElementById('mensagem-personalizada-id');
 const mensagemPersonalizadaNome = document.getElementById('mensagem-personalizada-nome');
 const mensagemPersonalizadaTexto = document.getElementById('mensagem-personalizada-texto');
-const mensagemPersonalizadaHorario = document.getElementById('mensagem-personalizada-horario');
 const mensagemPersonalizadaAtivo = document.getElementById('mensagem-personalizada-ativo');
 const mensagemPersonalizadaMediaPath = document.getElementById('mensagem-personalizada-media-path');
 const mensagemPersonalizadaMediaTipo = document.getElementById('mensagem-personalizada-media-tipo');
@@ -3141,8 +3140,6 @@ function renderMensagensPersonalizadasLista() {
             <div style="flex:1;min-width:200px">
                 <div style="font-weight:600;color:var(--text-1);font-size:.95rem;margin-bottom:.3rem">🎂 ${m.nome}</div>
                 <div style="display:flex;align-items:center;gap:.5rem;flex-wrap:wrap">
-                    <span style="font-size:.75rem;color:var(--text-3)">🕐 ${m.horario_envio}</span>
-                    <span style="font-size:.75rem;color:var(--text-3)">•</span>
                     <span style="font-size:.75rem;color:var(--text-3)">${m.total_enviados} enviada${m.total_enviados !== 1 ? 's' : ''}</span>
                     ${m.media_path ? '<span style="font-size:.75rem;color:var(--text-3)">• 📎 com mídia</span>' : ''}
                 </div>
@@ -3196,7 +3193,6 @@ function abrirModalMensagemPersonalizada(m = null) {
     modalMensagemPersonalizadaTitulo.textContent = m ? '✏️ Editar Mensagem de Aniversário' : '➕ Nova Mensagem de Aniversário';
     mensagemPersonalizadaNome.value = m ? m.nome : '';
     mensagemPersonalizadaTexto.value = m ? m.texto : '';
-    mensagemPersonalizadaHorario.value = m ? m.horario_envio : '09:00';
     mensagemPersonalizadaAtivo.checked = m ? !!m.ativo : true;
     mensagemPersonalizadaMediaPath.value = m?.media_path || '';
     mensagemPersonalizadaMediaTipo.value = m?.media_tipo || '';
@@ -3252,7 +3248,6 @@ btnMensagemPersonalizadaSalvar?.addEventListener('click', async () => {
         nome, texto,
         media_path: mensagemPersonalizadaMediaPath.value || null,
         media_tipo: mensagemPersonalizadaMediaTipo.value || null,
-        horario_envio: mensagemPersonalizadaHorario.value || '09:00',
         ativo: mensagemPersonalizadaAtivo.checked
     };
     const id = mensagemPersonalizadaId.value;
