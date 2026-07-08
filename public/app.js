@@ -1172,7 +1172,7 @@ function renderContatosPage() {
     if (!contatosPageTableBody) return;
     const filtrados = contatosPageFiltrados();
     if (filtrados.length === 0) {
-        contatosPageTableBody.innerHTML = '<tr><td colspan="4" style="padding:2rem;text-align:center;color:var(--text-3)">Nenhum contato encontrado.</td></tr>';
+        contatosPageTableBody.innerHTML = '<tr><td colspan="3" style="padding:2rem;text-align:center;color:var(--text-3)">Nenhum contato encontrado.</td></tr>';
         return;
     }
     contatosPageTableBody.innerHTML = filtrados.map(c => {
@@ -1180,13 +1180,11 @@ function renderContatosPage() {
         return `
             <tr class="contatos-page-row" data-telefone="${c.telefone}" style="cursor:pointer">
                 <td>
-                    <div style="font-weight:500;color:var(--text-1)">${c.nome}</div>
-                    <div style="font-size:.75rem;color:var(--text-3)">${c.telefone}</div>
-                </td>
-                <td>
-                    <div style="display:flex;gap:.3rem;flex-wrap:wrap">
-                        ${c.etiquetas.length > 0 ? c.etiquetas.map(e => etiquetaChipHtml(e, false)).join('') : '<span style="color:var(--text-3);font-size:.75rem">Nenhuma</span>'}
+                    <div style="display:flex;align-items:center;gap:.4rem;flex-wrap:wrap">
+                        <span style="font-weight:500;color:var(--text-1)">${c.nome}</span>
+                        ${c.etiquetas.map(e => etiquetaChipHtml(e, false)).join('')}
                     </div>
+                    <div style="font-size:.75rem;color:var(--text-3)">${c.telefone}</div>
                 </td>
                 <td style="color:var(--text-2);font-size:.85rem">${dataStr}</td>
                 <td style="text-align:right;color:var(--text-2)">
@@ -1207,7 +1205,7 @@ async function loadContatos() {
     } catch (e) {
         console.error('Erro ao carregar contatos', e);
         if (contatosLista) contatosLista.innerHTML = '<p style="color:var(--text-3);text-align:center;padding:2rem">Erro ao carregar contatos.</p>';
-        if (contatosPageTableBody) contatosPageTableBody.innerHTML = '<tr><td colspan="4" style="padding:2rem;text-align:center;color:var(--text-3)">Erro ao carregar contatos.</td></tr>';
+        if (contatosPageTableBody) contatosPageTableBody.innerHTML = '<tr><td colspan="3" style="padding:2rem;text-align:center;color:var(--text-3)">Erro ao carregar contatos.</td></tr>';
     }
 }
 
