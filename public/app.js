@@ -357,6 +357,7 @@ navBtns.forEach(btn => {
         if (targetId === 'ia-section') loadIaConfig();
         if (targetId === 'configuracoes-section') loadHorarioConfig();
         if (targetId === 'conversas-section') CM.onEnterSection();
+        if (targetId === 'fluxos-section') { loadEtiquetas().then(() => loadFluxos()); }
         if (targetId === 'contatos-section' || targetId === 'disparos-section') loadContatos();
         if (targetId === 'integracoes-section') loadCrmColaboradores();
     });
@@ -1681,8 +1682,317 @@ const CM = (() => {
     return { init, onEnterSection };
 })();
 
+// =====================================
+// FLUXOS (FLOW BUILDER)
+// =====================================
+const fluxosLista = document.getElementById('fluxos-lista');
+const modalFluxo = document.getElementById('modal-fluxo');
+const btnNovoFluxo = document.getElementById('btn-novo-fluxo');
+const btnSalvarFluxo = document.getElementById('btn-salvar-fluxo');
+const fluxoNodesContainer = document.getElementById('fluxo-nodes-container');
+const fluxoNome = document.getElementById('fluxo-nome');
+const fluxoGatilho = document.getElementById('fluxo-gatilho');
+const modalFluxoTitle = document.getElementById('modal-fluxo-title');
+
+let fluxosGlobais = [];
+let fluxoEditandoId = null;
+let fluxoNodesEditando = [];
+
+async function loadFluxos() {
+    if (!fluxosLista) return;
+    try {
+        const res = await fetch('/api/fluxos');
+        fluxosGlobais = await res.json();
+        renderFluxos();
+    } catch(e) {}
+}
+
+function renderFluxos() {
+    if (!fluxosLista) return;
+    if (fluxosGlobais.length === 0) {
+        fluxosLista.innerHTML = '<div style="padding:2rem;text-align:center;color:var(--text-3)">Nenhum fluxo criado. Crie seu primeiro fluxo!</div>';
+        return;
+    }
+    fluxosLista.innerHTML = fluxosGlobais.map(f => `
+        <div style="background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.05);padding:1.2rem;border-radius:12px;display:flex;justify-content:space-between;align-items:center">
+            <div>
+                <div style="font-weight:600;font-size:1.1rem;color:var(--text-1);margin-bottom:.4rem">🌊 ${f.nome}</div>
+                <div style="font-size:.85rem;color:var(--text-3)">
+                    <strong>Gatilhos:</strong> ${f.gatilho || '<em style="opacity:.5">Nenhum</em>'} <br>
+                    <strong>Passos:</strong> ${(f.flow_data||[]).length}
+                </div>
+            </div>
+            <div style="display:flex;gap:.6rem;align-items:center">
+                <button class="toggle-btn ${f.ativo ? 'on' : 'off'}" onclick="toggleFluxo(${f.id})"></button>
+                <button class="btn-secondary" onclick="editarFluxo(${f.id})">✏️ Editar</button>
+                <button class="btn-danger" onclick="excluirFluxo(${f.id})">🗑️</button>
+            </div>
+        </div>
+    `).join('');
+}
+
+window.toggleFluxo = async (id) => {
+    try {
+        await fetch(`/api/fluxos/${id}/toggle`, { method: 'POST' });
+        loadFluxos();
+    } catch(e) {}
+};
+
+window.excluirFluxo = async (id) => {
+    if (!confirm('Tem certeza que deseja excluir este fluxo?')) return;
+    try {
+        await fetch(`/api/fluxos/${id}`, { method: 'DELETE' });
+        loadFluxos();
+    } catch(e) {}
+};
+
+btnNovoFluxo?.addEventListener('click', () => {
+    fluxoEditandoId = null;
+    fluxoNome.value = '';
+    fluxoGatilho.value = '';
+    fluxoNodesEditando = [];
+    modalFluxoTitle.textContent = 'Criar Fluxo';
+    renderFluxoNodes();
+    openModal('modal-fluxo');
+});
+
+window.editarFluxo = (id) => {
+    const f = fluxosGlobais.find(x => x.id === id);
+    if (!f) return;
+    fluxoEditandoId = f.id;
+    fluxoNome.value = f.nome;
+    fluxoGatilho.value = f.gatilho || '';
+    fluxoNodesEditando = JSON.parse(JSON.stringify(f.flow_data || []));
+    modalFluxoTitle.textContent = 'Editar Fluxo';
+    renderFluxoNodes();
+    openModal('modal-fluxo');
+};
+
+function renderFluxoNodes() {
+    if (!fluxoNodesContainer) return;
+    if (fluxoNodesEditando.length === 0) {
+        fluxoNodesContainer.innerHTML = '<div style="text-align:center;color:var(--text-3);padding:2rem 0">O fluxo está vazio.<br>Adicione o primeiro passo abaixo! 👇</div>';
+        return;
+    }
+    
+    const getTargetOptions = (selectedId) => {
+        let opts = `<option value="">Próximo Passo (Padrão)</option>`;
+        fluxoNodesEditando.forEach((n, idx) => {
+            opts += `<option value="${n.id}" ${selectedId === n.id ? 'selected' : ''}>Passo ${idx+1} (${n.type})</option>`;
+        });
+        return opts;
+    };
+    
+    fluxoNodesContainer.innerHTML = fluxoNodesEditando.map((node, index) => {
+        let contentHtml = '';
+        if (node.type === 'message') {
+            contentHtml = `<textarea class="node-input" data-field="text" placeholder="Digite a mensagem..." rows="3" style="width:100%;margin-top:.5rem">${node.data.text||''}</textarea>`;
+        } else if (node.type === 'delay') {
+            contentHtml = `
+                <div style="margin-top:.5rem;display:flex;align-items:center;gap:.5rem">
+                    <span>Aguardar</span>
+                    <input type="number" class="node-input" data-field="delaySeconds" value="${node.data.delaySeconds||1}" min="1" max="60" style="width:60px;padding:.5rem;border-radius:6px;background:rgba(0,0,0,0.2);border:1px solid rgba(255,255,255,0.1);color:var(--text-1)">
+                    <span>segundos simulando digitação.</span>
+                </div>
+            `;
+        } else if (node.type === 'media') {
+            contentHtml = `
+                <div style="margin-top:.5rem;display:flex;flex-direction:column;gap:.5rem">
+                    <input type="file" class="node-input" data-field="mediaFile" accept="image/*,video/*,audio/*,.pdf,.doc,.docx" style="font-size:.8rem">
+                    <input type="text" class="node-input" data-field="mediaUrl" placeholder="URL da Mídia (ou faça upload)" value="${node.data.mediaUrl||''}" style="width:100%;padding:.5rem;border-radius:6px;background:rgba(0,0,0,0.2);border:1px solid rgba(255,255,255,0.1);color:var(--text-1)" readonly>
+                    <input type="text" class="node-input" data-field="text" placeholder="Legenda (Opcional)" value="${node.data.text||''}" style="width:100%;padding:.5rem;border-radius:6px;background:rgba(0,0,0,0.2);border:1px solid rgba(255,255,255,0.1);color:var(--text-1)">
+                </div>
+            `;
+        } else if (node.type === 'action') {
+            contentHtml = `
+                <div style="margin-top:.5rem;display:flex;gap:.5rem;align-items:center">
+                    <select class="node-input" data-field="actionType" style="padding:.5rem;border-radius:6px;background:rgba(0,0,0,0.2);border:1px solid rgba(255,255,255,0.1);color:var(--text-1)">
+                        <option value="add_tag" ${node.data.actionType==='add_tag'?'selected':''}>Adicionar Etiqueta</option>
+                        <option value="remove_tag" ${node.data.actionType==='remove_tag'?'selected':''}>Remover Etiqueta</option>
+                    </select>
+                    <select class="node-input" data-field="tagId" style="padding:.5rem;border-radius:6px;background:rgba(0,0,0,0.2);border:1px solid rgba(255,255,255,0.1);color:var(--text-1)">
+                        <option value="">Selecione a Etiqueta...</option>
+                        ${todasEtiquetas.map(e => `<option value="${e.id}" ${node.data.tagId == e.id ? 'selected':''}>${e.nome}</option>`).join('')}
+                    </select>
+                </div>
+            `;
+        } else if (node.type === 'question') {
+            contentHtml = `
+                <textarea class="node-input" data-field="text" placeholder="Digite a pergunta..." rows="2" style="width:100%;margin-top:.5rem">${node.data.text||''}</textarea>
+                <div style="margin-top:1rem;background:rgba(0,0,0,0.2);padding:1rem;border-radius:8px">
+                    <div style="font-weight:600;font-size:.85rem;margin-bottom:.8rem;color:var(--text-2)">OPÇÕES (BOTÕES)</div>
+                    ${(node.data.options||[]).map((opt, optIdx) => `
+                        <div style="display:flex;gap:.5rem;margin-bottom:.5rem;align-items:center">
+                            <input type="text" class="node-opt-label" data-opt-idx="${optIdx}" placeholder="Ex: Sim" value="${opt.label}" style="flex:1;padding:.5rem;border-radius:6px;background:var(--input-bg);border:1px solid rgba(255,255,255,0.1);color:var(--text-1)">
+                            <span>➡ Ir para:</span>
+                            <select class="node-opt-target" data-opt-idx="${optIdx}" style="flex:1;padding:.5rem;border-radius:6px;background:var(--input-bg);border:1px solid rgba(255,255,255,0.1);color:var(--text-1)">
+                                ${getTargetOptions(opt.target)}
+                            </select>
+                            <button type="button" class="btn-danger btn-remove-opt" data-opt-idx="${optIdx}" style="padding:.3rem .5rem">✖</button>
+                        </div>
+                    `).join('')}
+                    <button type="button" class="btn-secondary btn-add-opt" style="padding:.3rem .6rem;font-size:.75rem;margin-top:.5rem">➕ Adicionar Opção</button>
+                </div>
+            `;
+        }
+        
+        let nextHtml = '';
+        if (node.type !== 'question') {
+            nextHtml = `
+                <div style="margin-top:1rem;border-top:1px dashed rgba(255,255,255,0.1);padding-top:.8rem;display:flex;justify-content:flex-end;align-items:center;gap:.5rem">
+                    <span style="font-size:.75rem;color:var(--text-3)">Depois deste passo:</span>
+                    <select class="node-input" data-field="next" style="font-size:.75rem;padding:.3rem .5rem;border-radius:6px;background:rgba(0,0,0,0.2);border:1px solid rgba(255,255,255,0.1);color:var(--text-1)">
+                        ${getTargetOptions(node.data.next)}
+                    </select>
+                </div>
+            `;
+        }
+
+        return `
+            <div class="fluxo-node-card" data-index="${index}" style="background:var(--card-bg);border:1px solid rgba(255,255,255,0.05);border-radius:12px;padding:1.2rem;position:relative;animation:fadeIn 0.3s ease">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.8rem">
+                    <div style="font-weight:600;color:var(--text-1);display:flex;align-items:center;gap:.5rem">
+                        <span style="background:var(--green);color:#000;width:24px;height:24px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:.8rem">${index+1}</span>
+                        ${node.type.toUpperCase()}
+                    </div>
+                    <div style="display:flex;gap:.3rem">
+                        ${index > 0 ? `<button class="btn-secondary btn-move-node" data-dir="-1" title="Mover para cima">⬆</button>` : ''}
+                        ${index < fluxoNodesEditando.length - 1 ? `<button class="btn-secondary btn-move-node" data-dir="1" title="Mover para baixo">⬇</button>` : ''}
+                        <button class="btn-danger btn-remove-node" title="Excluir passo">🗑️</button>
+                    </div>
+                </div>
+                ${contentHtml}
+                ${nextHtml}
+            </div>
+        `;
+    }).join('');
+}
+
+fluxoNodesContainer?.addEventListener('change', async (e) => {
+    const card = e.target.closest('.fluxo-node-card');
+    if (!card) return;
+    const index = Number(card.dataset.index);
+    const node = fluxoNodesEditando[index];
+    
+    if (e.target.classList.contains('node-input')) {
+        const field = e.target.dataset.field;
+        
+        if (field === 'mediaFile' && e.target.files.length > 0) {
+            const formData = new FormData();
+            formData.append('media', e.target.files[0]);
+            try {
+                const res = await fetch('/api/upload_fluxo', { method: 'POST', body: formData });
+                const data = await res.json();
+                if (data.url) {
+                    node.data.mediaUrl = data.url;
+                    renderFluxoNodes();
+                }
+            } catch (err) {
+                showToast('Erro', 'Falha no upload', 'error');
+            }
+            return;
+        }
+        
+        node.data[field] = e.target.value;
+    } 
+    else if (e.target.classList.contains('node-opt-label')) {
+        const optIdx = Number(e.target.dataset.optIdx);
+        node.data.options[optIdx].label = e.target.value;
+    }
+    else if (e.target.classList.contains('node-opt-target')) {
+        const optIdx = Number(e.target.dataset.optIdx);
+        node.data.options[optIdx].target = e.target.value;
+    }
+});
+
+fluxoNodesContainer?.addEventListener('click', (e) => {
+    const card = e.target.closest('.fluxo-node-card');
+    if (!card) return;
+    const index = Number(card.dataset.index);
+    
+    if (e.target.closest('.btn-remove-node')) {
+        if (!confirm('Excluir este passo?')) return;
+        fluxoNodesEditando.splice(index, 1);
+        renderFluxoNodes();
+    }
+    else if (e.target.closest('.btn-move-node')) {
+        const dir = Number(e.target.closest('.btn-move-node').dataset.dir);
+        const temp = fluxoNodesEditando[index];
+        fluxoNodesEditando[index] = fluxoNodesEditando[index + dir];
+        fluxoNodesEditando[index + dir] = temp;
+        renderFluxoNodes();
+    }
+    else if (e.target.closest('.btn-add-opt')) {
+        if (!fluxoNodesEditando[index].data.options) fluxoNodesEditando[index].data.options = [];
+        fluxoNodesEditando[index].data.options.push({ label: 'Nova Opção', target: '' });
+        renderFluxoNodes();
+    }
+    else if (e.target.closest('.btn-remove-opt')) {
+        const optIdx = Number(e.target.closest('.btn-remove-opt').dataset.optIdx);
+        fluxoNodesEditando[index].data.options.splice(optIdx, 1);
+        renderFluxoNodes();
+    }
+});
+
+document.querySelectorAll('.add-node-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+        const type = btn.dataset.type;
+        const newNode = {
+            id: 'node_' + Date.now() + Math.floor(Math.random()*1000),
+            type,
+            data: {}
+        };
+        if (type === 'question') newNode.data.options = [];
+        fluxoNodesEditando.push(newNode);
+        renderFluxoNodes();
+        setTimeout(() => {
+            if (fluxoNodesContainer) fluxoNodesContainer.scrollTop = fluxoNodesContainer.scrollHeight;
+        }, 50);
+    });
+});
+
+btnSalvarFluxo?.addEventListener('click', async () => {
+    const nome = fluxoNome.value.trim();
+    if (!nome) { showToast('Nome obrigatório', 'Digite o nome do fluxo.', 'error'); return; }
+    
+    const payload = {
+        nome,
+        gatilho: fluxoGatilho.value.trim(),
+        flow_data: fluxoNodesEditando,
+        ativo: 1
+    };
+    
+    try {
+        if (fluxoEditandoId) {
+            await fetch(`/api/fluxos/${fluxoEditandoId}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            showToast('Sucesso', 'Fluxo atualizado!', 'success');
+        } else {
+            await fetch('/api/fluxos', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            showToast('Sucesso', 'Fluxo criado!', 'success');
+        }
+        closeModal('modal-fluxo');
+        loadFluxos();
+    } catch(e) {
+        showToast('Erro', 'Não foi possível salvar o fluxo.', 'error');
+    }
+});
+
+socket.on('fluxos_updated', () => {
+    const s = document.getElementById('fluxos-section');
+    if (s && !s.classList.contains('hidden')) loadFluxos();
+});
+
 // Inicializa o ConversationManager
 CM.init();
+
 
 // =====================================
 // INTEGRAÇÃO — CRM PACTO (CARTEIRA DO DIA)

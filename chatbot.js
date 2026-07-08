@@ -181,6 +181,21 @@ async function initDB() {
             telefone TEXT PRIMARY KEY,
             assumida_em DATETIME DEFAULT CURRENT_TIMESTAMP
         );
+        CREATE TABLE IF NOT EXISTS fluxos (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            nome TEXT NOT NULL,
+            gatilho TEXT,
+            flow_data TEXT NOT NULL,
+            ativo INTEGER DEFAULT 1,
+            criado_em DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE IF NOT EXISTS contato_estado_fluxo (
+            telefone TEXT PRIMARY KEY,
+            fluxo_id INTEGER NOT NULL,
+            current_node_id TEXT,
+            variaveis TEXT DEFAULT '{}',
+            atualizado_em DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
     `);
 
     // Adiciona colunas novas se migrando de versão anterior
@@ -338,8 +353,88 @@ async function obterModoAtual() {
     return { modo: modo || modoPadrao, mensagemHumano, timezone };
 }
 
+// Upload de Mídia para Fluxos
+app.post('/api/upload_fluxo', upload.single('media'), (req, res) => {
+    if (!req.file) return res.status(400).json({ error: 'Nenhum arquivo enviado.' });
+    // Retorna a URL que será salva no JSON do fluxo
+    res.json({ url: '/uploads/' + req.file.filename });
+});
+
 // =====================================
-// API REST — RESPOSTAS
+// API REST — FLUXOS DE ATENDIMENTO
+// =====================================
+app.get('/api/fluxos', async (req, res) => {
+    try {
+        const fluxos = await db.all("SELECT * FROM fluxos ORDER BY id DESC");
+        // Converte JSON de volta para objeto
+        const formatados = fluxos.map(f => ({
+            ...f,
+            flow_data: JSON.parse(f.flow_data || '[]')
+        }));
+        res.json(formatados);
+    } catch(err) {
+        res.status(500).json({error: err.message});
+    }
+});
+
+app.post('/api/fluxos', async (req, res) => {
+    try {
+        const { nome, gatilho, flow_data, ativo } = req.body;
+        const result = await db.run(
+            'INSERT INTO fluxos (nome, gatilho, flow_data, ativo) VALUES (?, ?, ?, ?)',
+            [nome, gatilho || null, JSON.stringify(flow_data || []), ativo !== undefined ? ativo : 1]
+        );
+        const novo = await db.get('SELECT * FROM fluxos WHERE id = ?', result.lastID);
+        if (novo) novo.flow_data = JSON.parse(novo.flow_data || '[]');
+        io.emit('fluxos_updated');
+        res.json(novo);
+    } catch(err) {
+        res.status(500).json({error: err.message});
+    }
+});
+
+app.put('/api/fluxos/:id', async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { nome, gatilho, flow_data, ativo } = req.body;
+        await db.run(
+            'UPDATE fluxos SET nome = ?, gatilho = ?, flow_data = ?, ativo = ? WHERE id = ?',
+            [nome, gatilho || null, JSON.stringify(flow_data || []), ativo !== undefined ? ativo : 1, id]
+        );
+        io.emit('fluxos_updated');
+        res.json({ success: true });
+    } catch(err) {
+        res.status(500).json({error: err.message});
+    }
+});
+
+app.delete('/api/fluxos/:id', async (req, res) => {
+    try {
+        const { id } = req.params;
+        await db.run('DELETE FROM fluxos WHERE id = ?', id);
+        io.emit('fluxos_updated');
+        res.json({ success: true });
+    } catch(err) {
+        res.status(500).json({error: err.message});
+    }
+});
+
+app.post('/api/fluxos/:id/toggle', async (req, res) => {
+    try {
+        const { id } = req.params;
+        const fluxo = await db.get('SELECT ativo FROM fluxos WHERE id = ?', id);
+        if (!fluxo) return res.status(404).json({error: 'Fluxo não encontrado'});
+        const novoStatus = fluxo.ativo ? 0 : 1;
+        await db.run('UPDATE fluxos SET ativo = ? WHERE id = ?', [novoStatus, id]);
+        io.emit('fluxos_updated');
+        res.json({ success: true, ativo: novoStatus });
+    } catch(err) {
+        res.status(500).json({error: err.message});
+    }
+});
+
+// =====================================
+// API REST — CRM COLABORADORES
 // =====================================
 app.get('/api/respostas', async (req, res) => {
     const r = await db.all('SELECT * FROM respostas ORDER BY ordem ASC');
@@ -1413,7 +1508,127 @@ client.on('message_create', (msg) => {
     if (msg.from !== 'status@broadcast') {
         console.log(`🔍 [DEBUG] ${dir} from=${msg.from} body="${(msg.body||'[sem texto]').slice(0,40)}"`);
     }
-});
+});// =====================================
+// ENGINE DE FLUXOS (Flow Builder)
+// =====================================
+
+async function engineExecutarFluxo(telefoneReal, numLimpo, nomeContato, fluxoId, startNodeId) {
+    const fluxo = await db.get('SELECT * FROM fluxos WHERE id = ?', fluxoId);
+    if (!fluxo) return;
+    
+    let nodes = [];
+    try { nodes = JSON.parse(fluxo.flow_data); } catch(e) { return; }
+    
+    let currentNodeId = startNodeId;
+    
+    while (currentNodeId) {
+        const node = nodes.find(n => n.id === currentNodeId);
+        if (!node) {
+            await db.run('DELETE FROM contato_estado_fluxo WHERE telefone = ?', telefoneReal);
+            break;
+        }
+        
+        await db.run(
+            'INSERT OR REPLACE INTO contato_estado_fluxo (telefone, fluxo_id, current_node_id) VALUES (?, ?, ?)', 
+            [telefoneReal, fluxoId, currentNodeId]
+        );
+
+        if (node.type === 'message') {
+            if (node.data.text) {
+                const txt = node.data.text.replace(/\{nome\}|\[nome\]/gi, nomeContato);
+                await simularDigitando(client.getChatById(telefoneReal));
+                await delay(calcularDelayDigitacao(txt));
+                await client.sendMessage(telefoneReal, txt);
+                await registrarMensagemEnviada(telefoneReal, txt, nomeContato);
+            }
+            currentNodeId = node.data.next || null;
+        } 
+        else if (node.type === 'delay') {
+            const segs = parseInt(node.data.delaySeconds) || 1;
+            await delay(segs * 1000);
+            currentNodeId = node.data.next || null;
+        }
+        else if (node.type === 'media') {
+            if (node.data.mediaUrl) {
+                const mediaPath = path.join(__dirname, 'public', node.data.mediaUrl);
+                if (fs.existsSync(mediaPath)) {
+                    const MessageMedia = require('whatsapp-web.js').MessageMedia;
+                    const media = MessageMedia.fromFilePath(mediaPath);
+                    const cap = node.data.text ? node.data.text.replace(/\{nome\}|\[nome\]/gi, nomeContato) : '';
+                    await client.sendMessage(telefoneReal, media, { caption: cap });
+                    await registrarMensagemEnviada(telefoneReal, cap || '[Mídia]', nomeContato);
+                }
+            }
+            currentNodeId = node.data.next || null;
+        }
+        else if (node.type === 'question') {
+            let txt = (node.data.text || '').replace(/\{nome\}|\[nome\]/gi, nomeContato) + '\n';
+            if (node.data.options && node.data.options.length > 0) {
+                txt += '\n' + node.data.options.map((opt, i) => `${i+1} - ${opt.label}`).join('\n');
+            }
+            await simularDigitando(client.getChatById(telefoneReal));
+            await delay(calcularDelayDigitacao(txt));
+            await client.sendMessage(telefoneReal, txt);
+            await registrarMensagemEnviada(telefoneReal, txt, nomeContato);
+            break; // PARA E ESPERA O USUÁRIO RESPONDER
+        }
+        else if (node.type === 'action') {
+            if (node.data.actionType === 'add_tag') {
+                await aplicarEtiquetaContato(numLimpo, node.data.tagId);
+            } else if (node.data.actionType === 'remove_tag') {
+                await removerEtiquetaContato(numLimpo, node.data.tagId);
+            }
+            currentNodeId = node.data.next || null;
+        }
+        else {
+            currentNodeId = node.data.next || null;
+        }
+        
+        if (!currentNodeId) {
+            await db.run('DELETE FROM contato_estado_fluxo WHERE telefone = ?', telefoneReal);
+        }
+    }
+}
+
+async function engineContinuarFluxo(telefoneReal, numLimpo, nomeContato, textoMensagem) {
+    const estado = await db.get('SELECT * FROM contato_estado_fluxo WHERE telefone = ?', telefoneReal);
+    if (!estado) return false;
+    
+    const fluxo = await db.get('SELECT * FROM fluxos WHERE id = ?', estado.fluxo_id);
+    if (!fluxo) {
+        await db.run('DELETE FROM contato_estado_fluxo WHERE telefone = ?', telefoneReal);
+        return false;
+    }
+    
+    let nodes = [];
+    try { nodes = JSON.parse(fluxo.flow_data); } catch(e) { return false; }
+    
+    const node = nodes.find(n => n.id === estado.current_node_id);
+    if (!node || node.type !== 'question') {
+        await engineExecutarFluxo(telefoneReal, numLimpo, nomeContato, estado.fluxo_id, node ? node.data.next : null);
+        return true; 
+    }
+    
+    let optionMatch = null;
+    const msg = textoMensagem.trim().toLowerCase();
+    const opts = node.data.options || [];
+    
+    for (let i = 0; i < opts.length; i++) {
+        if (msg === (i+1).toString() || msg === opts[i].label.toLowerCase()) {
+            optionMatch = opts[i];
+            break;
+        }
+    }
+    
+    if (optionMatch) {
+        await engineExecutarFluxo(telefoneReal, numLimpo, nomeContato, estado.fluxo_id, optionMatch.target);
+    } else {
+        await client.sendMessage(telefoneReal, 'Opção inválida, por favor digite o número correto da opção.');
+        await engineExecutarFluxo(telefoneReal, numLimpo, nomeContato, estado.fluxo_id, estado.current_node_id);
+    }
+    
+    return true;
+}
 
 // Wrapper de envio: tenta msg.reply(), se timeout reinicia o processo
 async function enviarResposta(msg, conteudo, opcoes = {}) {
@@ -1547,6 +1762,36 @@ client.on('message', async (msg) => {
 
         // Sinaliza que o bot está processando ("digitando...")
         io.emit('bot_digitando', { telefone: numLimpo, ativo: true });
+
+        // Tenta continuar um fluxo ativo (se o usuário estava preso em uma Pergunta)
+        if (await engineContinuarFluxo(telefoneReal, numLimpo, nomeContato, texto)) {
+            io.emit('bot_digitando', { telefone: numLimpo, ativo: false });
+            return;
+        }
+
+        // Tenta iniciar um NOVO fluxo se bater com alguma palavra-chave (gatilho)
+        if (texto) {
+            const fluxosAtivos = await db.all('SELECT * FROM fluxos WHERE ativo = 1');
+            let fluxoIniciado = false;
+            for (const fluxo of fluxosAtivos) {
+                if (!fluxo.gatilho) continue;
+                const gatilhos = fluxo.gatilho.split(',').map(g => g.trim().toLowerCase());
+                if (gatilhos.some(g => texto === g || texto.includes(g))) {
+                    let nodes = [];
+                    try { nodes = JSON.parse(fluxo.flow_data); } catch(e) {}
+                    const initialNode = nodes.length > 0 ? nodes[0].id : null;
+                    if (initialNode) {
+                        await engineExecutarFluxo(telefoneReal, numLimpo, nomeContato, fluxo.id, initialNode);
+                        fluxoIniciado = true;
+                        break;
+                    }
+                }
+            }
+            if (fluxoIniciado) {
+                io.emit('bot_digitando', { telefone: numLimpo, ativo: false });
+                return;
+            }
+        }
 
         if (await handleCadastroFlow(replyTo, texto, msg.body || '')) { io.emit('bot_digitando', { telefone: numLimpo, ativo: false }); return; }
 
