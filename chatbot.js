@@ -1099,6 +1099,7 @@ async function executarEtapaAutomacao(telefone, automacao, etapa) {
     }
 
     const chatId = `${numLimpo}@c.us`;
+    let sucesso = false;
     try {
         const nome = await resolverNomeContato(numLimpo);
         const primeiroNome = (nome && nome !== numLimpo) ? nome.split(' ')[0] : '';
@@ -1109,13 +1110,31 @@ async function executarEtapaAutomacao(telefone, automacao, etapa) {
                 const media = MessageMedia.fromFilePath(mediaFullPath);
                 const sent = await client.sendMessage(chatId, media, texto ? { caption: texto } : undefined);
                 await registrarMensagemEnviada(numLimpo, texto || '[mídia]', nome, sent.id?._serialized);
+                sucesso = true;
+            } else {
+                console.error(`Automação #${automacao.id}: arquivo de mídia não encontrado (${etapa.media_path}) pra ${numLimpo}`);
             }
         } else if (texto) {
             const sent = await client.sendMessage(chatId, texto);
             await registrarMensagemEnviada(numLimpo, texto, nome, sent.id?._serialized);
+            sucesso = true;
         }
     } catch (e) {
         console.error(`Erro ao enviar etapa de automação #${automacao.id} pra ${numLimpo}:`, e.message);
+    }
+
+    if (!sucesso) {
+        // Envio falhou (WhatsApp instável, número inválido, arquivo ausente etc.) —
+        // NÃO avança de etapa nem conta como enviado; tenta de novo em breve, em
+        // vez de silenciosamente pular a mensagem e já contar os dias da próxima.
+        await db.run(
+            `INSERT INTO contato_automacao_estado (telefone, automacao_id, etapa_atual, entrou_em, proxima_execucao_em)
+             VALUES (?, ?, ?, CURRENT_TIMESTAMP, ?)
+             ON CONFLICT(telefone, automacao_id) DO UPDATE SET proxima_execucao_em = excluded.proxima_execucao_em`,
+            [numLimpo, automacao.id, etapa.ordem - 1, moment().add(15, 'minutes').toISOString()]
+        );
+        io.emit('automacoes_atualizadas');
+        return;
     }
 
     const proximaEtapa = await db.get('SELECT * FROM automacao_etapas WHERE automacao_id = ? AND ordem = ?', [automacao.id, etapa.ordem + 1]);
@@ -2228,9 +2247,17 @@ client.on('message_create', async (msg) => {
     if (!msg.to || msg.to.endsWith('@g.us') || msg.to.endsWith('@broadcast')) return;
 
     const msgId = msg.id?._serialized;
-    if (msgId && idsMensagensDoSistema.has(msgId)) {
-        idsMensagensDoSistema.delete(msgId);
-        return; // já registrada pelo próprio sistema
+    if (msgId) {
+        // message_create pode disparar ANTES do nosso próprio código terminar de
+        // registrar o ID em idsMensagensDoSistema (a marcação só acontece depois
+        // que o await client.sendMessage()/msg.reply() resolve, e o evento pode
+        // chegar antes disso) — sem essa espera, mensagem do próprio bot/dashboard
+        // é tratada como "eco do celular" e duplica no histórico do Bate Papo ao Vivo.
+        await delay(400);
+        if (idsMensagensDoSistema.has(msgId)) {
+            idsMensagensDoSistema.delete(msgId);
+            return; // já registrada pelo próprio sistema
+        }
     }
 
     try {
