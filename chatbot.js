@@ -375,6 +375,19 @@ async function salvarNaConversa(telefone, nome, direcao, texto, tipo = 'text') {
     // Conta não lidas deste telefone
     const naoLidas = await db.get('SELECT COUNT(*) as c FROM conversas WHERE telefone=? AND lida=0 AND direcao="in"', num);
     io.emit('nova_mensagem', { telefone: num, nome: nome || num, texto, direcao, tipo, ts, nao_lidas: naoLidas.c });
+
+    // Qualquer mensagem nova (do cliente OU pro cliente — bot, automação, fluxo,
+    // envio manual) reabre a conversa se ela tinha sido finalizada. "Finalizada"
+    // significa "não precisa mais de atenção agora"; uma interação nova, em
+    // qualquer direção, contraria isso.
+    const statusAtual = await db.get('SELECT status FROM conversas_status WHERE telefone = ?', num);
+    if (statusAtual?.status === 'fechada') {
+        await db.run(
+            "INSERT INTO conversas_status (telefone, status, atualizado_em) VALUES (?, 'aberta', CURRENT_TIMESTAMP) ON CONFLICT(telefone) DO UPDATE SET status = 'aberta', atualizado_em = CURRENT_TIMESTAMP",
+            num
+        );
+        io.emit('conversa_status_atualizada', { telefone: num, status: 'aberta' });
+    }
 }
 
 // Registra no histórico permanente cada mensagem realmente enviada pelo robô.
@@ -2350,11 +2363,6 @@ client.on('message_create', async (msg) => {
         const textoExibir = msg.body || TIPO_LABEL_FALLBACK[tipoMsg] || '[mensagem sem texto]';
         const nome = await resolverNomeContato(numLimpo);
         await salvarNaConversa(numLimpo, nome, 'out', textoExibir, tipoMsg);
-        await db.run(
-            "INSERT INTO conversas_status (telefone, status, atualizado_em) VALUES (?, 'aberta', CURRENT_TIMESTAMP) ON CONFLICT(telefone) DO UPDATE SET status = 'aberta', atualizado_em = CURRENT_TIMESTAMP",
-            numLimpo
-        );
-        io.emit('conversa_status_atualizada', { telefone: numLimpo, status: 'aberta' });
     } catch (e) {
         console.error('Erro ao registrar mensagem enviada pelo celular:', e.message);
     }
@@ -2595,16 +2603,10 @@ client.on('message', async (msg) => {
             if (transcricaoAudio) texto = transcricaoAudio.trim().toLowerCase();
         }
 
-        // Salva na tabela de conversas (mensagens recebidas)
+        // Salva na tabela de conversas (mensagens recebidas) — salvarNaConversa já
+        // reabre a conversa automaticamente se ela tinha sido finalizada.
         const textoExibir = transcricaoAudio ? `🎤 ${transcricaoAudio}` : (msg.body || TIPO_LABEL_FALLBACK[tipoMsg] || '[mensagem sem texto]');
         await salvarNaConversa(numLimpo, nomeContato, 'in', textoExibir, tipoMsg);
-        // Reabre a conversa automaticamente no Bate Papo ao Vivo se ela tinha sido
-        // resolvida/fechada — o cliente voltou a falar, então volta pra aba "Abertas".
-        await db.run(
-            "INSERT INTO conversas_status (telefone, status, atualizado_em) VALUES (?, 'aberta', CURRENT_TIMESTAMP) ON CONFLICT(telefone) DO UPDATE SET status = 'aberta', atualizado_em = CURRENT_TIMESTAMP",
-            numLimpo
-        );
-        io.emit('conversa_status_atualizada', { telefone: numLimpo, status: 'aberta' });
 
         // Ignora mensagens sem texto (stickers, imagens sem legenda, áudio sem transcrição)
         if (!texto && !msg.body) return;
