@@ -1264,6 +1264,21 @@ async function processarAutomacoesPendentes() {
     }
 }
 setInterval(processarAutomacoesPendentes, 30 * 60 * 1000); // checa a cada 30 minutos
+// Também roda logo depois de subir — cada deploy reinicia o processo e some
+// com a contagem do setInterval, então sem isso um contato que já venceu a
+// etapa fica esperando até 30min a mais só porque o servidor reiniciou.
+setTimeout(processarAutomacoesPendentes, 60 * 1000);
+
+// Força uma checada imediata (fora da espera de 30min) — útil pra testar sem
+// precisar esperar, e como válvula de escape se o servidor reiniciar bastante.
+app.post('/api/automacoes/processar-agora', async (req, res) => {
+    try {
+        await processarAutomacoesPendentes();
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
 
 app.get('/api/automacoes', async (req, res) => {
     const automacoes = await db.all(`
