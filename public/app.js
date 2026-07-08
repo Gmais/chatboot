@@ -3201,7 +3201,6 @@ const modalMensagemPersonalizadaTitulo = document.getElementById('modal-mensagem
 const mensagemPersonalizadaId = document.getElementById('mensagem-personalizada-id');
 const mensagemPersonalizadaNome = document.getElementById('mensagem-personalizada-nome');
 const mensagemPersonalizadaTexto = document.getElementById('mensagem-personalizada-texto');
-const mensagemPersonalizadaAtivo = document.getElementById('mensagem-personalizada-ativo');
 const mensagemPersonalizadaMediaPath = document.getElementById('mensagem-personalizada-media-path');
 const mensagemPersonalizadaMediaTipo = document.getElementById('mensagem-personalizada-media-tipo');
 const mpUploadArea = document.getElementById('mp-upload-area');
@@ -3233,37 +3232,13 @@ function renderMensagensPersonalizadasLista() {
         <div class="card glass" style="padding:1.1rem 1.3rem;display:flex;align-items:center;gap:1rem;flex-wrap:wrap" data-mensagem-id="${m.id}">
             <div style="flex:1;min-width:200px">
                 <div style="font-weight:600;color:var(--text-1);font-size:.95rem;margin-bottom:.3rem">🎂 ${m.nome}</div>
-                <div style="display:flex;align-items:center;gap:.5rem;flex-wrap:wrap">
-                    <span style="font-size:.75rem;color:var(--text-3)">${m.total_enviados} enviada${m.total_enviados !== 1 ? 's' : ''}</span>
-                    ${m.media_path ? '<span style="font-size:.75rem;color:var(--text-3)">• 📎 com mídia</span>' : ''}
-                </div>
+                ${m.media_path ? '<span style="font-size:.75rem;color:var(--text-3)">📎 com mídia</span>' : ''}
             </div>
-            <label style="display:flex;align-items:center;gap:.4rem;font-size:.78rem;color:var(--text-3);cursor:pointer">
-                <input type="checkbox" class="mp-toggle-ativo" data-id="${m.id}" ${m.ativo ? 'checked' : ''} style="accent-color:var(--green);width:16px;height:16px">
-                Ativa
-            </label>
             <button type="button" class="btn-secondary btn-editar-mensagem-personalizada" data-id="${m.id}" style="padding:.5rem .8rem;font-size:.82rem">✏️ Editar</button>
             <button type="button" class="btn-danger btn-excluir-mensagem-personalizada" data-id="${m.id}" style="padding:.5rem .7rem;font-size:.82rem">🗑️</button>
         </div>
     `).join('');
 }
-
-mensagensPersonalizadasLista?.addEventListener('change', async (e) => {
-    const toggle = e.target.closest('.mp-toggle-ativo');
-    if (!toggle) return;
-    const m = mensagensPersonalizadasGlobais.find(x => x.id == toggle.dataset.id);
-    if (!m) return;
-    try {
-        await fetch(`/api/mensagens-personalizadas/${m.id}`, {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ ...m, ativo: toggle.checked })
-        });
-        showToast(toggle.checked ? 'Mensagem ativada' : 'Mensagem pausada', '', 'success', 2000);
-    } catch (e) {
-        showToast('Erro', 'Não foi possível atualizar a mensagem', 'error');
-    }
-});
 
 mensagensPersonalizadasLista?.addEventListener('click', async (e) => {
     const btnEditar = e.target.closest('.btn-editar-mensagem-personalizada');
@@ -3287,7 +3262,6 @@ function abrirModalMensagemPersonalizada(m = null) {
     modalMensagemPersonalizadaTitulo.textContent = m ? '✏️ Editar Mensagem de Aniversário' : '➕ Nova Mensagem de Aniversário';
     mensagemPersonalizadaNome.value = m ? m.nome : '';
     mensagemPersonalizadaTexto.value = m ? m.texto : '';
-    mensagemPersonalizadaAtivo.checked = m ? !!m.ativo : true;
     mensagemPersonalizadaMediaPath.value = m?.media_path || '';
     mensagemPersonalizadaMediaTipo.value = m?.media_tipo || '';
     mpUploadArea.classList.remove('has-file');
@@ -3341,8 +3315,7 @@ btnMensagemPersonalizadaSalvar?.addEventListener('click', async () => {
     const payload = {
         nome, texto,
         media_path: mensagemPersonalizadaMediaPath.value || null,
-        media_tipo: mensagemPersonalizadaMediaTipo.value || null,
-        ativo: mensagemPersonalizadaAtivo.checked
+        media_tipo: mensagemPersonalizadaMediaTipo.value || null
     };
     const id = mensagemPersonalizadaId.value;
     try {

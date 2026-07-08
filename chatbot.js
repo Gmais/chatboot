@@ -1220,6 +1220,20 @@ function proximoInicioJanela(automacao) {
     return candidato.toISOString();
 }
 
+// Espera entre um envio de automação e o próximo — mesma config ("Intervalo
+// entre envios") usada na tela de Disparos. Evita que N contatos que vencem a
+// etapa ao mesmo tempo (ex: todos fazem aniversário no mesmo dia) recebam a
+// mensagem em rajada simultânea — risco real de bloqueio da conta no WhatsApp.
+async function obterProximoDelayAutomacao() {
+    const configRows = await db.all(
+        "SELECT chave, valor FROM configuracoes WHERE chave IN ('automacao_delay_segundos', 'automacao_delay_modo', 'automacao_delay_velocidade')"
+    );
+    const configMap = Object.fromEntries(configRows.map(r => [r.chave, r.valor]));
+    if (configMap.automacao_delay_modo !== 'aleatorio') return (parseInt(configMap.automacao_delay_segundos) || 5) * 1000;
+    const [min, max] = FAIXAS_VELOCIDADE[configMap.automacao_delay_velocidade] || FAIXAS_VELOCIDADE.medio;
+    return Math.floor(min + Math.random() * (max - min));
+}
+
 // Envia o conteúdo de uma etapa e decide o que vem a seguir: agenda a próxima
 // etapa pra daqui a N dias, ou — se essa era a última — conclui a automação e
 // remove a etiqueta que a disparou. Usada tanto pra matricular (etapa 1) quanto
@@ -1370,14 +1384,16 @@ async function enrolarContatosExistentesNaAutomacao(automacaoId) {
     const etapa1 = await db.get('SELECT * FROM automacao_etapas WHERE automacao_id = ? ORDER BY ordem ASC LIMIT 1', automacaoId);
     if (!etapa1) return;
     const contatos = await db.all('SELECT telefone FROM contato_etiquetas WHERE etiqueta_id = ?', automacao.etiqueta_id);
+    let primeiro = true;
     for (const c of contatos) {
         const jaMatriculado = await db.get(
             'SELECT 1 FROM contato_automacao_estado WHERE telefone = ? AND automacao_id = ?',
             [c.telefone, automacaoId]
         );
         if (jaMatriculado) continue;
+        if (!primeiro) await delay(await obterProximoDelayAutomacao());
+        primeiro = false;
         await executarEtapaAutomacao(c.telefone, automacao, etapa1);
-        await delay(1000);
     }
 }
 
@@ -1392,21 +1408,10 @@ async function processarAutomacoesPendentes() {
         );
         // Se muitos contatos vencerem a etapa ao mesmo tempo (ex: todos entraram no
         // mesmo dia), manda um de cada vez com um respiro entre eles — evita um
-        // estouro de mensagens simultâneas (risco de bloqueio no WhatsApp). Modo
-        // fixo usa sempre o mesmo intervalo; aleatório sorteia um novo a cada envio.
-        const configRows = await db.all(
-            "SELECT chave, valor FROM configuracoes WHERE chave IN ('automacao_delay_segundos', 'automacao_delay_modo', 'automacao_delay_velocidade')"
-        );
-        const configMap = Object.fromEntries(configRows.map(r => [r.chave, r.valor]));
-        const delayFixoMs = (parseInt(configMap.automacao_delay_segundos) || 5) * 1000;
-        function proximoDelayAutomacao() {
-            if (configMap.automacao_delay_modo !== 'aleatorio') return delayFixoMs;
-            const [min, max] = FAIXAS_VELOCIDADE[configMap.automacao_delay_velocidade] || FAIXAS_VELOCIDADE.medio;
-            return Math.floor(min + Math.random() * (max - min));
-        }
+        // estouro de mensagens simultâneas (risco de bloqueio no WhatsApp).
         let primeiro = true;
         for (const estado of pendentes) {
-            if (!primeiro) await delay(proximoDelayAutomacao());
+            if (!primeiro) await delay(await obterProximoDelayAutomacao());
             primeiro = false;
             const automacao = await db.get('SELECT * FROM automacoes WHERE id = ?', estado.automacao_id);
             if (!automacao || !automacao.ativo) {
@@ -1471,13 +1476,13 @@ app.get('/api/mensagens-personalizadas', async (req, res) => {
 });
 
 app.post('/api/mensagens-personalizadas', async (req, res) => {
-    const { nome, texto, media_path, media_tipo, ativo } = req.body;
+    const { nome, texto, media_path, media_tipo } = req.body;
     if (!nome || !nome.trim()) return res.status(400).json({ error: 'Nome é obrigatório.' });
     if (!texto || !texto.trim()) return res.status(400).json({ error: 'Mensagem é obrigatória.' });
     try {
         const result = await db.run(
-            'INSERT INTO mensagens_personalizadas (nome, texto, media_path, media_tipo, ativo) VALUES (?, ?, ?, ?, ?)',
-            [nome.trim(), texto.trim(), media_path || null, media_tipo || null, ativo === false ? 0 : 1]
+            'INSERT INTO mensagens_personalizadas (nome, texto, media_path, media_tipo) VALUES (?, ?, ?, ?)',
+            [nome.trim(), texto.trim(), media_path || null, media_tipo || null]
         );
         res.json({ success: true, id: result.lastID });
     } catch (err) {
@@ -1487,13 +1492,13 @@ app.post('/api/mensagens-personalizadas', async (req, res) => {
 
 app.put('/api/mensagens-personalizadas/:id', async (req, res) => {
     const { id } = req.params;
-    const { nome, texto, media_path, media_tipo, ativo } = req.body;
+    const { nome, texto, media_path, media_tipo } = req.body;
     if (!nome || !nome.trim()) return res.status(400).json({ error: 'Nome é obrigatório.' });
     if (!texto || !texto.trim()) return res.status(400).json({ error: 'Mensagem é obrigatória.' });
     try {
         const result = await db.run(
-            'UPDATE mensagens_personalizadas SET nome = ?, texto = ?, media_path = ?, media_tipo = ?, ativo = ? WHERE id = ?',
-            [nome.trim(), texto.trim(), media_path || null, media_tipo || null, ativo === false ? 0 : 1, id]
+            'UPDATE mensagens_personalizadas SET nome = ?, texto = ?, media_path = ?, media_tipo = ? WHERE id = ?',
+            [nome.trim(), texto.trim(), media_path || null, media_tipo || null, id]
         );
         if (result.changes === 0) return res.status(404).json({ error: 'Mensagem não encontrada.' });
         res.json({ success: true });
@@ -1536,10 +1541,18 @@ async function processarEtiquetaAniversariantes() {
             `SELECT telefone FROM leads WHERE data_nascimento IS NOT NULL AND strftime('%m-%d', data_nascimento) = ?`,
             hojeMD
         );
+        // Aplicar a etiqueta pode disparar Automações vinculadas na hora
+        // (iniciarAutomacoesParaEtiqueta) — com um respiro entre cada contato pra
+        // não mandar tudo em rajada simultânea quando várias pessoas fazem
+        // aniversário no mesmo dia (risco de bloqueio no WhatsApp).
+        let primeiro = true;
         for (const lead of aniversariantesHoje) {
             const numLimpo = lead.telefone.replace('@c.us', '').replace('@lid', '');
             const jaTem = await db.get('SELECT 1 FROM contato_etiquetas WHERE telefone = ? AND etiqueta_id = ?', [numLimpo, etiquetaId]);
-            if (!jaTem) await aplicarEtiquetaContato(numLimpo, etiquetaId);
+            if (jaTem) continue;
+            if (!primeiro) await delay(await obterProximoDelayAutomacao());
+            primeiro = false;
+            await aplicarEtiquetaContato(numLimpo, etiquetaId);
         }
 
         // Some com a etiqueta de quem a tem mas não faz aniversário hoje — o dia virou.
@@ -1557,82 +1570,16 @@ async function processarEtiquetaAniversariantes() {
     }
 }
 
-// Roda periodicamente: manda cada mensagem ativa pra quem faz aniversário
-// hoje (data_nascimento em leads) e ainda não recebeu ESSA mensagem este
-// ano. Só marca como enviado se o envio realmente deu certo — falha (WhatsApp
-// instável, mídia ausente etc.) tenta de novo no próximo ciclo, mesmo dia.
-async function processarMensagensAniversario() {
-    if (!db || !isConnected) return;
-    try {
-        const agora = moment.tz('America/Sao_Paulo');
-        const hojeMD = agora.format('MM-DD');
-        const anoAtual = agora.year();
-
-        const mensagens = await db.all('SELECT * FROM mensagens_personalizadas WHERE ativo = 1');
-        for (const msg of mensagens) {
-            const aniversariantes = await db.all(
-                `SELECT telefone, nome FROM leads WHERE data_nascimento IS NOT NULL AND strftime('%m-%d', data_nascimento) = ?`,
-                hojeMD
-            );
-
-            for (const lead of aniversariantes) {
-                const numLimpo = lead.telefone.replace('@c.us', '').replace('@lid', '');
-                const jaEnviado = await db.get(
-                    'SELECT 1 FROM mensagem_personalizada_enviada WHERE mensagem_id = ? AND telefone = ? AND ano = ?',
-                    [msg.id, numLimpo, anoAtual]
-                );
-                if (jaEnviado) continue;
-
-                let sucesso = false;
-                try {
-                    const chatId = await resolverChatId(numLimpo);
-                    const primeiroNome = (lead.nome && lead.nome !== numLimpo) ? lead.nome.split(' ')[0] : '';
-                    const matricula = await resolverMatriculaContato(numLimpo);
-                    const texto = (msg.texto || '')
-                        .replace(/\{nome\}/gi, primeiroNome).replace(/\[nome\]/gi, primeiroNome)
-                        .replace(/\{matricula\}/gi, matricula).replace(/\[matricula\]/gi, matricula);
-
-                    if (msg.media_path) {
-                        const mediaFullPath = path.join(__dirname, 'public', msg.media_path.replace(/^\//, ''));
-                        if (fs.existsSync(mediaFullPath)) {
-                            const media = MessageMedia.fromFilePath(mediaFullPath);
-                            const sent = await client.sendMessage(chatId, media, texto ? { caption: texto } : undefined);
-                            await registrarMensagemEnviada(numLimpo, texto || '[mídia]', lead.nome, sent.id?._serialized);
-                            sucesso = true;
-                        } else {
-                            console.error(`Mensagem personalizada #${msg.id}: arquivo de mídia não encontrado (${msg.media_path}) pra ${numLimpo}`);
-                        }
-                    } else if (texto) {
-                        const sent = await client.sendMessage(chatId, texto);
-                        await registrarMensagemEnviada(numLimpo, texto, lead.nome, sent.id?._serialized);
-                        sucesso = true;
-                    }
-                } catch (err) {
-                    console.error(`❌ Falha ao enviar mensagem de aniversário #${msg.id} pra ${numLimpo}:`, err.message);
-                }
-
-                if (sucesso) {
-                    await db.run('INSERT INTO mensagem_personalizada_enviada (mensagem_id, telefone, ano) VALUES (?, ?, ?)', [msg.id, numLimpo, anoAtual]);
-                    await db.run('UPDATE mensagens_personalizadas SET total_enviados = total_enviados + 1 WHERE id = ?', msg.id);
-                }
-                await delay(3000);
-            }
-        }
-    } catch (e) {
-        console.error('Erro ao processar mensagens de aniversário:', e.message);
-    }
-}
-
-async function processarAniversariantes() {
-    await processarEtiquetaAniversariantes();
-    await processarMensagensAniversario();
-}
-setInterval(processarAniversariantes, 30 * 60 * 1000);
-setTimeout(processarAniversariantes, 90 * 1000);
+// "Mensagens Personalizadas" é só uma biblioteca de conteúdo — quem manda de
+// verdade é a Automação (campo "Adicionar Mensagem" na etapa, puxando daqui).
+// Esse ciclo só cuida de etiquetar/desetiquetar aniversariantes; nada aqui
+// envia mensagem diretamente.
+setInterval(processarEtiquetaAniversariantes, 30 * 60 * 1000);
+setTimeout(processarEtiquetaAniversariantes, 90 * 1000);
 
 app.post('/api/mensagens-personalizadas/processar-agora', async (req, res) => {
     try {
-        await processarAniversariantes();
+        await processarEtiquetaAniversariantes();
         res.json({ success: true });
     } catch (err) {
         res.status(500).json({ error: err.message });

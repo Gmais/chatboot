@@ -356,7 +356,7 @@
                     <button class="btn-primary" id="btn-nova-mensagem-personalizada">➕ Nova Mensagem</button>
                 </div>
                 <p style="color:var(--text-3);font-size:.8rem;margin:-.6rem 0 1rem">
-                    Mensagens de aniversário disparadas sozinhas: todo dia o robô manda pra quem faz aniversário — usando a Data de Nascimento cadastrada em Contatos — e etiqueta o contato como "Aniversariante" (a etiqueta some sozinha no dia seguinte). Cada contato recebe cada mensagem no máximo uma vez por ano.
+                    Biblioteca de mensagens prontas — só cria e guarda aqui, nada é enviado sozinho a partir desta tela. Pra usar, vá em Automação → Configurar Etapas e adicione a mensagem no campo "Adicionar Mensagem" da etapa. Todo dia o robô etiqueta quem faz aniversário como "Aniversariante" (a etiqueta some sozinha no dia seguinte) — use essa etiqueta pra disparar uma Automação.
                 </p>
                 <div id="mensagens-personalizadas-lista" style="display:flex;flex-direction:column;gap:.8rem">
                     <div style="padding:2rem;text-align:center;color:var(--text-3)">Carregando mensagens...</div>
@@ -385,12 +385,6 @@
                     <input type="hidden" id="mensagem-personalizada-media-path">
                     <input type="hidden" id="mensagem-personalizada-media-tipo">
                     <div id="mp-upload-preview" style="display:none;margin-top:.5rem"></div>
-                </div>
-                <div class="form-group">
-                    <div class="checkbox-row">
-                        <input type="checkbox" id="mensagem-personalizada-ativo" checked style="accent-color:var(--green)">
-                        <label for="mensagem-personalizada-ativo">Ativa</label>
-                    </div>
                 </div>
                 <div class="modal-footer">
                     <button class="btn-cancel" id="modal-mensagem-personalizada-fechar">Fechar</button>
