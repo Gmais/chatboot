@@ -1178,7 +1178,7 @@ function renderContatosPage() {
     contatosPageTableBody.innerHTML = filtrados.map(c => {
         const dataStr = c.data_captura ? new Date(c.data_captura).toLocaleString('pt-BR') : '-';
         return `
-            <tr>
+            <tr class="contatos-page-row" data-telefone="${c.telefone}" style="cursor:pointer">
                 <td>
                     <div style="font-weight:500;color:var(--text-1)">${c.nome}</div>
                     <div style="font-size:.75rem;color:var(--text-3)">${c.telefone}</div>
@@ -1210,6 +1210,99 @@ async function loadContatos() {
         if (contatosPageTableBody) contatosPageTableBody.innerHTML = '<tr><td colspan="4" style="padding:2rem;text-align:center;color:var(--text-3)">Erro ao carregar contatos.</td></tr>';
     }
 }
+
+// =====================================
+// MODAL: EDITAR CONTATO (Audiência)
+// =====================================
+const modalEditarContatoOverlay = document.getElementById('modal-editar-contato-overlay');
+const editarContatoNome = document.getElementById('editar-contato-nome');
+const editarContatoTelefone = document.getElementById('editar-contato-telefone');
+const editarContatoEtiquetas = document.getElementById('editar-contato-etiquetas');
+const editarContatoAddEtiqueta = document.getElementById('editar-contato-add-etiqueta');
+const btnEditarContatoSalvar = document.getElementById('btn-editar-contato-salvar');
+let contatoEditandoTelefone = null;
+
+async function renderEditarContatoEtiquetas() {
+    if (!editarContatoEtiquetas || !editarContatoAddEtiqueta || !contatoEditandoTelefone) return;
+    editarContatoEtiquetas.innerHTML = '';
+    editarContatoAddEtiqueta.innerHTML = '<option value="">🏷️ Adicionar etiqueta...</option>';
+    try {
+        const [res] = await Promise.all([fetch(`/api/contatos/${encodeURIComponent(contatoEditandoTelefone)}/etiquetas`), loadEtiquetas()]);
+        const aplicadas = await res.json();
+        if (contatoEditandoTelefone === null) return;
+
+        editarContatoEtiquetas.innerHTML = aplicadas.length > 0
+            ? aplicadas.map(e => etiquetaChipHtml(e, true)).join('')
+            : '<span style="color:var(--text-3);font-size:.8rem">Nenhuma etiqueta ainda.</span>';
+
+        const aplicadasIds = new Set(aplicadas.map(e => e.id));
+        todasEtiquetas.filter(e => !aplicadasIds.has(e.id)).forEach(e => {
+            const opt = document.createElement('option');
+            opt.value = e.id;
+            opt.textContent = e.nome;
+            editarContatoAddEtiqueta.appendChild(opt);
+        });
+    } catch (e) {
+        editarContatoEtiquetas.innerHTML = '<span style="color:var(--text-3);font-size:.8rem">Erro ao carregar etiquetas.</span>';
+    }
+}
+
+function abrirEditarContato(telefone) {
+    const c = todosContatos.find(x => x.telefone === telefone);
+    if (!c) return;
+    contatoEditandoTelefone = telefone;
+    if (editarContatoNome) editarContatoNome.value = c.nome === telefone ? '' : c.nome;
+    if (editarContatoTelefone) editarContatoTelefone.textContent = telefone;
+    modalEditarContatoOverlay?.classList.add('open');
+    renderEditarContatoEtiquetas();
+}
+
+function fecharEditarContato() {
+    contatoEditandoTelefone = null;
+    modalEditarContatoOverlay?.classList.remove('open');
+}
+
+contatosPageTableBody?.addEventListener('click', (e) => {
+    const row = e.target.closest('.contatos-page-row');
+    if (!row) return;
+    abrirEditarContato(row.dataset.telefone);
+});
+
+document.getElementById('modal-editar-contato-fechar')?.addEventListener('click', fecharEditarContato);
+
+editarContatoEtiquetas?.addEventListener('click', async (e) => {
+    const btn = e.target.closest('.etiqueta-chip-remove');
+    if (!btn || !contatoEditandoTelefone) return;
+    await removerEtiquetaContato(contatoEditandoTelefone, btn.dataset.etiquetaId);
+    renderEditarContatoEtiquetas();
+});
+
+editarContatoAddEtiqueta?.addEventListener('change', async () => {
+    const val = editarContatoAddEtiqueta.value;
+    if (!val || !contatoEditandoTelefone) return;
+    await aplicarEtiquetaContato(contatoEditandoTelefone, Number(val));
+    renderEditarContatoEtiquetas();
+});
+
+btnEditarContatoSalvar?.addEventListener('click', async () => {
+    if (!contatoEditandoTelefone) return;
+    const nome = (editarContatoNome?.value || '').trim();
+    if (!nome) { showToast('Nome obrigatório', 'Digite um nome para o contato.', 'error'); return; }
+    try {
+        const res = await fetch(`/api/contatos/${encodeURIComponent(contatoEditandoTelefone)}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ nome })
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Erro ao salvar');
+        showToast('Contato atualizado!', '', 'success', 2500);
+        fecharEditarContato();
+        loadContatos();
+    } catch (e) {
+        showToast('Erro ao salvar', e.message, 'error');
+    }
+});
 
 contatosLista?.addEventListener('change', (e) => {
     const check = e.target.closest('.contato-check');
@@ -1489,7 +1582,7 @@ const CM = (() => {
     }
 
     function tipoIcon(tipo) {
-        const icons = { image: '🖼️ Imagem', audio: '🎤 Áudio', video: '🎥 Vídeo', document: '📄 Documento', sticker: '🎭 Sticker', ptt: '🎤 Áudio' };
+        const icons = { image: '🖼️ Imagem', audio: '🎤 Áudio', video: '🎥 Vídeo', document: '📄 Documento', sticker: '🎭 Sticker', ptt: '🎤 Áudio', location: '📍 Localização', contact: '👤 Contato' };
         return icons[tipo] || null;
     }
 
@@ -1539,7 +1632,10 @@ const CM = (() => {
             item.dataset.phone = c.telefone;
 
             const icon = tipoIcon(c.ultimo_tipo);
-            const previewText = icon || (c.ultimo_texto ? (c.ultimo_texto.length > 42 ? c.ultimo_texto.slice(0, 42) + '…' : c.ultimo_texto) : '');
+            const temTextoRealPreview = c.ultimo_texto && !/^\[.*\]$/.test(c.ultimo_texto.trim());
+            const previewText = (icon && !temTextoRealPreview)
+                ? icon
+                : (c.ultimo_texto ? (c.ultimo_texto.length > 42 ? c.ultimo_texto.slice(0, 42) + '…' : c.ultimo_texto) : (icon || ''));
             const previewClass = c.ultima_direcao === 'out' ? 'chat-contact-preview preview-out' : 'chat-contact-preview';
             const previewPrefix = c.ultima_direcao === 'out' ? '↪ ' : '';
 
@@ -1760,9 +1856,19 @@ const CM = (() => {
                 : `<div class="bubble-sender">🤖 Bot</div>`;
         }
 
-        const bodyHtml = icon
-            ? `<span class="bubble-type-badge">${icon}</span>`
-            : `<div class="bubble-text">${escapeHtml(m.texto || '')}</div>`;
+        // Áudio transcrito e outras mídias com legenda têm texto real além do
+        // tipo — mostra o selo do tipo E o texto, não só o selo (senão a
+        // transcrição do áudio nunca aparece na bolha).
+        const temTextoReal = m.texto && !/^\[.*\]$/.test(m.texto.trim());
+        let bodyHtml;
+        if (icon && temTextoReal) {
+            const textoLimpo = m.texto.replace(/^🎤\s*/, '');
+            bodyHtml = `<span class="bubble-type-badge">${icon}</span><div class="bubble-text">${escapeHtml(textoLimpo)}</div>`;
+        } else if (icon) {
+            bodyHtml = `<span class="bubble-type-badge">${icon}</span>`;
+        } else {
+            bodyHtml = `<div class="bubble-text">${escapeHtml(m.texto || '')}</div>`;
+        }
 
         wrap.innerHTML = `
             <div class="${bubbleClass}">

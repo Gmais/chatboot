@@ -779,6 +779,27 @@ Sempre tente agendar uma aula experimental."></textarea>
         </div>
     </div>
 
+    <!-- MODAL: EDITAR CONTATO -->
+    <div class="modal-overlay" id="modal-editar-contato-overlay">
+        <div class="modal">
+            <h3>✏️ Editar Contato</h3>
+            <label style="display:block;font-size:.78rem;color:var(--text-3);margin-bottom:.3rem">Nome</label>
+            <input type="text" id="editar-contato-nome" style="width:100%;background:var(--input-bg);border:1px solid rgba(255,255,255,0.1);border-radius:var(--radius-sm);padding:.6rem .8rem;color:var(--text-1);font-size:.9rem;margin-bottom:1rem">
+            <div style="font-size:.78rem;color:var(--text-3);margin-bottom:.5rem" id="editar-contato-telefone"></div>
+
+            <label style="display:block;font-size:.78rem;color:var(--text-3);margin-bottom:.5rem">Etiquetas</label>
+            <div id="editar-contato-etiquetas" style="display:flex;gap:.4rem;flex-wrap:wrap;align-items:center;margin-bottom:.6rem"></div>
+            <select id="editar-contato-add-etiqueta" style="width:100%;background:var(--input-bg);border:1px solid rgba(255,255,255,0.1);border-radius:var(--radius-sm);padding:.5rem .6rem;color:var(--text-1);font-size:.82rem">
+                <option value="">🏷️ Adicionar etiqueta...</option>
+            </select>
+
+            <div class="modal-footer">
+                <button class="btn-cancel" id="modal-editar-contato-fechar">Fechar</button>
+                <button class="btn-primary" id="btn-editar-contato-salvar">Salvar</button>
+            </div>
+        </div>
+    </div>
+
     <!-- MODAL: GERENCIAR ETIQUETAS -->
     <div class="modal-overlay" id="modal-etiquetas-overlay">
         <div class="modal">

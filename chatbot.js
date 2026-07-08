@@ -101,6 +101,19 @@ let db;
 let stats = { received: 0, sent: 0, leads: 0 };
 const leadsSet = new Set();
 
+// IDs de mensagens que o próprio sistema já enviou e registrou em "conversas"
+// (bot, dashboard, fluxos). Usado pelo listener message_create pra distinguir
+// isso de mensagens mandadas direto pelo celular/WhatsApp Web vinculado, que
+// também precisam aparecer no Bate Papo ao Vivo mas ainda não foram salvas.
+const idsMensagensDoSistema = new Set();
+function marcarMensagemComoDoSistema(msgId) {
+    if (!msgId) return;
+    idsMensagensDoSistema.add(msgId);
+    // O message_create correspondente chega quase instantaneamente — 60s de
+    // janela é sobra, evita a Set crescer pra sempre.
+    setTimeout(() => idsMensagensDoSistema.delete(msgId), 60000);
+}
+
 // Em produção (Railway), aponta para o volume persistente; localmente, usa a pasta do projeto.
 const DATA_DIR = process.env.RAILWAY_VOLUME_MOUNT_PATH || __dirname;
 const DB_PATH = path.join(DATA_DIR, 'database.sqlite');
@@ -253,6 +266,36 @@ async function resolverNomeContato(telefone) {
     return num;
 }
 
+// SQLite CURRENT_TIMESTAMP grava 'YYYY-MM-DD HH:MM:SS' em UTC mas sem indicador
+// de fuso — se mandar essa string crua pro navegador, o JS interpreta como hora
+// LOCAL (não UTC) e o horário mostrado fica adiantado (no Brasil, 3h a mais).
+// Usa isso em toda coluna DATETIME lida direto do banco antes de mandar pro front.
+function sqliteTsParaIso(ts) {
+    if (!ts) return ts;
+    return ts.includes('T') ? ts : ts.replace(' ', 'T') + 'Z';
+}
+
+// Detecta o tipo de uma mensagem do whatsapp-web.js a partir de msg.type.
+// Compartilhado entre o handler de recebidas e o de enviadas (message_create).
+function detectarTipoMsg(msg) {
+    if (msg.type === 'image') return 'image';
+    if (msg.type === 'audio' || msg.type === 'ptt') return 'audio';
+    if (msg.type === 'video') return 'video';
+    if (msg.type === 'document') return 'document';
+    if (msg.type === 'sticker') return 'sticker';
+    if (msg.type === 'location') return 'location';
+    if (msg.type === 'vcard' || msg.type === 'multi_vcard') return 'contact';
+    return 'text';
+}
+
+// Texto de exibição quando a mensagem não tem corpo (msg.body vazio) — evita
+// mostrar o placeholder cru "[text]" pra tipos que a gente não trata melhor.
+const TIPO_LABEL_FALLBACK = {
+    image: '[imagem]', audio: '[áudio]', video: '[vídeo]', document: '[documento]',
+    sticker: '[figurinha]', location: '[localização]', contact: '[contato compartilhado]',
+    text: '[mensagem sem texto]'
+};
+
 // Salva mensagem na tabela de conversas (in ou out) e emite evento Socket.IO
 async function salvarNaConversa(telefone, nome, direcao, texto, tipo = 'text') {
     const num = telefone.replace('@c.us','').replace('@lid','');
@@ -269,8 +312,9 @@ async function salvarNaConversa(telefone, nome, direcao, texto, tipo = 'text') {
 
 // Registra no histórico permanente cada mensagem realmente enviada pelo robô.
 // É a única fonte da contagem "Mensagens Enviadas" — se está no contador, está nesta tabela.
-async function registrarMensagemEnviada(telefone, texto, nome) {
+async function registrarMensagemEnviada(telefone, texto, nome, msgId = null) {
     const numeroLimpo = telefone.replace('@c.us', '').replace('@lid', '');
+    marcarMensagemComoDoSistema(msgId);
     await db.run('INSERT INTO mensagens_enviadas (telefone, texto) VALUES (?, ?)', [numeroLimpo, texto]);
     stats.sent++;
     await salvarNaConversa(numeroLimpo, nome, 'out', texto, 'text');
@@ -600,7 +644,7 @@ app.delete('/api/upload', (req, res) => {
 // =====================================
 app.get('/api/leads', async (req, res) => {
     const leads = await db.all('SELECT * FROM leads ORDER BY data_captura DESC');
-    res.json(leads);
+    res.json(leads.map(l => ({ ...l, data_captura: sqliteTsParaIso(l.data_captura) })));
 });
 
 // Novos contatos por dia (horário de Brasília), pro gráfico do Painel de
@@ -672,9 +716,11 @@ app.get('/api/contatos', async (req, res) => {
             const telefone = l.telefone.replace('@c.us', '').replace('@lid', '');
             return {
                 telefone,
-                nome: nomePorTelefone.get(telefone) || l.nome || telefone,
+                // Nome editado manualmente na Audiência tem prioridade — senão o nome
+                // vindo do WhatsApp (pushname salvo em "conversas") sempre ganhava.
+                nome: l.nome || nomePorTelefone.get(telefone) || telefone,
                 origem: l.origem || 'whatsapp',
-                data_captura: l.data_captura,
+                data_captura: sqliteTsParaIso(l.data_captura),
                 mensagens_recebidas: l.mensagens_recebidas,
                 etiquetas: etiquetasPorTelefone.get(telefone) || []
             };
@@ -682,6 +728,20 @@ app.get('/api/contatos', async (req, res) => {
         res.json(contatos);
     } catch (err) {
         console.error('Erro /api/contatos:', err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Edita o nome de um contato na Audiência (usado pela modal de edição)
+app.put('/api/contatos/:telefone', async (req, res) => {
+    const { telefone } = req.params;
+    const { nome } = req.body;
+    if (!nome || !nome.trim()) return res.status(400).json({ error: 'Nome é obrigatório.' });
+    try {
+        const result = await db.run('UPDATE leads SET nome = ? WHERE telefone = ?', [nome.trim(), telefone]);
+        if (result.changes === 0) return res.status(404).json({ error: 'Contato não encontrado.' });
+        res.json({ success: true, nome: nome.trim() });
+    } catch (err) {
         res.status(500).json({ error: err.message });
     }
 });
@@ -988,9 +1048,9 @@ app.post('/api/conversas/:telefone/enviar', async (req, res) => {
     if (!isConnected) return res.status(400).json({ error: 'WhatsApp não está conectado.' });
     try {
         const chatId = telefone.includes('@') ? telefone : `${telefone}@c.us`;
-        await client.sendMessage(chatId, texto.trim());
+        const sentMsg = await client.sendMessage(chatId, texto.trim());
         const nome = await resolverNomeContato(telefone);
-        await registrarMensagemEnviada(telefone, texto.trim(), nome);
+        await registrarMensagemEnviada(telefone, texto.trim(), nome, sentMsg.id?._serialized);
         res.json({ success: true });
     } catch(err) {
         console.error('Erro envio manual:', err.message);
@@ -1053,7 +1113,7 @@ app.post('/api/conversas/:telefone/enviar-arquivo', upload.single('arquivo'), as
         const chatId = telefone.includes('@') ? telefone : `${telefone}@c.us`;
         const media = MessageMedia.fromFilePath(req.file.path);
         const legenda = (req.body.legenda || '').trim();
-        await client.sendMessage(chatId, media, legenda ? { caption: legenda } : undefined);
+        const sentMsg = await client.sendMessage(chatId, media, legenda ? { caption: legenda } : undefined);
         if (fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
 
         const tipo = req.file.mimetype.startsWith('image/') ? 'image'
@@ -1062,6 +1122,7 @@ app.post('/api/conversas/:telefone/enviar-arquivo', upload.single('arquivo'), as
             : 'document';
         const nome = await resolverNomeContato(telefone);
         const numeroLimpo = telefone.replace('@c.us', '').replace('@lid', '');
+        marcarMensagemComoDoSistema(sentMsg.id?._serialized);
         await salvarNaConversa(numeroLimpo, nome, 'out', legenda || req.file.originalname, tipo);
         io.emit('stats', stats);
         res.json({ success: true });
@@ -1322,10 +1383,10 @@ io.on('connection', async (socket) => {
 
     if (db) {
         const allLeads = await db.all('SELECT telefone, data_captura FROM leads ORDER BY data_captura DESC');
-        socket.emit('all_leads', allLeads);
+        socket.emit('all_leads', allLeads.map(l => ({ ...l, data_captura: sqliteTsParaIso(l.data_captura) })));
 
         const allMensagensEnviadas = await db.all('SELECT * FROM mensagens_enviadas ORDER BY id DESC LIMIT 200');
-        socket.emit('all_mensagens_enviadas', allMensagensEnviadas);
+        socket.emit('all_mensagens_enviadas', allMensagensEnviadas.map(m => ({ ...m, ts: sqliteTsParaIso(m.ts) })));
 
         // Envia lista de conversas para popular o gerenciador
         try {
@@ -1460,7 +1521,7 @@ async function enviarEregistrar(telefone, conteudo) {
         await delay(calcularDelayDigitacao(conteudo));
     }
     const resultado = await client.sendMessage(telefone, conteudo);
-    await registrarMensagemEnviada(telefone, typeof conteudo === 'string' ? conteudo : '[mídia]');
+    await registrarMensagemEnviada(telefone, typeof conteudo === 'string' ? conteudo : '[mídia]', null, resultado.id?._serialized);
     return resultado;
 }
 
@@ -1723,27 +1784,60 @@ async function transcreverAudio(msg) {
 // contact.number NÃO serve aqui: para contatos @lid ele devolve o próprio lid,
 // não o telefone. getContactLidAndPhone() consulta o mapeamento real do WhatsApp.
 const lidParaTelefone = new Map();
-async function resolvePhone(msg) {
-    if (!msg.from.endsWith('@lid')) return msg.from;
-    if (lidParaTelefone.has(msg.from)) return lidParaTelefone.get(msg.from);
+async function resolveJid(jid) {
+    if (!jid || !jid.endsWith('@lid')) return jid;
+    if (lidParaTelefone.has(jid)) return lidParaTelefone.get(jid);
     try {
         const [{ pn } = {}] = await Promise.race([
-            client.getContactLidAndPhone([msg.from]),
+            client.getContactLidAndPhone([jid]),
             new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 3000))
         ]);
         if (pn) {
-            lidParaTelefone.set(msg.from, pn);
+            lidParaTelefone.set(jid, pn);
             return pn;
         }
     } catch (_) {}
-    return msg.from;
+    return jid;
+}
+async function resolvePhone(msg) {
+    return resolveJid(msg.from);
 }
 
-// Debug: loga todos os eventos de mensagem (fromMe e recebidas)
-client.on('message_create', (msg) => {
+// message_create dispara pra QUALQUER mensagem enviada, inclusive as que o
+// próprio robô/dashboard manda — o Set idsMensagensDoSistema filtra essas pra
+// não duplicar (elas já foram salvas por registrarMensagemEnviada/salvarNaConversa).
+// O que sobra são mensagens mandadas direto do celular/WhatsApp vinculado (ex:
+// atendente respondeu por fora do painel) — persistimos aqui pra completar o
+// histórico do Bate Papo ao Vivo mesmo quando a resposta não passou pelo bot.
+client.on('message_create', async (msg) => {
     const dir = msg.fromMe ? '→ ENVIADA' : '← RECEBIDA';
     if (msg.from !== 'status@broadcast') {
         console.log(`🔍 [DEBUG] ${dir} from=${msg.from} body="${(msg.body||'[sem texto]').slice(0,40)}"`);
+    }
+
+    if (!msg.fromMe || !db) return;
+    if (!msg.to || msg.to.endsWith('@g.us') || msg.to.endsWith('@broadcast')) return;
+
+    const msgId = msg.id?._serialized;
+    if (msgId && idsMensagensDoSistema.has(msgId)) {
+        idsMensagensDoSistema.delete(msgId);
+        return; // já registrada pelo próprio sistema
+    }
+
+    try {
+        const telefoneResolvido = await resolveJid(msg.to);
+        const numLimpo = telefoneResolvido.replace('@c.us', '').replace('@lid', '');
+        const tipoMsg = detectarTipoMsg(msg);
+        const textoExibir = msg.body || TIPO_LABEL_FALLBACK[tipoMsg] || '[mensagem sem texto]';
+        const nome = await resolverNomeContato(numLimpo);
+        await salvarNaConversa(numLimpo, nome, 'out', textoExibir, tipoMsg);
+        await db.run(
+            "INSERT INTO conversas_status (telefone, status, atualizado_em) VALUES (?, 'aberta', CURRENT_TIMESTAMP) ON CONFLICT(telefone) DO UPDATE SET status = 'aberta', atualizado_em = CURRENT_TIMESTAMP",
+            numLimpo
+        );
+        io.emit('conversa_status_atualizada', { telefone: numLimpo, status: 'aberta' });
+    } catch (e) {
+        console.error('Erro ao registrar mensagem enviada pelo celular:', e.message);
     }
 });// =====================================
 // ENGINE DE FLUXOS (Flow Builder - Drawflow)
@@ -1803,11 +1897,11 @@ async function engineExecutarFluxo(telefoneReal, numLimpo, nomeContato, fluxoId,
                 const txt = node.data.text.replace(/\{nome\}|\[nome\]/gi, nomeContato);
                 await simularDigitando(client.getChatById(telefoneReal));
                 await delay(calcularDelayDigitacao(txt));
-                await client.sendMessage(telefoneReal, txt);
-                await registrarMensagemEnviada(telefoneReal, txt, nomeContato);
+                const sentFluxo = await client.sendMessage(telefoneReal, txt);
+                await registrarMensagemEnviada(telefoneReal, txt, nomeContato, sentFluxo.id?._serialized);
             }
             currentNodeId = getNextNodeId(node, 'output_1');
-        } 
+        }
         else if (node.name === 'delay') {
             const segs = parseInt(node.data.delaySeconds) || 1;
             await delay(segs * 1000);
@@ -1820,8 +1914,8 @@ async function engineExecutarFluxo(telefoneReal, numLimpo, nomeContato, fluxoId,
                     const MessageMedia = require('whatsapp-web.js').MessageMedia;
                     const media = MessageMedia.fromFilePath(mediaPath);
                     const cap = node.data.text ? node.data.text.replace(/\{nome\}|\[nome\]/gi, nomeContato) : '';
-                    await client.sendMessage(telefoneReal, media, { caption: cap });
-                    await registrarMensagemEnviada(telefoneReal, cap || '[Mídia]', nomeContato);
+                    const sentFluxoMedia = await client.sendMessage(telefoneReal, media, { caption: cap });
+                    await registrarMensagemEnviada(telefoneReal, cap || '[Mídia]', nomeContato, sentFluxoMedia.id?._serialized);
                 }
             }
             currentNodeId = getNextNodeId(node, 'output_1');
@@ -1838,8 +1932,8 @@ async function engineExecutarFluxo(telefoneReal, numLimpo, nomeContato, fluxoId,
             }
             await simularDigitando(client.getChatById(telefoneReal));
             await delay(calcularDelayDigitacao(txt));
-            await client.sendMessage(telefoneReal, txt);
-            await registrarMensagemEnviada(telefoneReal, txt, nomeContato);
+            const sentFluxoPergunta = await client.sendMessage(telefoneReal, txt);
+            await registrarMensagemEnviada(telefoneReal, txt, nomeContato, sentFluxoPergunta.id?._serialized);
             break; // PARA E ESPERA O USUÁRIO RESPONDER
         }
         else if (node.name === 'action') {
@@ -1915,7 +2009,9 @@ async function engineContinuarFluxo(telefoneReal, numLimpo, nomeContato, textoMe
         const nextNodeId = getNextNodeId(node, targetOutput);
         await engineExecutarFluxo(telefoneReal, numLimpo, nomeContato, estado.fluxo_id, nextNodeId);
     } else {
-        await client.sendMessage(telefoneReal, 'Opção inválida, por favor digite o número correto da opção.');
+        const txtInvalida = 'Opção inválida, por favor digite o número correto da opção.';
+        const sentInvalida = await client.sendMessage(telefoneReal, txtInvalida);
+        await registrarMensagemEnviada(telefoneReal, txtInvalida, nomeContato, sentInvalida.id?._serialized);
         await engineExecutarFluxo(telefoneReal, numLimpo, nomeContato, estado.fluxo_id, estado.current_node_id);
     }
     
@@ -1969,12 +2065,7 @@ client.on('message', async (msg) => {
         let texto = msg.body ? msg.body.trim().toLowerCase() : '';
 
         // Determina tipo da mensagem
-        let tipoMsg = 'text';
-        if (msg.type === 'image') tipoMsg = 'image';
-        else if (msg.type === 'audio' || msg.type === 'ptt') tipoMsg = 'audio';
-        else if (msg.type === 'video') tipoMsg = 'video';
-        else if (msg.type === 'document') tipoMsg = 'document';
-        else if (msg.type === 'sticker') tipoMsg = 'sticker';
+        let tipoMsg = detectarTipoMsg(msg);
 
         // Áudio/nota de voz: transcreve via Whisper para o robô conseguir entender
         // e responder normalmente (regras exatas e IA). Sem API key configurada,
@@ -1986,7 +2077,7 @@ client.on('message', async (msg) => {
         }
 
         // Salva na tabela de conversas (mensagens recebidas)
-        const textoExibir = transcricaoAudio ? `🎤 ${transcricaoAudio}` : (msg.body || `[${tipoMsg}]`);
+        const textoExibir = transcricaoAudio ? `🎤 ${transcricaoAudio}` : (msg.body || TIPO_LABEL_FALLBACK[tipoMsg] || '[mensagem sem texto]');
         await salvarNaConversa(numLimpo, nomeContato, 'in', textoExibir, tipoMsg);
         // Reabre a conversa automaticamente no Bate Papo ao Vivo se ela tinha sido
         // resolvida/fechada — o cliente voltou a falar, então volta pra aba "Abertas".
@@ -2053,7 +2144,7 @@ client.on('message', async (msg) => {
                 const sentHumano = await enviarResposta(msg, mensagemHumano);
                 if (sentHumano) {
                     ultimaMsgModoHumano.set(numLimpo, hoje);
-                    await registrarMensagemEnviada(telefoneReal, mensagemHumano, nomeContato);
+                    await registrarMensagemEnviada(telefoneReal, mensagemHumano, nomeContato, sentHumano.id?._serialized);
                 }
             }
             return;
@@ -2191,7 +2282,7 @@ client.on('message', async (msg) => {
                     console.log(`🤖 IA respondendo para ${numLimpo}`);
                     const sentIA = await enviarResposta(msg, respostaIA);
                     io.emit('bot_digitando', { telefone: numLimpo, ativo: false });
-                    if (sentIA) await registrarMensagemEnviada(telefoneReal, respostaIA, nomeContato);
+                    if (sentIA) await registrarMensagemEnviada(telefoneReal, respostaIA, nomeContato, sentIA.id?._serialized);
                 } catch (e) {
                     io.emit('bot_digitando', { telefone: numLimpo, ativo: false });
                     console.error(`❌ Erro na API da IA (${provider}):`, e.message);
@@ -2226,7 +2317,7 @@ client.on('message', async (msg) => {
 
         const sent = await enviarResposta(msg, textoFinal);
         io.emit('bot_digitando', { telefone: numLimpo, ativo: false });
-        if (sent) await registrarMensagemEnviada(telefoneReal, textoFinal, nomeContato);
+        if (sent) await registrarMensagemEnviada(telefoneReal, textoFinal, nomeContato, sent.id?._serialized);
 
         // Áudio temporariamente desativado (causa timeout no Puppeteer)
         // if (regraAtiva.enviar_audio) { ... }
@@ -2237,7 +2328,7 @@ client.on('message', async (msg) => {
                 await delay(500);
                 const media = MessageMedia.fromFilePath(mediaFullPath);
                 const sentMedia = await enviarResposta(msg, media);
-                if (sentMedia) await registrarMensagemEnviada(telefoneReal, '[mídia enviada]', nomeContato);
+                if (sentMedia) await registrarMensagemEnviada(telefoneReal, '[mídia enviada]', nomeContato, sentMedia.id?._serialized);
             }
         }
     } catch (error) {
