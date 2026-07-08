@@ -318,6 +318,16 @@ async function resolverNomeContato(telefone) {
         const vinculo = await db.get('SELECT nome FROM vinculo_pacto WHERE telefone LIKE ?', [`%${num}%`]);
         if (vinculo?.nome) { nomeContatos.set(num, vinculo.nome); return vinculo.nome; }
     } catch(_) {}
+    try {
+        // Contato criado manualmente ou importado por planilha — nunca mandou
+        // mensagem, então não tem pushname nem entrada em vinculo_pacto, mas já
+        // tem nome cadastrado em leads (mesma fonte usada na tela de Contatos).
+        const lead = await db.get(
+            'SELECT nome FROM leads WHERE telefone = ? OR telefone = ? OR telefone = ?',
+            [num, `${num}@c.us`, `${num}@lid`]
+        );
+        if (lead?.nome) { nomeContatos.set(num, lead.nome); return lead.nome; }
+    } catch(_) {}
     return num;
 }
 
