@@ -251,6 +251,9 @@ async function initDB() {
     // Nome do contato importado via planilha (antes de ele mandar a primeira mensagem)
     try { await db.exec(`ALTER TABLE leads ADD COLUMN nome TEXT DEFAULT NULL`); } catch(e) {}
     try { await db.exec(`ALTER TABLE leads ADD COLUMN origem TEXT DEFAULT NULL`); } catch(e) {}
+    // Janela de horário permitida pra automação mandar mensagem (HH:mm) — vazio = sem restrição
+    try { await db.exec(`ALTER TABLE automacoes ADD COLUMN horario_inicio TEXT DEFAULT NULL`); } catch(e) {}
+    try { await db.exec(`ALTER TABLE automacoes ADD COLUMN horario_fim TEXT DEFAULT NULL`); } catch(e) {}
     // Garante tabela conversas em instalações antigas
     try { await db.exec(`CREATE TABLE IF NOT EXISTS conversas (id INTEGER PRIMARY KEY AUTOINCREMENT, telefone TEXT NOT NULL, nome TEXT, direcao TEXT NOT NULL, texto TEXT, tipo TEXT DEFAULT 'text', ts DATETIME DEFAULT CURRENT_TIMESTAMP, lida INTEGER DEFAULT 0)`); } catch(e) {}
     try { await db.exec(`CREATE INDEX IF NOT EXISTS idx_conversas_tel ON conversas(telefone, ts)`); } catch(e) {}
@@ -1024,25 +1027,63 @@ app.delete('/api/contatos/:telefone/etiquetas/:etiquetaId', async (req, res) => 
 // avaliação, feedback... e ao final remove a etiqueta automaticamente)
 // =====================================
 
+// Checa se agora (horário de Brasília) está dentro da janela de envio configurada
+// na automação. Sem horario_inicio/horario_fim configurado = sem restrição.
+function dentroDoHorarioAutomacao(automacao) {
+    if (!automacao.horario_inicio || !automacao.horario_fim) return true;
+    const [hIni, mIni] = automacao.horario_inicio.split(':').map(Number);
+    const [hFim, mFim] = automacao.horario_fim.split(':').map(Number);
+    const agora = moment.tz('America/Sao_Paulo');
+    const minutosAgora = agora.hours() * 60 + agora.minutes();
+    const minutosIni = hIni * 60 + mIni;
+    const minutosFim = hFim * 60 + mFim;
+    if (minutosIni <= minutosFim) return minutosAgora >= minutosIni && minutosAgora <= minutosFim;
+    return minutosAgora >= minutosIni || minutosAgora <= minutosFim; // janela cruza a meia-noite
+}
+
+// Próximo horário (em UTC ISO, pro banco) em que a janela de envio da automação abre.
+function proximoInicioJanela(automacao) {
+    const [hIni, mIni] = automacao.horario_inicio.split(':').map(Number);
+    const agora = moment.tz('America/Sao_Paulo');
+    const candidato = agora.clone().hours(hIni).minutes(mIni).seconds(0).milliseconds(0);
+    if (candidato.isSameOrBefore(agora)) candidato.add(1, 'day');
+    return candidato.toISOString();
+}
+
 // Envia o conteúdo de uma etapa e decide o que vem a seguir: agenda a próxima
 // etapa pra daqui a N dias, ou — se essa era a última — conclui a automação e
 // remove a etiqueta que a disparou. Usada tanto pra matricular (etapa 1) quanto
 // pra avançar (chamada pelo processarAutomacoesPendentes).
 async function executarEtapaAutomacao(telefone, automacao, etapa) {
     const numLimpo = telefone.replace('@c.us','').replace('@lid','');
+
+    if (!dentroDoHorarioAutomacao(automacao)) {
+        // Fora da janela permitida: não manda agora, só remarca pra tentar de novo
+        // quando ela abrir — não avança de etapa, não conta como enviado.
+        await db.run(
+            `INSERT INTO contato_automacao_estado (telefone, automacao_id, etapa_atual, entrou_em, proxima_execucao_em)
+             VALUES (?, ?, ?, CURRENT_TIMESTAMP, ?)
+             ON CONFLICT(telefone, automacao_id) DO UPDATE SET proxima_execucao_em = excluded.proxima_execucao_em`,
+            [numLimpo, automacao.id, etapa.ordem - 1, proximoInicioJanela(automacao)]
+        );
+        return;
+    }
+
     const chatId = `${numLimpo}@c.us`;
     try {
         const nome = await resolverNomeContato(numLimpo);
+        const primeiroNome = (nome && nome !== numLimpo) ? nome.split(' ')[0] : '';
+        const texto = (etapa.texto || '').replace(/\{nome\}/gi, primeiroNome).replace(/\[nome\]/gi, primeiroNome);
         if (etapa.media_path) {
             const mediaFullPath = path.join(__dirname, 'public', etapa.media_path.replace(/^\//, ''));
             if (fs.existsSync(mediaFullPath)) {
                 const media = MessageMedia.fromFilePath(mediaFullPath);
-                const sent = await client.sendMessage(chatId, media, etapa.texto ? { caption: etapa.texto } : undefined);
-                await registrarMensagemEnviada(numLimpo, etapa.texto || '[mídia]', nome, sent.id?._serialized);
+                const sent = await client.sendMessage(chatId, media, texto ? { caption: texto } : undefined);
+                await registrarMensagemEnviada(numLimpo, texto || '[mídia]', nome, sent.id?._serialized);
             }
-        } else if (etapa.texto) {
-            const sent = await client.sendMessage(chatId, etapa.texto);
-            await registrarMensagemEnviada(numLimpo, etapa.texto, nome, sent.id?._serialized);
+        } else if (texto) {
+            const sent = await client.sendMessage(chatId, texto);
+            await registrarMensagemEnviada(numLimpo, texto, nome, sent.id?._serialized);
         }
     } catch (e) {
         console.error(`Erro ao enviar etapa de automação #${automacao.id} pra ${numLimpo}:`, e.message);
@@ -1133,11 +1174,14 @@ app.get('/api/automacoes', async (req, res) => {
 });
 
 app.post('/api/automacoes', async (req, res) => {
-    const { nome, etiqueta_id } = req.body;
+    const { nome, etiqueta_id, horario_inicio, horario_fim } = req.body;
     if (!nome || !nome.trim()) return res.status(400).json({ error: 'Nome é obrigatório.' });
     if (!etiqueta_id) return res.status(400).json({ error: 'Selecione uma etiqueta.' });
     try {
-        const result = await db.run('INSERT INTO automacoes (nome, etiqueta_id) VALUES (?, ?)', [nome.trim(), etiqueta_id]);
+        const result = await db.run(
+            'INSERT INTO automacoes (nome, etiqueta_id, horario_inicio, horario_fim) VALUES (?, ?, ?, ?)',
+            [nome.trim(), etiqueta_id, horario_inicio || null, horario_fim || null]
+        );
         const nova = await db.get('SELECT a.*, e.nome AS etiqueta_nome, e.cor AS etiqueta_cor, 0 AS total_etapas, 0 AS total_ativos FROM automacoes a LEFT JOIN etiquetas e ON e.id = a.etiqueta_id WHERE a.id = ?', result.lastID);
         io.emit('automacoes_atualizadas');
         res.json(nova);
@@ -1148,12 +1192,20 @@ app.post('/api/automacoes', async (req, res) => {
 
 app.put('/api/automacoes/:id', async (req, res) => {
     const { id } = req.params;
-    const { nome, etiqueta_id, ativo } = req.body;
+    const { nome, etiqueta_id, ativo, horario_inicio, horario_fim } = req.body;
+    // Update parcial: só mexe no campo que veio no body — assim o toggle "Ativa"
+    // (que só manda { ativo }) não apaga a janela de horário configurada, e vice-versa.
+    const sets = [];
+    const params = [];
+    if (nome !== undefined) { sets.push('nome = ?'); params.push(nome.trim()); }
+    if (etiqueta_id !== undefined) { sets.push('etiqueta_id = ?'); params.push(etiqueta_id); }
+    if (ativo !== undefined) { sets.push('ativo = ?'); params.push(ativo ? 1 : 0); }
+    if (horario_inicio !== undefined) { sets.push('horario_inicio = ?'); params.push(horario_inicio || null); }
+    if (horario_fim !== undefined) { sets.push('horario_fim = ?'); params.push(horario_fim || null); }
+    if (sets.length === 0) return res.json({ success: true });
     try {
-        await db.run(
-            'UPDATE automacoes SET nome = COALESCE(?, nome), etiqueta_id = COALESCE(?, etiqueta_id), ativo = COALESCE(?, ativo) WHERE id = ?',
-            [nome ? nome.trim() : null, etiqueta_id || null, ativo === undefined ? null : (ativo ? 1 : 0), id]
-        );
+        params.push(id);
+        await db.run(`UPDATE automacoes SET ${sets.join(', ')} WHERE id = ?`, params);
         io.emit('automacoes_atualizadas');
         res.json({ success: true });
     } catch (err) {

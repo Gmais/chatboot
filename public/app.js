@@ -2585,8 +2585,12 @@ const btnNovaAutomacao = document.getElementById('btn-nova-automacao');
 const modalNovaAutomacao = document.getElementById('modal-nova-automacao-overlay');
 const novaAutomacaoNome = document.getElementById('nova-automacao-nome');
 const novaAutomacaoEtiqueta = document.getElementById('nova-automacao-etiqueta');
+const novaAutomacaoHorarioInicio = document.getElementById('nova-automacao-horario-inicio');
+const novaAutomacaoHorarioFim = document.getElementById('nova-automacao-horario-fim');
 const modalEtapasAutomacao = document.getElementById('modal-etapas-automacao');
 const modalEtapasTitulo = document.getElementById('modal-etapas-titulo');
+const etapasHorarioInicio = document.getElementById('etapas-horario-inicio');
+const etapasHorarioFim = document.getElementById('etapas-horario-fim');
 const etapasAutomacaoLista = document.getElementById('etapas-automacao-lista');
 const btnAddEtapa = document.getElementById('btn-add-etapa');
 const btnSalvarEtapas = document.getElementById('btn-salvar-etapas');
@@ -2625,6 +2629,7 @@ function renderAutomacoesLista() {
                         <span style="font-size:.75rem;color:var(--text-3)">${a.total_etapas} etapa${a.total_etapas !== 1 ? 's' : ''}</span>
                         <span style="font-size:.75rem;color:var(--text-3)">•</span>
                         <span style="font-size:.75rem;color:var(--text-3)">${a.total_ativos} contato${a.total_ativos !== 1 ? 's' : ''} em andamento</span>
+                        ${a.horario_inicio && a.horario_fim ? `<span style="font-size:.75rem;color:var(--text-3)">• 🕐 ${a.horario_inicio}–${a.horario_fim}</span>` : ''}
                     </div>
                 </div>
                 <label style="display:flex;align-items:center;gap:.4rem;font-size:.78rem;color:var(--text-3);cursor:pointer">
@@ -2673,6 +2678,8 @@ automacoesLista?.addEventListener('click', async (e) => {
 // ---- Modal: Criar Automação ----
 function abrirNovaAutomacao() {
     if (novaAutomacaoNome) novaAutomacaoNome.value = '';
+    if (novaAutomacaoHorarioInicio) novaAutomacaoHorarioInicio.value = '';
+    if (novaAutomacaoHorarioFim) novaAutomacaoHorarioFim.value = '';
     if (novaAutomacaoEtiqueta) {
         novaAutomacaoEtiqueta.innerHTML = '<option value="">Selecione uma etiqueta...</option>' +
             todasEtiquetas.map(e => `<option value="${e.id}">${e.nome}</option>`).join('');
@@ -2691,7 +2698,11 @@ document.getElementById('btn-nova-automacao-criar')?.addEventListener('click', a
         const res = await fetch('/api/automacoes', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ nome, etiqueta_id: Number(etiqueta_id) })
+            body: JSON.stringify({
+                nome, etiqueta_id: Number(etiqueta_id),
+                horario_inicio: novaAutomacaoHorarioInicio?.value || null,
+                horario_fim: novaAutomacaoHorarioFim?.value || null
+            })
         });
         const nova = await res.json();
         if (!res.ok) throw new Error(nova.error || 'Erro ao criar automação');
@@ -2712,6 +2723,9 @@ function etapaVazia() {
 async function abrirConfigurarEtapas(automacaoId, nome) {
     automacaoEditandoId = automacaoId;
     if (modalEtapasTitulo) modalEtapasTitulo.textContent = `⚙️ Etapas — ${nome || ''}`;
+    const automacao = automacoesGlobais.find(a => String(a.id) === String(automacaoId));
+    if (etapasHorarioInicio) etapasHorarioInicio.value = automacao?.horario_inicio || '';
+    if (etapasHorarioFim) etapasHorarioFim.value = automacao?.horario_fim || '';
     etapasAutomacaoLista.innerHTML = '<div style="padding:2rem;text-align:center;color:var(--text-3)">Carregando etapas...</div>';
     modalEtapasAutomacao?.classList.add('open');
     try {
@@ -2749,7 +2763,11 @@ function renderEtapasLista() {
                     <strong style="color:var(--green);font-size:.85rem">Etapa ${i + 1}${ehUltima ? ' (final)' : ''}</strong>
                     <button type="button" class="btn-danger btn-remover-etapa" data-index="${i}" style="padding:.3rem .6rem;font-size:.75rem">🗑️</button>
                 </div>
-                <textarea class="etapa-texto" data-index="${i}" placeholder="Mensagem ou legenda do arquivo..." rows="2" style="width:100%;background:var(--input-bg);border:1px solid rgba(255,255,255,0.1);border-radius:var(--radius-sm);padding:.6rem .8rem;color:var(--text-1);font-size:.85rem;font-family:'Inter',sans-serif;resize:vertical;margin-bottom:.6rem">${etapa.texto || ''}</textarea>
+                <textarea class="etapa-texto" data-index="${i}" placeholder="Mensagem ou legenda do arquivo..." rows="2" style="width:100%;background:var(--input-bg);border:1px solid rgba(255,255,255,0.1);border-radius:var(--radius-sm);padding:.6rem .8rem;color:var(--text-1);font-size:.85rem;font-family:'Inter',sans-serif;resize:vertical;margin-bottom:.4rem">${etapa.texto || ''}</textarea>
+                <div style="display:flex;align-items:center;gap:.5rem;margin-bottom:.6rem">
+                    <button type="button" class="btn-secondary btn-inserir-nome" data-index="${i}" style="padding:.25rem .6rem;font-size:.72rem">➕ Nome do aluno</button>
+                    <span style="font-size:.72rem;color:var(--text-3)">insere {nome} — vira o primeiro nome dele na hora de enviar</span>
+                </div>
                 <div style="display:flex;align-items:center;gap:.8rem;flex-wrap:wrap">
                     <label class="btn-secondary etapa-anexar-label" style="padding:.4rem .7rem;font-size:.78rem;cursor:pointer">
                         📎 Anexar arquivo
@@ -2812,6 +2830,19 @@ etapasAutomacaoLista?.addEventListener('click', (e) => {
         etapasEditando[index].media_path = null;
         etapasEditando[index].media_tipo = null;
         renderEtapasLista();
+        return;
+    }
+    const btnNome = e.target.closest('.btn-inserir-nome');
+    if (btnNome) {
+        const index = Number(btnNome.dataset.index);
+        const textarea = etapasAutomacaoLista.querySelector(`.etapa-texto[data-index="${index}"]`);
+        if (!textarea) return;
+        const start = textarea.selectionStart ?? textarea.value.length;
+        const end = textarea.selectionEnd ?? textarea.value.length;
+        textarea.value = textarea.value.slice(0, start) + '{nome}' + textarea.value.slice(end);
+        etapasEditando[index].texto = textarea.value;
+        textarea.focus();
+        textarea.selectionStart = textarea.selectionEnd = start + '{nome}'.length;
     }
 });
 
@@ -2833,6 +2864,16 @@ btnSalvarEtapas?.addEventListener('click', async () => {
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || 'Erro ao salvar etapas');
+
+        await fetch(`/api/automacoes/${automacaoEditandoId}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                horario_inicio: etapasHorarioInicio?.value || '',
+                horario_fim: etapasHorarioFim?.value || ''
+            })
+        });
+
         showToast('Etapas salvas!', '', 'success', 2500);
         fecharConfigurarEtapas();
         loadAutomacoes();
