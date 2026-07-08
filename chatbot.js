@@ -273,6 +273,10 @@ async function initDB() {
     // Nome do contato importado via planilha (antes de ele mandar a primeira mensagem)
     try { await db.exec(`ALTER TABLE leads ADD COLUMN nome TEXT DEFAULT NULL`); } catch(e) {}
     try { await db.exec(`ALTER TABLE leads ADD COLUMN origem TEXT DEFAULT NULL`); } catch(e) {}
+    // Matrícula editada manualmente na Audiência — separada de vinculo_pacto (que
+    // exige codigo_cliente/codigo_pessoa) pra permitir contato sem vínculo formal
+    // com o Pacto ainda assim ter uma matrícula cadastrada (mesmo padrão do nome).
+    try { await db.exec(`ALTER TABLE leads ADD COLUMN matricula TEXT DEFAULT NULL`); } catch(e) {}
     // Janela de horário permitida pra automação mandar mensagem (HH:mm) — vazio = sem restrição
     try { await db.exec(`ALTER TABLE automacoes ADD COLUMN horario_inicio TEXT DEFAULT NULL`); } catch(e) {}
     try { await db.exec(`ALTER TABLE automacoes ADD COLUMN horario_fim TEXT DEFAULT NULL`); } catch(e) {}
@@ -331,6 +335,32 @@ async function resolverNomeContato(telefone) {
         if (lead?.nome) { nomeContatos.set(num, lead.nome); return lead.nome; }
     } catch(_) {}
     return num;
+}
+
+// Matrícula do aluno, pro placeholder {matricula} em Regras/Fluxos/Automação —
+// vem do mesmo vínculo com o CRM Pacto usado na coluna Matrícula de Contatos.
+// Sem vínculo (contato que nunca se matriculou/nunca conversou sobre isso),
+// devolve string vazia — o placeholder some da mensagem em vez de mostrar "null".
+const matriculaContatos = new Map();
+async function resolverMatriculaContato(telefone) {
+    const num = telefone.replace('@c.us','').replace('@lid','');
+    if (matriculaContatos.has(num)) return matriculaContatos.get(num);
+    try {
+        // Matrícula digitada manualmente em Contatos tem prioridade (mesma regra
+        // usada na coluna Matrícula da tela de Contatos); sem isso, cai pro vínculo
+        // automático com o CRM Pacto.
+        const lead = await db.get(
+            'SELECT matricula FROM leads WHERE telefone = ? OR telefone = ? OR telefone = ?',
+            [num, `${num}@c.us`, `${num}@lid`]
+        );
+        if (lead?.matricula) { matriculaContatos.set(num, lead.matricula); return lead.matricula; }
+    } catch (_) {}
+    try {
+        const vinculo = await db.get('SELECT matricula FROM vinculo_pacto WHERE telefone LIKE ?', [`%${num}%`]);
+        const matricula = vinculo?.matricula || '';
+        matriculaContatos.set(num, matricula);
+        return matricula;
+    } catch (_) { return ''; }
 }
 
 // SQLite CURRENT_TIMESTAMP grava 'YYYY-MM-DD HH:MM:SS' em UTC mas sem indicador
@@ -772,7 +802,7 @@ app.get('/api/leads/export', async (req, res) => {
 // contatos com nome pra seleção manual nos disparos em massa.
 app.get('/api/contatos', async (req, res) => {
     try {
-        const leads = await db.all('SELECT telefone, nome, origem, data_captura, mensagens_recebidas FROM leads ORDER BY data_captura DESC');
+        const leads = await db.all('SELECT telefone, nome, origem, matricula, data_captura, mensagens_recebidas FROM leads ORDER BY data_captura DESC');
         const nomes = await db.all(`
             SELECT c.telefone, c.nome
             FROM conversas c
@@ -809,7 +839,8 @@ app.get('/api/contatos', async (req, res) => {
                 // vindo do WhatsApp (pushname salvo em "conversas") sempre ganhava.
                 nome: l.nome || nomePorTelefone.get(telefone) || telefone,
                 origem: l.origem || 'whatsapp',
-                matricula: matriculaDoTelefone(telefone),
+                // Matrícula editada manualmente tem prioridade sobre a do vínculo Pacto.
+                matricula: l.matricula || matriculaDoTelefone(telefone),
                 data_captura: sqliteTsParaIso(l.data_captura),
                 mensagens_recebidas: l.mensagens_recebidas,
                 etiquetas: etiquetasPorTelefone.get(telefone) || []
@@ -870,15 +901,15 @@ app.post('/api/contatos', async (req, res) => {
 // — por isso o WHERE tenta todos os formatos, não só o número limpo que o front manda.
 app.put('/api/contatos/:telefone', async (req, res) => {
     const { telefone } = req.params;
-    const { nome } = req.body;
+    const { nome, matricula } = req.body;
     if (!nome || !nome.trim()) return res.status(400).json({ error: 'Nome é obrigatório.' });
     try {
         const result = await db.run(
-            'UPDATE leads SET nome = ? WHERE telefone = ? OR telefone = ? OR telefone = ?',
-            [nome.trim(), telefone, `${telefone}@c.us`, `${telefone}@lid`]
+            'UPDATE leads SET nome = ?, matricula = ? WHERE telefone = ? OR telefone = ? OR telefone = ?',
+            [nome.trim(), (matricula || '').trim() || null, telefone, `${telefone}@c.us`, `${telefone}@lid`]
         );
         if (result.changes === 0) return res.status(404).json({ error: 'Contato não encontrado.' });
-        res.json({ success: true, nome: nome.trim() });
+        res.json({ success: true, nome: nome.trim(), matricula: (matricula || '').trim() || null });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
@@ -1177,7 +1208,10 @@ async function executarEtapaAutomacao(telefone, automacao, etapa) {
         const chatId = await resolverChatId(numLimpo);
         const nome = await resolverNomeContato(numLimpo);
         const primeiroNome = (nome && nome !== numLimpo) ? nome.split(' ')[0] : '';
-        const texto = (etapa.texto || '').replace(/\{nome\}/gi, primeiroNome).replace(/\[nome\]/gi, primeiroNome);
+        const matricula = await resolverMatriculaContato(numLimpo);
+        const texto = (etapa.texto || '')
+            .replace(/\{nome\}/gi, primeiroNome).replace(/\[nome\]/gi, primeiroNome)
+            .replace(/\{matricula\}/gi, matricula).replace(/\[matricula\]/gi, matricula);
         if (etapa.media_path) {
             const mediaFullPath = path.join(__dirname, 'public', etapa.media_path.replace(/^\//, ''));
             if (fs.existsSync(mediaFullPath)) {
@@ -2396,7 +2430,12 @@ async function engineExecutarFluxo(telefoneReal, numLimpo, nomeContato, fluxoId,
     
     const nodes = drawflow?.drawflow?.Home?.data;
     if (!nodes) return;
-    
+
+    const matriculaContato = await resolverMatriculaContato(numLimpo);
+    const aplicarPlaceholders = (txt) => txt
+        .replace(/\{nome\}|\[nome\]/gi, nomeContato)
+        .replace(/\{matricula\}|\[matricula\]/gi, matriculaContato);
+
     let currentNodeId = startNodeId;
     if (!currentNodeId) {
         // Prioriza o bloco "start" explícito (o robô pula direto pro que vem
@@ -2431,7 +2470,7 @@ async function engineExecutarFluxo(telefoneReal, numLimpo, nomeContato, fluxoId,
 
         if (node.name === 'message') {
             if (node.data.text) {
-                const txt = node.data.text.replace(/\{nome\}|\[nome\]/gi, nomeContato);
+                const txt = aplicarPlaceholders(node.data.text);
                 await simularDigitando(client.getChatById(telefoneReal));
                 await delay(calcularDelayDigitacao(txt));
                 const sentFluxo = await client.sendMessage(telefoneReal, txt);
@@ -2450,7 +2489,7 @@ async function engineExecutarFluxo(telefoneReal, numLimpo, nomeContato, fluxoId,
                 if (fs.existsSync(mediaPath)) {
                     const MessageMedia = require('whatsapp-web.js').MessageMedia;
                     const media = MessageMedia.fromFilePath(mediaPath);
-                    const cap = node.data.text ? node.data.text.replace(/\{nome\}|\[nome\]/gi, nomeContato) : '';
+                    const cap = node.data.text ? aplicarPlaceholders(node.data.text) : '';
                     const sentFluxoMedia = await client.sendMessage(telefoneReal, media, { caption: cap });
                     await registrarMensagemEnviada(telefoneReal, cap || '[Mídia]', nomeContato, sentFluxoMedia.id?._serialized);
                 }
@@ -2458,7 +2497,7 @@ async function engineExecutarFluxo(telefoneReal, numLimpo, nomeContato, fluxoId,
             currentNodeId = getNextNodeId(node, 'output_1');
         }
         else if (node.name === 'question') {
-            let txt = (node.data.text || '').replace(/\{nome\}|\[nome\]/gi, nomeContato) + '\n';
+            let txt = aplicarPlaceholders(node.data.text || '') + '\n';
             const opts = [];
             if (node.data.opt1) opts.push({ lbl: node.data.opt1, out: 'output_1' });
             if (node.data.opt2) opts.push({ lbl: node.data.opt2, out: 'output_2' });
@@ -2834,10 +2873,13 @@ client.on('message', async (msg) => {
         const nomeExibir = (nomeContato && nomeContato !== numLimpo)
             ? nomeContato.split(' ')[0]
             : '';
+        const matriculaExibir = await resolverMatriculaContato(numLimpo);
         const textoFinal = regraAtiva.resposta
             .replace(/{saudacao}/g, saudacao)
             .replace(/\[nome\]/gi, nomeExibir || '')
-            .replace(/{nome}/gi, nomeExibir || '');
+            .replace(/{nome}/gi, nomeExibir || '')
+            .replace(/\[matricula\]/gi, matriculaExibir || '')
+            .replace(/{matricula}/gi, matriculaExibir || '');
         console.log(`📤 Regra #${regraAtiva.id} ativada → respondendo para ${numLimpo}`);
 
         // Aplica automaticamente a etiqueta configurada nesta regra (se houver)

@@ -816,6 +816,7 @@ Sempre tente agendar uma aula experimental."></textarea>
             <div class="form-group">
                 <label>Resposta do Robô</label>
                 <textarea id="modal-resposta" placeholder="Mensagem que o robô vai enviar...&#10;&#10;Use {saudacao} para saudação automática por horário!"></textarea>
+                <span class="hint">Placeholders disponíveis: {saudacao}, {nome} (primeiro nome do aluno) e {matricula} (se ele já tiver vínculo com o Pacto) — funcionam até dentro de links, ex: seusite.com?matricula={matricula}</span>
             </div>
             <div class="form-group">
                 <label>Mídia (imagem, vídeo ou arquivo)</label>
@@ -861,6 +862,9 @@ Sempre tente agendar uma aula experimental."></textarea>
             <label style="display:block;font-size:.78rem;color:var(--text-3);margin-bottom:.3rem">Nome</label>
             <input type="text" id="editar-contato-nome" style="width:100%;background:var(--input-bg);border:1px solid rgba(255,255,255,0.1);border-radius:var(--radius-sm);padding:.6rem .8rem;color:var(--text-1);font-size:.9rem;margin-bottom:1rem">
             <div style="font-size:.78rem;color:var(--text-3);margin-bottom:.5rem" id="editar-contato-telefone"></div>
+
+            <label style="display:block;font-size:.78rem;color:var(--text-3);margin-bottom:.3rem">Matrícula</label>
+            <input type="text" id="editar-contato-matricula" placeholder="Ex: 12345" style="width:100%;background:var(--input-bg);border:1px solid rgba(255,255,255,0.1);border-radius:var(--radius-sm);padding:.6rem .8rem;color:var(--text-1);font-size:.9rem;margin-bottom:1rem">
 
             <label style="display:block;font-size:.78rem;color:var(--text-3);margin-bottom:.5rem">Etiquetas</label>
             <div id="editar-contato-etiquetas" style="display:flex;gap:.4rem;flex-wrap:wrap;align-items:center;margin-bottom:.6rem"></div>

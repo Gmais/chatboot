@@ -1221,6 +1221,7 @@ async function loadContatos() {
 // =====================================
 const modalEditarContatoOverlay = document.getElementById('modal-editar-contato-overlay');
 const editarContatoNome = document.getElementById('editar-contato-nome');
+const editarContatoMatricula = document.getElementById('editar-contato-matricula');
 const editarContatoTelefone = document.getElementById('editar-contato-telefone');
 const editarContatoEtiquetas = document.getElementById('editar-contato-etiquetas');
 const editarContatoAddEtiqueta = document.getElementById('editar-contato-add-etiqueta');
@@ -1257,6 +1258,7 @@ function abrirEditarContato(telefone) {
     if (!c) return;
     contatoEditandoTelefone = telefone;
     if (editarContatoNome) editarContatoNome.value = c.nome === telefone ? '' : c.nome;
+    if (editarContatoMatricula) editarContatoMatricula.value = c.matricula || '';
     if (editarContatoTelefone) editarContatoTelefone.textContent = telefone;
     modalEditarContatoOverlay?.classList.add('open');
     renderEditarContatoEtiquetas();
@@ -1306,12 +1308,13 @@ editarContatoAddEtiqueta?.addEventListener('change', async () => {
 btnEditarContatoSalvar?.addEventListener('click', async () => {
     if (!contatoEditandoTelefone) return;
     const nome = (editarContatoNome?.value || '').trim();
+    const matricula = (editarContatoMatricula?.value || '').trim();
     if (!nome) { showToast('Nome obrigatório', 'Digite um nome para o contato.', 'error'); return; }
     try {
         const res = await fetch(`/api/contatos/${encodeURIComponent(contatoEditandoTelefone)}`, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ nome })
+            body: JSON.stringify({ nome, matricula })
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || 'Erro ao salvar');
