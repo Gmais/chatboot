@@ -118,6 +118,28 @@ function marcarMensagemComoDoSistema(msgId) {
 const DATA_DIR = process.env.RAILWAY_VOLUME_MOUNT_PATH || __dirname;
 const DB_PATH = path.join(DATA_DIR, 'database.sqlite');
 
+// public/uploads fica DENTRO da imagem do container — em todo deploy novo ele
+// volta a ser só o .gitkeep do repositório, apagando qualquer mídia enviada
+// (Regras, Fluxos, Automação). Guarda os arquivos de verdade no volume
+// persistente e troca public/uploads por um link simbólico pra lá — assim todo
+// o resto do código (que já espera path.join(__dirname,'public','uploads',...)
+// e URLs /uploads/...) continua funcionando sem precisar mudar nada.
+(function garantirUploadsPersistentes() {
+    const uploadsReal = path.join(DATA_DIR, 'uploads');
+    const uploadsLink = path.join(__dirname, 'public', 'uploads');
+    fs.mkdirSync(uploadsReal, { recursive: true });
+    try {
+        if (fs.lstatSync(uploadsLink).isSymbolicLink()) return; // já está linkado
+        fs.rmSync(uploadsLink, { recursive: true, force: true });
+    } catch (e) { /* uploadsLink ainda não existe — segue pro symlink */ }
+    try {
+        fs.symlinkSync(uploadsReal, uploadsLink, 'dir');
+        console.log('📎 public/uploads agora aponta pro volume persistente.');
+    } catch (e) {
+        console.error('⚠️ Não foi possível persistir uploads:', e.message);
+    }
+})();
+
 const DEFAULT_RESPONSE_TEXT = `{saudacao}! 👋\n\nEssa mensagem foi enviada automaticamente pelo robô 🤖\n\nNa versão PRO você vai além: desbloqueie tudo!.\n\n✍️ Envio de textos\n🎙️ Áudios\n🖼️ Imagens\n🎥 Vídeos\n📂 Arquivos\n\n💡 Simulação de "digitando..." e "gravando áudio"\n🚀 Envio de mensagens em massa\n📇 Captura automática de contatos\n💻 Aprenda como deixar o robô funcionando 24 hrs, com o PC desligado\n✅ E 3 Bônus exclusivos\n\n🔥 Adquira a versão PRO agora: https://pay.kiwify.com.br/FkTOhRZ?src=pro`;
 
 async function initDB() {
