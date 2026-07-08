@@ -1824,6 +1824,29 @@ app.get('/api/crm/carteira', async (req, res) => {
     }
 });
 
+// Consulta Aluno — por enquanto só busca por matrícula, que é o único filtro
+// que o /v1/cliente da Pacto realmente aplica (nome e cpf são ignorados pela
+// API deles; testado direto contra o ambiente real antes de implementar).
+app.get('/api/pacto/consulta-aluno', async (req, res) => {
+    const { matricula } = req.query;
+    if (!matricula || !matricula.trim()) return res.status(400).json({ error: 'Informe a matrícula pra buscar.' });
+    try {
+        const aluno = await buscarAlunoPorMatricula(matricula.trim());
+        if (!aluno) return res.status(404).json({ error: 'Nenhum aluno encontrado com essa matrícula.' });
+        res.json({
+            nome: aluno.pessoa?.nome || null,
+            dataNascimento: aluno.pessoa?.datanasc || null,
+            telefone: aluno.pessoa?.telefones?.[0]?.numero || null,
+            matricula: aluno.matricula || null,
+            tipoPlano: null,
+            duracao: null
+        });
+    } catch (err) {
+        console.error('❌ Erro ao consultar aluno na Pacto:', err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
 app.post('/api/disconnect', async (req, res) => {
     // Responde imediatamente para não travar o frontend
     res.json({ success: true });

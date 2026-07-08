@@ -2658,6 +2658,51 @@ btnCrmAbrirCarteira?.addEventListener('click', async () => {
 });
 
 // =====================================
+// INTEGRAÇÃO — CRM PACTO (CONSULTA ALUNO)
+// =====================================
+const consultaAlunoTermo = document.getElementById('consulta-aluno-termo');
+const btnConsultaAluno = document.getElementById('btn-consulta-aluno');
+const consultaAlunoResultado = document.getElementById('consulta-aluno-resultado');
+
+function formatarDataNascimento(iso) {
+    if (!iso) return '-';
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return '-';
+    return d.toLocaleDateString('pt-BR', { timeZone: 'UTC' });
+}
+
+async function buscarConsultaAluno() {
+    const termo = (consultaAlunoTermo?.value || '').trim();
+    if (!termo) { showToast('Digite uma matrícula', '', 'error'); return; }
+    consultaAlunoResultado.innerHTML = '⏳ Buscando...';
+    try {
+        const res = await fetch(`/api/pacto/consulta-aluno?matricula=${encodeURIComponent(termo)}`);
+        const aluno = await res.json();
+        if (!res.ok) throw new Error(aluno.error || 'Erro ao buscar aluno');
+
+        const linha = (label, valor) => `
+            <div style="display:flex;justify-content:space-between;padding:.35rem 0;border-bottom:1px solid rgba(255,255,255,0.05)">
+                <span>${label}</span>
+                <span style="color:var(--text-1);font-weight:600">${valor || '-'}</span>
+            </div>`;
+
+        consultaAlunoResultado.innerHTML = `
+            ${linha('Nome Completo', aluno.nome)}
+            ${linha('Data de Nascimento', formatarDataNascimento(aluno.dataNascimento))}
+            ${linha('Telefone', aluno.telefone)}
+            ${linha('Matrícula', aluno.matricula)}
+            ${linha('Tipo de Plano', aluno.tipoPlano || 'Não disponível na integração ainda')}
+            ${linha('Duração', aluno.duracao || 'Não disponível na integração ainda')}
+        `;
+    } catch (e) {
+        consultaAlunoResultado.innerHTML = `<span style="color:var(--red)">❌ ${e.message}</span>`;
+    }
+}
+
+btnConsultaAluno?.addEventListener('click', buscarConsultaAluno);
+consultaAlunoTermo?.addEventListener('keydown', (e) => { if (e.key === 'Enter') buscarConsultaAluno(); });
+
+// =====================================
 // AUTOMAÇÃO (sequência disparada por etiqueta)
 // =====================================
 const automacoesLista = document.getElementById('automacoes-lista');
