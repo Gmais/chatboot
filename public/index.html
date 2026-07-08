@@ -620,22 +620,24 @@
                         <strong style="font-size:.82rem;color:var(--text-1)">Intervalo entre envios</strong>
                         <span style="font-size:.75rem;color:var(--text-3)">evita mandar várias mensagens de automação ao mesmo tempo quando vários contatos vencem a etapa junto</span>
                     </div>
-                    <select id="automacao-delay-modo" style="width:100%;max-width:340px;background:var(--input-bg);border:1px solid rgba(255,255,255,0.1);border-radius:var(--radius-sm);padding:.55rem .7rem;color:var(--text-1);font-family:'Inter',sans-serif;font-size:.85rem;margin-bottom:.6rem">
-                        <option value="fixo">Fixo (você define os segundos)</option>
-                        <option value="aleatorio">🎲 Aleatório (varia a cada envio, mais humano)</option>
-                    </select>
-                    <div id="automacao-delay-fixo-group" style="display:flex;align-items:center;gap:.5rem">
-                        <label style="font-size:.8rem;color:var(--text-2)">Segundos fixos</label>
-                        <input type="number" id="automacao-delay-segundos" min="1" max="120" value="5" style="width:70px;background:var(--input-bg);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:.35rem .5rem;color:var(--text-1);text-align:center">
-                    </div>
-                    <div id="automacao-delay-aleatorio-group" style="display:none;align-items:center;gap:.5rem">
-                        <label style="font-size:.8rem;color:var(--text-2)">Velocidade</label>
-                        <select id="automacao-delay-velocidade" style="flex:1;max-width:260px;background:var(--input-bg);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:.4rem .6rem;color:var(--text-1);font-family:'Inter',sans-serif;font-size:.85rem">
-                            <option value="curto">Curto (5–10s)</option>
-                            <option value="medio">Médio (10–30s)</option>
-                            <option value="longo">Longo (30–120s)</option>
-                            <option value="muito_longo">Muito Longo (120–320s)</option>
+                    <div style="display:flex;align-items:center;gap:.8rem;flex-wrap:wrap">
+                        <select id="automacao-delay-modo" style="flex:1;min-width:220px;max-width:340px;background:var(--input-bg);border:1px solid rgba(255,255,255,0.1);border-radius:var(--radius-sm);padding:.55rem .7rem;color:var(--text-1);font-family:'Inter',sans-serif;font-size:.85rem">
+                            <option value="fixo">Fixo (você define os segundos)</option>
+                            <option value="aleatorio">🎲 Aleatório (varia a cada envio, mais humano)</option>
                         </select>
+                        <div id="automacao-delay-fixo-group" style="display:flex;align-items:center;gap:.5rem">
+                            <label style="font-size:.8rem;color:var(--text-2)">Segundos fixos</label>
+                            <input type="number" id="automacao-delay-segundos" min="1" max="120" value="5" style="width:70px;background:var(--input-bg);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:.35rem .5rem;color:var(--text-1);text-align:center">
+                        </div>
+                        <div id="automacao-delay-aleatorio-group" style="display:none;align-items:center;gap:.5rem">
+                            <label style="font-size:.8rem;color:var(--text-2)">Velocidade</label>
+                            <select id="automacao-delay-velocidade" style="flex:1;max-width:260px;background:var(--input-bg);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:.4rem .6rem;color:var(--text-1);font-family:'Inter',sans-serif;font-size:.85rem">
+                                <option value="curto">Curto (5–10s)</option>
+                                <option value="medio">Médio (10–30s)</option>
+                                <option value="longo">Longo (30–120s)</option>
+                                <option value="muito_longo">Muito Longo (120–320s)</option>
+                            </select>
+                        </div>
                     </div>
                 </div>
 
