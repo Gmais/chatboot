@@ -1166,7 +1166,15 @@ async function processarAutomacoesPendentes() {
             'SELECT * FROM contato_automacao_estado WHERE proxima_execucao_em IS NOT NULL AND proxima_execucao_em <= ?',
             new Date().toISOString()
         );
+        // Se muitos contatos vencerem a etapa ao mesmo tempo (ex: todos entraram no
+        // mesmo dia), manda um de cada vez com um respiro entre eles — evita um
+        // estouro de mensagens simultâneas (risco de bloqueio no WhatsApp).
+        const configDelay = await db.get("SELECT valor FROM configuracoes WHERE chave = 'automacao_delay_segundos'");
+        const delayEntreEnviosMs = (parseInt(configDelay?.valor) || 5) * 1000;
+        let primeiro = true;
         for (const estado of pendentes) {
+            if (!primeiro) await delay(delayEntreEnviosMs);
+            primeiro = false;
             const automacao = await db.get('SELECT * FROM automacoes WHERE id = ?', estado.automacao_id);
             if (!automacao || !automacao.ativo) {
                 await db.run('DELETE FROM contato_automacao_estado WHERE telefone = ? AND automacao_id = ?', [estado.telefone, estado.automacao_id]);

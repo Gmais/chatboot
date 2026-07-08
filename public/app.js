@@ -441,7 +441,7 @@ navBtns.forEach(btn => {
         if (targetId === 'contatos-section' || targetId === 'disparos-section') loadContatos();
         if (targetId === 'integracoes-section') loadCrmColaboradores();
         if (targetId === 'automacoes-section') { loadEtiquetas().then(() => loadAutomacoes()); }
-        if (targetId === 'disparos-section') loadAcompanhamentoAutomacoes();
+        if (targetId === 'disparos-section') { loadAcompanhamentoAutomacoes(); loadAutomacaoDelayConfig(); }
     });
 });
 
@@ -2960,7 +2960,32 @@ socket.on('automacoes_atualizadas', () => {
 // ACOMPANHAMENTO DE AUTOMAÇÕES (tela de Disparos)
 // =====================================
 const acompanhamentoAutomacoesLista = document.getElementById('acompanhamento-automacoes-lista');
+const automacaoDelaySegundos = document.getElementById('automacao-delay-segundos');
 const progressoAbertoPorAutomacao = new Set();
+
+async function loadAutomacaoDelayConfig() {
+    if (!automacaoDelaySegundos) return;
+    try {
+        const res = await fetch('/api/configuracoes');
+        const config = await res.json();
+        automacaoDelaySegundos.value = config.automacao_delay_segundos || 5;
+    } catch (e) {}
+}
+
+automacaoDelaySegundos?.addEventListener('change', async () => {
+    const valor = Math.max(1, parseInt(automacaoDelaySegundos.value) || 5);
+    automacaoDelaySegundos.value = valor;
+    try {
+        await fetch('/api/configuracoes', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ automacao_delay_segundos: valor })
+        });
+        showToast('Intervalo salvo', `${valor}s entre mensagens de automação.`, 'success', 2000);
+    } catch (e) {
+        showToast('Erro', 'Não foi possível salvar o intervalo', 'error');
+    }
+});
 
 async function loadAcompanhamentoAutomacoes() {
     if (!acompanhamentoAutomacoesLista) return;

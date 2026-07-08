@@ -612,8 +612,15 @@
             </div>
 
             <div class="card glass" style="margin-top:1.5rem">
-                <h3>📊 Acompanhamento de Automações</h3>
-                <p style="color:var(--text-3);font-size:.8rem;margin:.3rem 0 1rem">Quantos contatos estão em andamento em cada automação e em qual etapa.</p>
+                <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:.8rem">
+                    <h3 style="margin-bottom:0">📊 Acompanhamento de Automações</h3>
+                    <label style="display:flex;align-items:center;gap:.5rem;font-size:.8rem;color:var(--text-2)">
+                        Intervalo entre envios
+                        <input type="number" id="automacao-delay-segundos" min="1" max="120" style="width:60px;background:var(--input-bg);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:.35rem .5rem;color:var(--text-1);text-align:center">
+                        segundos
+                    </label>
+                </div>
+                <p style="color:var(--text-3);font-size:.8rem;margin:.3rem 0 1rem">Quantos contatos estão em andamento em cada automação e em qual etapa. O intervalo evita mandar várias mensagens de automação ao mesmo tempo quando vários contatos vencem a etapa junto.</p>
                 <div id="acompanhamento-automacoes-lista" style="display:flex;flex-direction:column;gap:.8rem">
                     <div style="padding:1.5rem;text-align:center;color:var(--text-3)">Carregando...</div>
                 </div>
