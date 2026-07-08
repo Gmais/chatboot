@@ -177,6 +177,10 @@ async function initDB() {
             PRIMARY KEY (telefone, etiqueta_id)
         );
         CREATE INDEX IF NOT EXISTS idx_contato_etiquetas_telefone ON contato_etiquetas(telefone);
+        CREATE TABLE IF NOT EXISTS conversas_humano (
+            telefone TEXT PRIMARY KEY,
+            assumida_em DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
     `);
 
     // Adiciona colunas novas se migrando de versão anterior
@@ -631,13 +635,15 @@ app.get('/api/conversas', async (req, res) => {
                 c.direcao AS ultima_direcao,
                 c.tipo AS ultimo_tipo,
                 c.ts AS ultimo_ts,
-                (SELECT COUNT(*) FROM conversas WHERE telefone = c.telefone AND lida = 0 AND direcao = 'in') AS nao_lidas
+                (SELECT COUNT(*) FROM conversas WHERE telefone = c.telefone AND lida = 0 AND direcao = 'in') AS nao_lidas,
+                (CASE WHEN ch.telefone IS NULL THEN 0 ELSE 1 END) AS assumida_humano
             FROM conversas c
             INNER JOIN (
                 SELECT telefone, MAX(ts) AS max_ts
                 FROM conversas
                 GROUP BY telefone
             ) latest ON c.telefone = latest.telefone AND c.ts = latest.max_ts
+            LEFT JOIN conversas_humano ch ON ch.telefone = c.telefone
             GROUP BY c.telefone
             ORDER BY c.ts DESC
             LIMIT 200
@@ -647,6 +653,23 @@ app.get('/api/conversas', async (req, res) => {
         console.error('Erro /api/conversas:', err.message);
         res.status(500).json({ error: err.message });
     }
+});
+
+// Assume/libera uma conversa manualmente: enquanto assumida, o robô não
+// responde automaticamente esse contato (tem prioridade sobre horário e
+// sobre o override global "Ativar Robô").
+app.post('/api/conversas/:telefone/assumir', async (req, res) => {
+    const { telefone } = req.params;
+    await db.run('INSERT OR IGNORE INTO conversas_humano (telefone) VALUES (?)', telefone);
+    io.emit('conversa_assumida', { telefone, assumida: true });
+    res.json({ success: true });
+});
+
+app.post('/api/conversas/:telefone/liberar', async (req, res) => {
+    const { telefone } = req.params;
+    await db.run('DELETE FROM conversas_humano WHERE telefone = ?', telefone);
+    io.emit('conversa_assumida', { telefone, assumida: false });
+    res.json({ success: true });
 });
 
 // Histórico de mensagens de um contato
@@ -941,10 +964,12 @@ io.on('connection', async (socket) => {
             const conversas = await db.all(`
                 SELECT c.telefone, c.nome, c.texto AS ultimo_texto, c.direcao AS ultima_direcao,
                        c.tipo AS ultimo_tipo, c.ts AS ultimo_ts,
-                       (SELECT COUNT(*) FROM conversas WHERE telefone = c.telefone AND lida = 0 AND direcao = 'in') AS nao_lidas
+                       (SELECT COUNT(*) FROM conversas WHERE telefone = c.telefone AND lida = 0 AND direcao = 'in') AS nao_lidas,
+                       (CASE WHEN ch.telefone IS NULL THEN 0 ELSE 1 END) AS assumida_humano
                 FROM conversas c
                 INNER JOIN (SELECT telefone, MAX(ts) AS max_ts FROM conversas GROUP BY telefone) latest
                     ON c.telefone = latest.telefone AND c.ts = latest.max_ts
+                LEFT JOIN conversas_humano ch ON ch.telefone = c.telefone
                 GROUP BY c.telefone
                 ORDER BY c.ts DESC LIMIT 200
             `);
@@ -1472,6 +1497,12 @@ client.on('message', async (msg) => {
             }
             return;
         }
+
+        // Conversa assumida manualmente por um humano (botão "Assumir Conversa"
+        // em Conversas): tem prioridade sobre horário e sobre o override global
+        // "Ativar Robô" — enquanto assumida, o robô nunca responde esse contato.
+        const assumidaPorHumano = await db.get('SELECT 1 FROM conversas_humano WHERE telefone = ?', numLimpo);
+        if (assumidaPorHumano) return;
 
         // Modo Humano: a mensagem já foi salva em "conversas" (o operador pode
         // responder manualmente pelo painel), mas o robô não dispara fluxos

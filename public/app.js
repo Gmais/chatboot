@@ -1085,6 +1085,7 @@ const CM = (() => {
     const chatHeaderStatus = document.getElementById('chat-header-status');
     const chatHeaderTags = document.getElementById('chat-header-tags');
     const chatHeaderAddTag = document.getElementById('chat-header-add-tag');
+    const btnChatAssumir = document.getElementById('btn-chat-assumir');
     const chatMessages   = document.getElementById('chat-messages');
     const chatInputBar   = document.getElementById('chat-input-bar');
     const chatTypingBar  = document.getElementById('chat-typing-bar');
@@ -1183,7 +1184,7 @@ const CM = (() => {
             item.innerHTML = `
                 <div class="chat-contact-avatar">${avatarLetter(c.nome)}</div>
                 <div class="chat-contact-body">
-                    <div class="chat-contact-name">${c.nome}</div>
+                    <div class="chat-contact-name">${c.nome}${c.assumida_humano ? ' 🙋' : ''}</div>
                     <div class="${previewClass}">${previewPrefix}${previewText}</div>
                 </div>
                 <div class="chat-contact-meta">
@@ -1215,6 +1216,7 @@ const CM = (() => {
         if (chatHeaderName)     chatHeaderName.textContent = nome;
         if (chatHeaderStatus)   chatHeaderStatus.textContent = telefone;
         renderChatHeaderTags(telefone);
+        renderChatAssumirButton();
         if (chatMessages)       { chatMessages.style.display = 'flex'; chatMessages.innerHTML = '<div style="text-align:center;color:var(--text-3);padding:2rem;font-size:.82rem">Carregando...</div>'; }
         if (chatInputBar)       chatInputBar.style.display = 'flex';
         if (chatTypingBar)      chatTypingBar.style.display = 'none';
@@ -1233,6 +1235,31 @@ const CM = (() => {
         // Carrega histórico
         await loadHistory(telefone);
     }
+
+    // ---- Assumir/liberar a conversa ativa ----
+    function renderChatAssumirButton() {
+        if (!btnChatAssumir || !activePhone) return;
+        const c = contacts.get(activePhone);
+        const assumida = !!c?.assumida_humano;
+        btnChatAssumir.textContent = assumida ? '🤖 Devolver ao Robô' : '🙋 Assumir Conversa';
+        btnChatAssumir.className = assumida ? 'btn-danger' : 'btn-secondary';
+    }
+
+    btnChatAssumir?.addEventListener('click', async () => {
+        if (!activePhone) return;
+        const c = contacts.get(activePhone);
+        const assumida = !!c?.assumida_humano;
+        const acao = assumida ? 'liberar' : 'assumir';
+        try {
+            await fetch(`/api/conversas/${encodeURIComponent(activePhone)}/${acao}`, { method: 'POST' });
+            upsertContact({ telefone: activePhone, assumida_humano: assumida ? 0 : 1 });
+            renderChatAssumirButton();
+            renderContactList();
+            showToast(assumida ? 'Conversa devolvida ao robô' : 'Conversa assumida', assumida ? '' : 'O robô não vai responder esse contato até você devolver.', 'success', 3000);
+        } catch (e) {
+            showToast('Erro', 'Não foi possível atualizar a conversa', 'error');
+        }
+    });
 
     // ---- Etiquetas do contato ativo ----
     async function renderChatHeaderTags(telefone) {
@@ -1469,6 +1496,12 @@ const CM = (() => {
 
         socket.on('etiqueta_atualizada', ({ telefone }) => {
             if (activePhone === telefone) renderChatHeaderTags(telefone);
+        });
+
+        socket.on('conversa_assumida', ({ telefone, assumida }) => {
+            upsertContact({ telefone, assumida_humano: assumida ? 1 : 0 });
+            renderContactList();
+            if (activePhone === telefone) renderChatAssumirButton();
         });
 
         socket.on('conversa_lida', ({ telefone }) => {
