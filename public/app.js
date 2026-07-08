@@ -783,18 +783,18 @@ etiquetasGerenciarLista?.addEventListener('click', async (e) => {
 socket.on('etiquetas_atualizadas', async () => {
     await loadEtiquetas();
     if (modalEtiquetasOverlay?.classList.contains('open')) renderGerenciarEtiquetasLista();
-    if (typeof renderFiltroEtiquetas === 'function') renderFiltroEtiquetas();
-    if (typeof renderContatos === 'function') renderContatos();
-    if (typeof renderModalEtiquetaOptions === 'function' && !modalOverlay?.classList.contains('open')) {
-        // não mexe no select se o operador estiver editando uma regra agora
-    }
-    if (typeof renderChatHeaderTags === 'function' && typeof activePhone !== 'undefined') {
-        // tratado dentro do módulo CM via seu próprio listener, se necessário
-    }
+    renderFiltroEtiquetas();
+    renderContatos();
+    renderFiltroEtiquetasPage();
+    renderContatosPage();
+    // O select de etiqueta da modal de Regras e os chips do cabeçalho de
+    // Conversas não são atualizados aqui de propósito: mexer neles enquanto o
+    // operador pode estar no meio de uma edição atrapalharia mais do que ajudaria.
 });
 
 document.getElementById('btn-gerenciar-etiquetas-disparos')?.addEventListener('click', abrirGerenciarEtiquetas);
 document.getElementById('btn-modal-gerenciar-etiqueta')?.addEventListener('click', abrirGerenciarEtiquetas);
+document.getElementById('btn-gerenciar-etiquetas-page')?.addEventListener('click', abrirGerenciarEtiquetas);
 
 loadEtiquetas();
 
@@ -1074,6 +1074,15 @@ function renderContatos() {
         </label>
     `).join('');
     atualizarContadorContatos();
+}
+
+function contatosPageFiltrados() {
+    const termo = (contatosPageBusca?.value || '').trim().toLowerCase();
+    return todosContatos.filter(c => {
+        const bateBusca = !termo || c.nome.toLowerCase().includes(termo) || c.telefone.includes(termo);
+        const bateEtiqueta = etiquetasFiltroAtivasPage.size === 0 || c.etiquetas.some(e => etiquetasFiltroAtivasPage.has(e.id));
+        return bateBusca && bateEtiqueta;
+    });
 }
 
 function renderContatosPage() {
