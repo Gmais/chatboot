@@ -1707,6 +1707,9 @@ let fluxosGlobais = [];
 let fluxoEditandoId = null;
 let editor = null; // Drawflow instance
 
+function abrirModalFluxo() { modalFluxo?.classList.add('open'); }
+window.fecharModalFluxo = function() { modalFluxo?.classList.remove('open'); };
+
 async function loadFluxos() {
     if (!fluxosLista) return;
     try {
@@ -1778,8 +1781,8 @@ btnNovoFluxo?.addEventListener('click', () => {
     fluxoNome.value = '';
     fluxoGatilho.value = '';
     modalFluxoTitle.textContent = 'Criar Fluxo';
-    openModal('modal-fluxo');
-    
+    abrirModalFluxo();
+
     initDrawflow();
     editor.clear(); // Começa com canvas limpo
 });
@@ -1791,8 +1794,8 @@ window.editarFluxo = (id) => {
     fluxoNome.value = f.nome;
     fluxoGatilho.value = f.gatilho || '';
     modalFluxoTitle.textContent = 'Editar Fluxo';
-    openModal('modal-fluxo');
-    
+    abrirModalFluxo();
+
     initDrawflow();
     editor.clear();
     
@@ -1918,7 +1921,7 @@ btnSalvarFluxo?.addEventListener('click', async () => {
             });
             showToast('Sucesso', 'Fluxo criado!', 'success');
         }
-        closeModal('modal-fluxo');
+        fecharModalFluxo();
         loadFluxos();
     } catch(e) {
         showToast('Erro', 'Não foi possível salvar o fluxo.', 'error');

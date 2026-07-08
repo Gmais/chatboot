@@ -239,11 +239,11 @@
         </div>
 
         <!-- MODAL CONSTRUTOR DE FLUXOS -->
-        <div id="modal-fluxo" class="modal">
+        <div id="modal-fluxo" class="modal-overlay">
             <div class="modal-content" style="max-width:900px;width:95%;height:90vh;display:flex;flex-direction:column;background:var(--bg-color)">
                 <div class="modal-header" style="background:var(--card-bg)">
                     <h3 id="modal-fluxo-title">Criar Fluxo</h3>
-                    <button class="modal-close" onclick="closeModal('modal-fluxo')">✖</button>
+                    <button class="modal-close" onclick="fecharModalFluxo()">✖</button>
                 </div>
                 <div class="modal-body" style="flex:1;display:flex;flex-direction:column;padding:0;overflow:hidden">
                     
@@ -288,7 +288,7 @@
 
                 </div>
                 <div class="modal-footer" style="background:var(--card-bg)">
-                    <button class="btn-secondary" onclick="closeModal('modal-fluxo')">Cancelar</button>
+                    <button class="btn-secondary" onclick="fecharModalFluxo()">Cancelar</button>
                     <button class="btn-primary" id="btn-salvar-fluxo" style="padding:.6rem 1.5rem">💾 Salvar Fluxo</button>
                 </div>
             </div>
