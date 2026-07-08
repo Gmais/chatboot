@@ -3424,6 +3424,10 @@ function renderAcompanhamentoAutomacoes(automacoes) {
                         <div style="font-size:1.2rem;font-weight:700;color:var(--text-1)">${a.total_concluidos || 0}</div>
                         <div style="font-size:.7rem;color:var(--text-3)">concluídos</div>
                     </div>
+                    <label style="display:flex;align-items:center;gap:.4rem;font-size:.78rem;color:var(--text-3);cursor:pointer">
+                        <input type="checkbox" class="acompanhamento-toggle-ativo" data-id="${a.id}" ${a.ativo ? 'checked' : ''} style="accent-color:var(--green);width:16px;height:16px">
+                        Ativo
+                    </label>
                     <button type="button" class="btn-secondary btn-toggle-progresso" data-id="${a.id}" style="padding:.4rem .8rem;font-size:.78rem">
                         ${aberto ? '▲ Esconder' : '▼ Ver contatos'}
                     </button>
@@ -3482,6 +3486,21 @@ async function carregarProgressoDetalhe(automacaoId) {
         container.innerHTML = `<div style="padding:1rem;text-align:center;color:var(--red);font-size:.82rem">Erro ao carregar detalhes.</div>`;
     }
 }
+
+acompanhamentoAutomacoesLista?.addEventListener('change', async (e) => {
+    const toggle = e.target.closest('.acompanhamento-toggle-ativo');
+    if (!toggle) return;
+    try {
+        await fetch(`/api/automacoes/${toggle.dataset.id}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ativo: toggle.checked })
+        });
+        showToast(toggle.checked ? 'Automação ativada' : 'Automação pausada', '', 'success', 2000);
+    } catch (e) {
+        showToast('Erro', 'Não foi possível atualizar a automação', 'error');
+    }
+});
 
 acompanhamentoAutomacoesLista?.addEventListener('click', (e) => {
     const btn = e.target.closest('.btn-toggle-progresso');
