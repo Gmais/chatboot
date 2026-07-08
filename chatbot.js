@@ -1120,9 +1120,9 @@ async function executarEtapaAutomacao(telefone, automacao, etapa) {
         return;
     }
 
-    const chatId = `${numLimpo}@c.us`;
     let sucesso = false;
     try {
+        const chatId = await resolverChatId(numLimpo);
         const nome = await resolverNomeContato(numLimpo);
         const primeiroNome = (nome && nome !== numLimpo) ? nome.split(' ')[0] : '';
         const texto = (etapa.texto || '').replace(/\{nome\}/gi, primeiroNome).replace(/\[nome\]/gi, primeiroNome);
@@ -1493,7 +1493,7 @@ app.post('/api/conversas/:telefone/enviar', async (req, res) => {
     if (!texto || !texto.trim()) return res.status(400).json({ error: 'Texto obrigatório.' });
     if (!isConnected) return res.status(400).json({ error: 'WhatsApp não está conectado.' });
     try {
-        const chatId = telefone.includes('@') ? telefone : `${telefone}@c.us`;
+        const chatId = telefone.includes('@') ? telefone : await resolverChatId(telefone);
         const sentMsg = await client.sendMessage(chatId, texto.trim());
         const nome = await resolverNomeContato(telefone);
         await registrarMensagemEnviada(telefone, texto.trim(), nome, sentMsg.id?._serialized);
@@ -1556,7 +1556,7 @@ app.post('/api/conversas/:telefone/enviar-arquivo', upload.single('arquivo'), as
     if (!req.file) return res.status(400).json({ error: 'Nenhum arquivo enviado.' });
     if (!isConnected) return res.status(400).json({ error: 'WhatsApp não está conectado.' });
     try {
-        const chatId = telefone.includes('@') ? telefone : `${telefone}@c.us`;
+        const chatId = telefone.includes('@') ? telefone : await resolverChatId(telefone);
         const media = MessageMedia.fromFilePath(req.file.path);
         const legenda = (req.body.legenda || '').trim();
         const sentMsg = await client.sendMessage(chatId, media, legenda ? { caption: legenda } : undefined);
@@ -1618,7 +1618,8 @@ app.post('/api/broadcast/start', upload.single('media'), async (req, res) => {
         for (const numero of listaNumeros) {
             if (!broadcastRunning) break;
             try {
-                const chatId = numero.startsWith('55') ? `${numero}@c.us` : `55${numero}@c.us`;
+                const numeroCompleto = numero.startsWith('55') ? numero : `55${numero}`;
+                const chatId = await resolverChatId(numeroCompleto);
                 await client.sendMessage(chatId, mensagem);
 
                 if (mediaFile) {
@@ -2251,6 +2252,21 @@ async function resolveJid(jid) {
 }
 async function resolvePhone(msg) {
     return resolveJid(msg.from);
+}
+
+// Resolve o JID correto pra ENVIAR mensagem a um número — usa o lookup oficial
+// do WhatsApp (getNumberId) em vez de só grudar "@c.us" no número, que falha
+// com "No LID for user" em contas migradas pro sistema de LID do WhatsApp,
+// mesmo quando o número é válido. Se getNumberId não achar nada, o número
+// realmente não tem WhatsApp — cair pra um "@c.us" às cegas ia falhar do
+// mesmo jeito, só que com um erro mais confuso.
+const chatIdCache = new Map();
+async function resolverChatId(numeroLimpo) {
+    if (chatIdCache.has(numeroLimpo)) return chatIdCache.get(numeroLimpo);
+    const contato = await client.getNumberId(numeroLimpo);
+    if (!contato) throw new Error(`O número ${numeroLimpo} não tem WhatsApp.`);
+    chatIdCache.set(numeroLimpo, contato._serialized);
+    return contato._serialized;
 }
 
 // message_create dispara pra QUALQUER mensagem enviada, inclusive as que o
