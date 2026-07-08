@@ -167,7 +167,17 @@ body {
     padding: 2rem 2.5rem;
     display: flex;
     flex-direction: column;
-    min-height: 100vh;
+    height: 100vh;
+    overflow: hidden;
+}
+
+/* A seção visível ocupa o resto do espaço e rola por conta própria — sem
+   isso, .chat-layout (Conversas) não consegue fixar topo/rodapé e rolar só
+   as mensagens, porque "height:100%" não tinha uma altura real de onde herdar. */
+.page-section:not(.hidden) {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
 }
 
 header {

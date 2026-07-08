@@ -191,6 +191,10 @@ async function initDB() {
     try { await db.exec(`CREATE TABLE IF NOT EXISTS conversas (id INTEGER PRIMARY KEY AUTOINCREMENT, telefone TEXT NOT NULL, nome TEXT, direcao TEXT NOT NULL, texto TEXT, tipo TEXT DEFAULT 'text', ts DATETIME DEFAULT CURRENT_TIMESTAMP, lida INTEGER DEFAULT 0)`); } catch(e) {}
     try { await db.exec(`CREATE INDEX IF NOT EXISTS idx_conversas_tel ON conversas(telefone, ts)`); } catch(e) {}
     try { await db.exec(`CREATE INDEX IF NOT EXISTS idx_conversas_ts ON conversas(ts DESC)`); } catch(e) {}
+    // Limpa contatos falsos de canais/listas de transmissão (@broadcast) que
+    // entraram antes do filtro cobrir esse padrão — poluíam a lista de Conversas.
+    try { await db.exec(`DELETE FROM conversas WHERE telefone LIKE '%@broadcast'`); } catch(e) {}
+    try { await db.exec(`DELETE FROM leads WHERE telefone LIKE '%@broadcast'`); } catch(e) {}
 
     // stats.sent reflete a contagem real de mensagens registradas em mensagens_enviadas,
     // não mais um contador solto — assim o número do dashboard sempre bate com o histórico exibido.
@@ -1413,7 +1417,7 @@ async function enviarResposta(msg, conteudo, opcoes = {}) {
 
 client.on('message', async (msg) => {
     try {
-        if (!msg.from || msg.from.endsWith('@g.us') || msg.from === 'status@broadcast') return;
+        if (!msg.from || msg.from.endsWith('@g.us') || msg.from.endsWith('@broadcast')) return;
         const chat = await msg.getChat();
         if (chat.isGroup) return;
 
