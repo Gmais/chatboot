@@ -440,6 +440,7 @@ navBtns.forEach(btn => {
         if (targetId === 'fluxos-section') { loadEtiquetas().then(() => loadFluxos()); }
         if (targetId === 'contatos-section' || targetId === 'disparos-section') loadContatos();
         if (targetId === 'integracoes-section') loadCrmColaboradores();
+        if (targetId === 'automacoes-section') { loadEtiquetas().then(() => loadAutomacoes()); }
     });
 });
 
@@ -2573,5 +2574,277 @@ btnCrmAbrirCarteira?.addEventListener('click', async () => {
         `;
     } catch (e) {
         crmCarteiraResultado.innerHTML = `<span style="color:var(--red)">❌ ${e.message}</span>`;
+    }
+});
+
+// =====================================
+// AUTOMAÇÃO (sequência disparada por etiqueta)
+// =====================================
+const automacoesLista = document.getElementById('automacoes-lista');
+const btnNovaAutomacao = document.getElementById('btn-nova-automacao');
+const modalNovaAutomacao = document.getElementById('modal-nova-automacao-overlay');
+const novaAutomacaoNome = document.getElementById('nova-automacao-nome');
+const novaAutomacaoEtiqueta = document.getElementById('nova-automacao-etiqueta');
+const modalEtapasAutomacao = document.getElementById('modal-etapas-automacao');
+const modalEtapasTitulo = document.getElementById('modal-etapas-titulo');
+const etapasAutomacaoLista = document.getElementById('etapas-automacao-lista');
+const btnAddEtapa = document.getElementById('btn-add-etapa');
+const btnSalvarEtapas = document.getElementById('btn-salvar-etapas');
+
+let automacoesGlobais = [];
+let automacaoEditandoId = null;
+let etapasEditando = [];
+
+async function loadAutomacoes() {
+    if (!automacoesLista) return;
+    try {
+        const res = await fetch('/api/automacoes');
+        automacoesGlobais = await res.json();
+        renderAutomacoesLista();
+    } catch (e) {
+        automacoesLista.innerHTML = '<div style="padding:2rem;text-align:center;color:var(--text-3)">Erro ao carregar automações.</div>';
+    }
+}
+
+function renderAutomacoesLista() {
+    if (!automacoesLista) return;
+    if (automacoesGlobais.length === 0) {
+        automacoesLista.innerHTML = '<div style="padding:2rem;text-align:center;color:var(--text-3)">Nenhuma automação criada ainda. Crie a primeira!</div>';
+        return;
+    }
+    automacoesLista.innerHTML = automacoesGlobais.map(a => {
+        const etiquetaChip = a.etiqueta_nome
+            ? etiquetaChipHtml({ id: a.etiqueta_id, nome: a.etiqueta_nome, cor: a.etiqueta_cor || '#25D366' }, false)
+            : '<span style="color:var(--text-3);font-size:.75rem">Etiqueta removida</span>';
+        return `
+            <div class="card glass" style="padding:1.1rem 1.3rem;display:flex;align-items:center;gap:1rem;flex-wrap:wrap" data-automacao-id="${a.id}">
+                <div style="flex:1;min-width:200px">
+                    <div style="font-weight:600;color:var(--text-1);font-size:.95rem;margin-bottom:.3rem">${a.nome}</div>
+                    <div style="display:flex;align-items:center;gap:.5rem;flex-wrap:wrap">
+                        ${etiquetaChip}
+                        <span style="font-size:.75rem;color:var(--text-3)">${a.total_etapas} etapa${a.total_etapas !== 1 ? 's' : ''}</span>
+                        <span style="font-size:.75rem;color:var(--text-3)">•</span>
+                        <span style="font-size:.75rem;color:var(--text-3)">${a.total_ativos} contato${a.total_ativos !== 1 ? 's' : ''} em andamento</span>
+                    </div>
+                </div>
+                <label style="display:flex;align-items:center;gap:.4rem;font-size:.78rem;color:var(--text-3);cursor:pointer">
+                    <input type="checkbox" class="automacao-toggle-ativo" data-id="${a.id}" ${a.ativo ? 'checked' : ''} style="accent-color:var(--green);width:16px;height:16px">
+                    Ativa
+                </label>
+                <button type="button" class="btn-secondary btn-config-etapas" data-id="${a.id}" data-nome="${a.nome}" style="padding:.5rem .8rem;font-size:.82rem">⚙️ Configurar Etapas</button>
+                <button type="button" class="btn-danger btn-excluir-automacao" data-id="${a.id}" style="padding:.5rem .7rem;font-size:.82rem">🗑️</button>
+            </div>
+        `;
+    }).join('');
+}
+
+automacoesLista?.addEventListener('change', async (e) => {
+    const toggle = e.target.closest('.automacao-toggle-ativo');
+    if (!toggle) return;
+    try {
+        await fetch(`/api/automacoes/${toggle.dataset.id}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ativo: toggle.checked })
+        });
+        showToast(toggle.checked ? 'Automação ativada' : 'Automação pausada', '', 'success', 2000);
+    } catch (e) {
+        showToast('Erro', 'Não foi possível atualizar a automação', 'error');
+    }
+});
+
+automacoesLista?.addEventListener('click', async (e) => {
+    const btnConfig = e.target.closest('.btn-config-etapas');
+    if (btnConfig) { abrirConfigurarEtapas(btnConfig.dataset.id, btnConfig.dataset.nome); return; }
+
+    const btnExcluir = e.target.closest('.btn-excluir-automacao');
+    if (btnExcluir) {
+        if (!confirm('Excluir esta automação? Contatos em andamento nela vão parar de receber as próximas etapas.')) return;
+        try {
+            await fetch(`/api/automacoes/${btnExcluir.dataset.id}`, { method: 'DELETE' });
+            showToast('Automação excluída', '', 'success', 2000);
+            loadAutomacoes();
+        } catch (e) {
+            showToast('Erro', 'Não foi possível excluir a automação', 'error');
+        }
+    }
+});
+
+// ---- Modal: Criar Automação ----
+function abrirNovaAutomacao() {
+    if (novaAutomacaoNome) novaAutomacaoNome.value = '';
+    if (novaAutomacaoEtiqueta) {
+        novaAutomacaoEtiqueta.innerHTML = '<option value="">Selecione uma etiqueta...</option>' +
+            todasEtiquetas.map(e => `<option value="${e.id}">${e.nome}</option>`).join('');
+    }
+    modalNovaAutomacao?.classList.add('open');
+}
+btnNovaAutomacao?.addEventListener('click', abrirNovaAutomacao);
+document.getElementById('modal-nova-automacao-fechar')?.addEventListener('click', () => modalNovaAutomacao?.classList.remove('open'));
+
+document.getElementById('btn-nova-automacao-criar')?.addEventListener('click', async () => {
+    const nome = (novaAutomacaoNome?.value || '').trim();
+    const etiqueta_id = novaAutomacaoEtiqueta?.value;
+    if (!nome) { showToast('Nome obrigatório', 'Dê um nome para a automação.', 'error'); return; }
+    if (!etiqueta_id) { showToast('Etiqueta obrigatória', 'Selecione qual etiqueta dispara essa automação.', 'error'); return; }
+    try {
+        const res = await fetch('/api/automacoes', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ nome, etiqueta_id: Number(etiqueta_id) })
+        });
+        const nova = await res.json();
+        if (!res.ok) throw new Error(nova.error || 'Erro ao criar automação');
+        modalNovaAutomacao?.classList.remove('open');
+        showToast('Automação criada!', 'Agora configure as etapas dela.', 'success', 3000);
+        await loadAutomacoes();
+        abrirConfigurarEtapas(nova.id, nova.nome);
+    } catch (e) {
+        showToast('Erro ao criar', e.message, 'error');
+    }
+});
+
+// ---- Modal: Configurar Etapas ----
+function etapaVazia() {
+    return { texto: '', media_path: null, media_tipo: null, dias_proxima_etapa: 1 };
+}
+
+async function abrirConfigurarEtapas(automacaoId, nome) {
+    automacaoEditandoId = automacaoId;
+    if (modalEtapasTitulo) modalEtapasTitulo.textContent = `⚙️ Etapas — ${nome || ''}`;
+    etapasAutomacaoLista.innerHTML = '<div style="padding:2rem;text-align:center;color:var(--text-3)">Carregando etapas...</div>';
+    modalEtapasAutomacao?.classList.add('open');
+    try {
+        const res = await fetch(`/api/automacoes/${automacaoId}/etapas`);
+        const etapas = await res.json();
+        etapasEditando = etapas.length > 0 ? etapas.map(e => ({ ...e })) : [etapaVazia()];
+        renderEtapasLista();
+    } catch (e) {
+        etapasAutomacaoLista.innerHTML = '<div style="padding:2rem;text-align:center;color:var(--red)">Erro ao carregar etapas.</div>';
+    }
+}
+
+function fecharConfigurarEtapas() {
+    automacaoEditandoId = null;
+    etapasEditando = [];
+    modalEtapasAutomacao?.classList.remove('open');
+}
+document.getElementById('modal-etapas-fechar')?.addEventListener('click', fecharConfigurarEtapas);
+document.getElementById('modal-etapas-fechar-x')?.addEventListener('click', fecharConfigurarEtapas);
+
+function etapaMediaPreviewHtml(etapa) {
+    if (!etapa.media_path) return '<span style="color:var(--text-3);font-size:.78rem">Nenhum arquivo anexado</span>';
+    const icones = { image: '🖼️', video: '🎥', audio: '🎤', file: '📄' };
+    const nomeArquivo = etapa.media_path.split('/').pop();
+    return `<span style="color:var(--text-2);font-size:.78rem">${icones[etapa.media_tipo] || '📎'} ${nomeArquivo}</span>`;
+}
+
+function renderEtapasLista() {
+    if (!etapasAutomacaoLista) return;
+    etapasAutomacaoLista.innerHTML = etapasEditando.map((etapa, i) => {
+        const ehUltima = i === etapasEditando.length - 1;
+        return `
+            <div class="card glass" style="padding:1rem;border:1px solid rgba(255,255,255,0.06)" data-etapa-index="${i}">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.6rem">
+                    <strong style="color:var(--green);font-size:.85rem">Etapa ${i + 1}${ehUltima ? ' (final)' : ''}</strong>
+                    <button type="button" class="btn-danger btn-remover-etapa" data-index="${i}" style="padding:.3rem .6rem;font-size:.75rem">🗑️</button>
+                </div>
+                <textarea class="etapa-texto" data-index="${i}" placeholder="Mensagem ou legenda do arquivo..." rows="2" style="width:100%;background:var(--input-bg);border:1px solid rgba(255,255,255,0.1);border-radius:var(--radius-sm);padding:.6rem .8rem;color:var(--text-1);font-size:.85rem;font-family:'Inter',sans-serif;resize:vertical;margin-bottom:.6rem">${etapa.texto || ''}</textarea>
+                <div style="display:flex;align-items:center;gap:.8rem;flex-wrap:wrap">
+                    <label class="btn-secondary etapa-anexar-label" style="padding:.4rem .7rem;font-size:.78rem;cursor:pointer">
+                        📎 Anexar arquivo
+                        <input type="file" class="etapa-anexo-input" data-index="${i}" accept="image/*,video/*,audio/*,.pdf,.doc,.docx" style="display:none">
+                    </label>
+                    <span class="etapa-media-preview" data-index="${i}">${etapaMediaPreviewHtml(etapa)}</span>
+                    ${etapa.media_path ? `<button type="button" class="btn-cancel btn-remover-anexo" data-index="${i}" style="padding:.3rem .6rem;font-size:.72rem">Remover anexo</button>` : ''}
+                    ${!ehUltima ? `
+                        <span style="margin-left:auto;display:flex;align-items:center;gap:.4rem;font-size:.78rem;color:var(--text-3)">
+                            Aguardar
+                            <input type="number" class="etapa-dias" data-index="${i}" min="0" value="${etapa.dias_proxima_etapa ?? 1}" style="width:56px;background:var(--input-bg);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:.3rem .4rem;color:var(--text-1);text-align:center">
+                            dia(s) e passar pra etapa ${i + 2}
+                        </span>
+                    ` : `<span style="margin-left:auto;font-size:.78rem;color:var(--text-3)">✅ Ao enviar, a etiqueta é removida do contato</span>`}
+                </div>
+            </div>
+        `;
+    }).join('');
+}
+
+etapasAutomacaoLista?.addEventListener('input', (e) => {
+    const textoEl = e.target.closest('.etapa-texto');
+    if (textoEl) { etapasEditando[Number(textoEl.dataset.index)].texto = textoEl.value; return; }
+    const diasEl = e.target.closest('.etapa-dias');
+    if (diasEl) { etapasEditando[Number(diasEl.dataset.index)].dias_proxima_etapa = parseInt(diasEl.value) || 0; }
+});
+
+etapasAutomacaoLista?.addEventListener('change', async (e) => {
+    const fileInput = e.target.closest('.etapa-anexo-input');
+    if (!fileInput || !fileInput.files?.[0]) return;
+    const index = Number(fileInput.dataset.index);
+    const preview = etapasAutomacaoLista.querySelector(`.etapa-media-preview[data-index="${index}"]`);
+    if (preview) preview.innerHTML = '<span style="color:var(--text-3);font-size:.78rem">Enviando...</span>';
+    try {
+        const formData = new FormData();
+        formData.append('media', fileInput.files[0]);
+        const res = await fetch('/api/upload', { method: 'POST', body: formData });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Erro ao enviar arquivo');
+        etapasEditando[index].media_path = data.path;
+        etapasEditando[index].media_tipo = data.tipo;
+        renderEtapasLista();
+    } catch (err) {
+        showToast('Erro ao anexar', err.message, 'error');
+        renderEtapasLista();
+    }
+});
+
+etapasAutomacaoLista?.addEventListener('click', (e) => {
+    const btnRemover = e.target.closest('.btn-remover-etapa');
+    if (btnRemover) {
+        if (etapasEditando.length <= 1) { showToast('A automação precisa de pelo menos uma etapa', '', 'error'); return; }
+        etapasEditando.splice(Number(btnRemover.dataset.index), 1);
+        renderEtapasLista();
+        return;
+    }
+    const btnRemoverAnexo = e.target.closest('.btn-remover-anexo');
+    if (btnRemoverAnexo) {
+        const index = Number(btnRemoverAnexo.dataset.index);
+        etapasEditando[index].media_path = null;
+        etapasEditando[index].media_tipo = null;
+        renderEtapasLista();
+    }
+});
+
+btnAddEtapa?.addEventListener('click', () => {
+    etapasEditando.push(etapaVazia());
+    renderEtapasLista();
+});
+
+btnSalvarEtapas?.addEventListener('click', async () => {
+    if (!automacaoEditandoId) return;
+    const semConteudo = etapasEditando.some(e => !e.texto?.trim() && !e.media_path);
+    if (semConteudo) { showToast('Etapa vazia', 'Toda etapa precisa de uma mensagem ou um arquivo anexado.', 'error'); return; }
+    btnSalvarEtapas.disabled = true;
+    try {
+        const res = await fetch(`/api/automacoes/${automacaoEditandoId}/etapas`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ etapas: etapasEditando })
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Erro ao salvar etapas');
+        showToast('Etapas salvas!', '', 'success', 2500);
+        fecharConfigurarEtapas();
+        loadAutomacoes();
+    } catch (e) {
+        showToast('Erro ao salvar', e.message, 'error');
+    } finally {
+        btnSalvarEtapas.disabled = false;
+    }
+});
+
+socket.on('automacoes_atualizadas', () => {
+    if (document.getElementById('automacoes-section') && !document.getElementById('automacoes-section').classList.contains('hidden')) {
+        loadAutomacoes();
     }
 });

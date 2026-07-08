@@ -216,6 +216,32 @@ async function initDB() {
             status TEXT NOT NULL DEFAULT 'aberta',
             atualizado_em DATETIME DEFAULT CURRENT_TIMESTAMP
         );
+        CREATE TABLE IF NOT EXISTS automacoes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            nome TEXT NOT NULL,
+            etiqueta_id INTEGER NOT NULL,
+            ativo INTEGER DEFAULT 1,
+            criado_em DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE IF NOT EXISTS automacao_etapas (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            automacao_id INTEGER NOT NULL,
+            ordem INTEGER NOT NULL,
+            texto TEXT,
+            media_path TEXT,
+            media_tipo TEXT,
+            dias_proxima_etapa INTEGER DEFAULT 1
+        );
+        CREATE INDEX IF NOT EXISTS idx_automacao_etapas_automacao ON automacao_etapas(automacao_id, ordem);
+        CREATE TABLE IF NOT EXISTS contato_automacao_estado (
+            telefone TEXT NOT NULL,
+            automacao_id INTEGER NOT NULL,
+            etapa_atual INTEGER NOT NULL DEFAULT 1,
+            entrou_em DATETIME DEFAULT CURRENT_TIMESTAMP,
+            proxima_execucao_em DATETIME,
+            PRIMARY KEY (telefone, automacao_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_contato_automacao_proxima ON contato_automacao_estado(proxima_execucao_em);
     `);
 
     // Adiciona colunas novas se migrando de versão anterior
@@ -859,7 +885,11 @@ app.post('/api/contatos/importar', uploadCsv.single('planilha'), async (req, res
                     etiquetaId = row.id;
                     etiquetaIdCache.set(nomeEtiqueta.toLowerCase(), etiquetaId);
                 }
-                await db.run('INSERT OR IGNORE INTO contato_etiquetas (telefone, etiqueta_id) VALUES (?, ?)', [telefone, etiquetaId]);
+                await aplicarEtiquetaContato(telefone, etiquetaId);
+                // Se a etiqueta tiver automação vinculada, aplicá-la dispara uma
+                // mensagem na hora — um respiro entre linhas evita um estouro de
+                // envios simultâneos (risco de bloqueio) num import com muitos contatos.
+                await delay(300);
             }
         }
 
@@ -921,10 +951,46 @@ app.delete('/api/etiquetas/:id', async (req, res) => {
     const { id } = req.params;
     await db.run('DELETE FROM contato_etiquetas WHERE etiqueta_id = ?', id);
     await db.run('UPDATE respostas SET etiqueta_id = NULL WHERE etiqueta_id = ?', id);
+    // Etiqueta apagada não pode mais disparar nem sustentar nenhuma automação —
+    // apaga em cascata as automações vinculadas, suas etapas e quem estava nelas.
+    const automacoesLigadas = await db.all('SELECT id FROM automacoes WHERE etiqueta_id = ?', id);
+    for (const a of automacoesLigadas) {
+        await db.run('DELETE FROM contato_automacao_estado WHERE automacao_id = ?', a.id);
+        await db.run('DELETE FROM automacao_etapas WHERE automacao_id = ?', a.id);
+    }
+    await db.run('DELETE FROM automacoes WHERE etiqueta_id = ?', id);
     await db.run('DELETE FROM etiquetas WHERE id = ?', id);
     io.emit('etiquetas_atualizadas');
+    if (automacoesLigadas.length > 0) io.emit('automacoes_atualizadas');
     res.json({ success: true });
 });
+
+// Aplica uma etiqueta a um contato (idempotente) e, se ela tiver uma automação
+// ativa vinculada, matricula o contato nela (dispara a etapa 1 na hora). Ponto
+// único usado por toda aplicação de etiqueta no sistema — regras automáticas,
+// fluxos, import de planilha e aplicação manual — pra garantir que a
+// automação sempre dispara, não importa de onde a etiqueta veio.
+async function aplicarEtiquetaContato(telefone, etiquetaId) {
+    const numLimpo = telefone.replace('@c.us','').replace('@lid','');
+    const result = await db.run('INSERT OR IGNORE INTO contato_etiquetas (telefone, etiqueta_id) VALUES (?, ?)', [numLimpo, etiquetaId]);
+    io.emit('etiqueta_atualizada', { telefone: numLimpo });
+    if (result.changes > 0) {
+        await iniciarAutomacoesParaEtiqueta(numLimpo, etiquetaId);
+    }
+    return result;
+}
+
+// Remove uma etiqueta de um contato e cancela qualquer automação em andamento
+// vinculada a ela — a etapa que ainda não foi cumprida não faz mais sentido.
+async function removerEtiquetaContato(telefone, etiquetaId) {
+    const numLimpo = telefone.replace('@c.us','').replace('@lid','');
+    await db.run('DELETE FROM contato_etiquetas WHERE telefone = ? AND etiqueta_id = ?', [numLimpo, etiquetaId]);
+    io.emit('etiqueta_atualizada', { telefone: numLimpo });
+    const automacoesLigadas = await db.all('SELECT id FROM automacoes WHERE etiqueta_id = ?', etiquetaId);
+    for (const a of automacoesLigadas) {
+        await db.run('DELETE FROM contato_automacao_estado WHERE telefone = ? AND automacao_id = ?', [numLimpo, a.id]);
+    }
+}
 
 // Etiquetas aplicadas manualmente a um contato específico (tela de Conversas)
 app.get('/api/contatos/:telefone/etiquetas', async (req, res) => {
@@ -942,16 +1008,197 @@ app.post('/api/contatos/:telefone/etiquetas', async (req, res) => {
     const { telefone } = req.params;
     const { etiqueta_id } = req.body;
     if (!etiqueta_id) return res.status(400).json({ error: 'etiqueta_id é obrigatório.' });
-    await db.run('INSERT OR IGNORE INTO contato_etiquetas (telefone, etiqueta_id) VALUES (?, ?)', [telefone, etiqueta_id]);
-    io.emit('etiqueta_atualizada', { telefone });
+    await aplicarEtiquetaContato(telefone, etiqueta_id);
     res.json({ success: true });
 });
 
 app.delete('/api/contatos/:telefone/etiquetas/:etiquetaId', async (req, res) => {
     const { telefone, etiquetaId } = req.params;
-    await db.run('DELETE FROM contato_etiquetas WHERE telefone = ? AND etiqueta_id = ?', [telefone, etiquetaId]);
-    io.emit('etiqueta_atualizada', { telefone });
+    await removerEtiquetaContato(telefone, etiquetaId);
     res.json({ success: true });
+});
+
+// =====================================
+// AUTOMAÇÃO (sequência de mensagens disparada por etiqueta, com dias de espera
+// entre etapas — ex: etiqueta "Aluno Novo" dispara boas-vindas, manual, link de
+// avaliação, feedback... e ao final remove a etiqueta automaticamente)
+// =====================================
+
+// Envia o conteúdo de uma etapa e decide o que vem a seguir: agenda a próxima
+// etapa pra daqui a N dias, ou — se essa era a última — conclui a automação e
+// remove a etiqueta que a disparou. Usada tanto pra matricular (etapa 1) quanto
+// pra avançar (chamada pelo processarAutomacoesPendentes).
+async function executarEtapaAutomacao(telefone, automacao, etapa) {
+    const numLimpo = telefone.replace('@c.us','').replace('@lid','');
+    const chatId = `${numLimpo}@c.us`;
+    try {
+        const nome = await resolverNomeContato(numLimpo);
+        if (etapa.media_path) {
+            const mediaFullPath = path.join(__dirname, 'public', etapa.media_path.replace(/^\//, ''));
+            if (fs.existsSync(mediaFullPath)) {
+                const media = MessageMedia.fromFilePath(mediaFullPath);
+                const sent = await client.sendMessage(chatId, media, etapa.texto ? { caption: etapa.texto } : undefined);
+                await registrarMensagemEnviada(numLimpo, etapa.texto || '[mídia]', nome, sent.id?._serialized);
+            }
+        } else if (etapa.texto) {
+            const sent = await client.sendMessage(chatId, etapa.texto);
+            await registrarMensagemEnviada(numLimpo, etapa.texto, nome, sent.id?._serialized);
+        }
+    } catch (e) {
+        console.error(`Erro ao enviar etapa de automação #${automacao.id} pra ${numLimpo}:`, e.message);
+    }
+
+    const proximaEtapa = await db.get('SELECT * FROM automacao_etapas WHERE automacao_id = ? AND ordem = ?', [automacao.id, etapa.ordem + 1]);
+    if (proximaEtapa) {
+        const proximaExecucao = moment().add(etapa.dias_proxima_etapa || 1, 'days').toISOString();
+        await db.run(
+            `INSERT INTO contato_automacao_estado (telefone, automacao_id, etapa_atual, entrou_em, proxima_execucao_em)
+             VALUES (?, ?, ?, CURRENT_TIMESTAMP, ?)
+             ON CONFLICT(telefone, automacao_id) DO UPDATE SET etapa_atual = excluded.etapa_atual, entrou_em = CURRENT_TIMESTAMP, proxima_execucao_em = excluded.proxima_execucao_em`,
+            [numLimpo, automacao.id, etapa.ordem, proximaExecucao]
+        );
+    } else {
+        // Última etapa: automação concluída — some com o estado e a etiqueta que a disparou.
+        await db.run('DELETE FROM contato_automacao_estado WHERE telefone = ? AND automacao_id = ?', [numLimpo, automacao.id]);
+        await db.run('DELETE FROM contato_etiquetas WHERE telefone = ? AND etiqueta_id = ?', [numLimpo, automacao.etiqueta_id]);
+        io.emit('etiqueta_atualizada', { telefone: numLimpo });
+    }
+    io.emit('automacoes_atualizadas');
+}
+
+// Matricula o contato em toda automação ativa vinculada à etiqueta recém-aplicada
+// (se ainda não estiver matriculado) e dispara a etapa 1 na hora.
+async function iniciarAutomacoesParaEtiqueta(telefone, etiquetaId) {
+    const numLimpo = telefone.replace('@c.us','').replace('@lid','');
+    const automacoes = await db.all('SELECT * FROM automacoes WHERE etiqueta_id = ? AND ativo = 1', etiquetaId);
+    for (const automacao of automacoes) {
+        const jaMatriculado = await db.get(
+            'SELECT 1 FROM contato_automacao_estado WHERE telefone = ? AND automacao_id = ?',
+            [numLimpo, automacao.id]
+        );
+        if (jaMatriculado) continue;
+        const etapa1 = await db.get('SELECT * FROM automacao_etapas WHERE automacao_id = ? ORDER BY ordem ASC LIMIT 1', automacao.id);
+        if (!etapa1) continue;
+        await executarEtapaAutomacao(numLimpo, automacao, etapa1);
+    }
+}
+
+// Roda periodicamente: busca contatos cuja etapa atual já venceu (dias
+// passaram) e avança pra próxima etapa da automação.
+async function processarAutomacoesPendentes() {
+    if (!db) return;
+    try {
+        const pendentes = await db.all(
+            'SELECT * FROM contato_automacao_estado WHERE proxima_execucao_em IS NOT NULL AND proxima_execucao_em <= ?',
+            new Date().toISOString()
+        );
+        for (const estado of pendentes) {
+            const automacao = await db.get('SELECT * FROM automacoes WHERE id = ?', estado.automacao_id);
+            if (!automacao || !automacao.ativo) {
+                await db.run('DELETE FROM contato_automacao_estado WHERE telefone = ? AND automacao_id = ?', [estado.telefone, estado.automacao_id]);
+                continue;
+            }
+            // Etiqueta removida manualmente no meio do caminho — cancela a automação.
+            const aindaTemEtiqueta = await db.get(
+                'SELECT 1 FROM contato_etiquetas WHERE telefone = ? AND etiqueta_id = ?',
+                [estado.telefone, automacao.etiqueta_id]
+            );
+            if (!aindaTemEtiqueta) {
+                await db.run('DELETE FROM contato_automacao_estado WHERE telefone = ? AND automacao_id = ?', [estado.telefone, estado.automacao_id]);
+                continue;
+            }
+            const proximaEtapa = await db.get('SELECT * FROM automacao_etapas WHERE automacao_id = ? AND ordem = ?', [automacao.id, estado.etapa_atual + 1]);
+            if (!proximaEtapa) {
+                await db.run('DELETE FROM contato_automacao_estado WHERE telefone = ? AND automacao_id = ?', [estado.telefone, estado.automacao_id]);
+                continue;
+            }
+            await executarEtapaAutomacao(estado.telefone, automacao, proximaEtapa);
+        }
+    } catch (e) {
+        console.error('Erro ao processar automações pendentes:', e.message);
+    }
+}
+setInterval(processarAutomacoesPendentes, 30 * 60 * 1000); // checa a cada 30 minutos
+
+app.get('/api/automacoes', async (req, res) => {
+    const automacoes = await db.all(`
+        SELECT a.*, e.nome AS etiqueta_nome, e.cor AS etiqueta_cor,
+               (SELECT COUNT(*) FROM automacao_etapas WHERE automacao_id = a.id) AS total_etapas,
+               (SELECT COUNT(*) FROM contato_automacao_estado WHERE automacao_id = a.id) AS total_ativos
+        FROM automacoes a
+        LEFT JOIN etiquetas e ON e.id = a.etiqueta_id
+        ORDER BY a.criado_em DESC
+    `);
+    res.json(automacoes);
+});
+
+app.post('/api/automacoes', async (req, res) => {
+    const { nome, etiqueta_id } = req.body;
+    if (!nome || !nome.trim()) return res.status(400).json({ error: 'Nome é obrigatório.' });
+    if (!etiqueta_id) return res.status(400).json({ error: 'Selecione uma etiqueta.' });
+    try {
+        const result = await db.run('INSERT INTO automacoes (nome, etiqueta_id) VALUES (?, ?)', [nome.trim(), etiqueta_id]);
+        const nova = await db.get('SELECT a.*, e.nome AS etiqueta_nome, e.cor AS etiqueta_cor, 0 AS total_etapas, 0 AS total_ativos FROM automacoes a LEFT JOIN etiquetas e ON e.id = a.etiqueta_id WHERE a.id = ?', result.lastID);
+        io.emit('automacoes_atualizadas');
+        res.json(nova);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.put('/api/automacoes/:id', async (req, res) => {
+    const { id } = req.params;
+    const { nome, etiqueta_id, ativo } = req.body;
+    try {
+        await db.run(
+            'UPDATE automacoes SET nome = COALESCE(?, nome), etiqueta_id = COALESCE(?, etiqueta_id), ativo = COALESCE(?, ativo) WHERE id = ?',
+            [nome ? nome.trim() : null, etiqueta_id || null, ativo === undefined ? null : (ativo ? 1 : 0), id]
+        );
+        io.emit('automacoes_atualizadas');
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.delete('/api/automacoes/:id', async (req, res) => {
+    const { id } = req.params;
+    await db.run('DELETE FROM contato_automacao_estado WHERE automacao_id = ?', id);
+    await db.run('DELETE FROM automacao_etapas WHERE automacao_id = ?', id);
+    await db.run('DELETE FROM automacoes WHERE id = ?', id);
+    io.emit('automacoes_atualizadas');
+    res.json({ success: true });
+});
+
+app.get('/api/automacoes/:id/etapas', async (req, res) => {
+    const { id } = req.params;
+    const etapas = await db.all('SELECT * FROM automacao_etapas WHERE automacao_id = ? ORDER BY ordem ASC', id);
+    res.json(etapas);
+});
+
+// Substitui todas as etapas de uma automação de uma vez (o editor manda a lista
+// inteira já na ordem final) — mais simples que expor create/update/reorder
+// separados pra cada etapa individualmente.
+app.put('/api/automacoes/:id/etapas', async (req, res) => {
+    const { id } = req.params;
+    const { etapas } = req.body;
+    if (!Array.isArray(etapas) || etapas.length === 0) return res.status(400).json({ error: 'A automação precisa de pelo menos uma etapa.' });
+    if (etapas.some(e => !e.texto?.trim() && !e.media_path)) return res.status(400).json({ error: 'Toda etapa precisa de uma mensagem ou um arquivo anexado.' });
+    try {
+        await db.run('DELETE FROM automacao_etapas WHERE automacao_id = ?', id);
+        let ordem = 1;
+        for (const etapa of etapas) {
+            await db.run(
+                'INSERT INTO automacao_etapas (automacao_id, ordem, texto, media_path, media_tipo, dias_proxima_etapa) VALUES (?, ?, ?, ?, ?, ?)',
+                [id, ordem, etapa.texto || null, etapa.media_path || null, etapa.media_tipo || null, parseInt(etapa.dias_proxima_etapa) || 1]
+            );
+            ordem++;
+        }
+        io.emit('automacoes_atualizadas');
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
 // =====================================
@@ -2323,8 +2570,7 @@ client.on('message', async (msg) => {
 
         // Aplica automaticamente a etiqueta configurada nesta regra (se houver)
         if (regraAtiva.etiqueta_id) {
-            await db.run('INSERT OR IGNORE INTO contato_etiquetas (telefone, etiqueta_id) VALUES (?, ?)', [numLimpo, regraAtiva.etiqueta_id]);
-            io.emit('etiqueta_atualizada', { telefone: numLimpo });
+            await aplicarEtiquetaContato(numLimpo, regraAtiva.etiqueta_id);
         }
 
         const sent = await enviarResposta(msg, textoFinal);
