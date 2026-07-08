@@ -792,6 +792,15 @@ app.get('/api/contatos', async (req, res) => {
             etiquetasPorTelefone.get(r.telefone).push({ id: r.id, nome: r.nome, cor: r.cor });
         });
 
+        // Matrícula vem do vínculo com o CRM Pacto (feito no fluxo de cadastro/
+        // matrícula pelo WhatsApp) — telefone lá é salvo em formatos inconsistentes,
+        // por isso casa por "contém" em vez de igualdade exata, igual resolverNomeContato.
+        const vinculos = await db.all('SELECT telefone, matricula FROM vinculo_pacto WHERE matricula IS NOT NULL');
+        function matriculaDoTelefone(telefoneLimpo) {
+            const v = vinculos.find(v => v.telefone.includes(telefoneLimpo) || telefoneLimpo.includes(v.telefone));
+            return v?.matricula || null;
+        }
+
         const contatos = leads.map(l => {
             const telefone = l.telefone.replace('@c.us', '').replace('@lid', '');
             return {
@@ -800,6 +809,7 @@ app.get('/api/contatos', async (req, res) => {
                 // vindo do WhatsApp (pushname salvo em "conversas") sempre ganhava.
                 nome: l.nome || nomePorTelefone.get(telefone) || telefone,
                 origem: l.origem || 'whatsapp',
+                matricula: matriculaDoTelefone(telefone),
                 data_captura: sqliteTsParaIso(l.data_captura),
                 mensagens_recebidas: l.mensagens_recebidas,
                 etiquetas: etiquetasPorTelefone.get(telefone) || []

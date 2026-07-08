@@ -1174,7 +1174,7 @@ function renderContatosPage() {
     if (!contatosPageTableBody) return;
     const filtrados = contatosPageFiltrados();
     if (filtrados.length === 0) {
-        contatosPageTableBody.innerHTML = '<tr><td colspan="4" style="padding:2rem;text-align:center;color:var(--text-3)">Nenhum contato encontrado.</td></tr>';
+        contatosPageTableBody.innerHTML = '<tr><td colspan="5" style="padding:2rem;text-align:center;color:var(--text-3)">Nenhum contato encontrado.</td></tr>';
         return;
     }
     contatosPageTableBody.innerHTML = filtrados.map(c => {
@@ -1188,6 +1188,7 @@ function renderContatosPage() {
                     </div>
                     <div style="font-size:.75rem;color:var(--text-3)">${c.telefone}</div>
                 </td>
+                <td style="color:var(--text-2);font-size:.85rem">${c.matricula || '-'}</td>
                 <td style="color:var(--text-2);font-size:.85rem">${dataStr}</td>
                 <td style="text-align:right;color:var(--text-2)">
                     <span style="background:rgba(255,255,255,0.05);padding:.2rem .5rem;border-radius:4px">${c.mensagens_recebidas} msg${c.mensagens_recebidas !== 1 ? 's' : ''}</span>
@@ -1211,7 +1212,7 @@ async function loadContatos() {
     } catch (e) {
         console.error('Erro ao carregar contatos', e);
         if (contatosLista) contatosLista.innerHTML = '<p style="color:var(--text-3);text-align:center;padding:2rem">Erro ao carregar contatos.</p>';
-        if (contatosPageTableBody) contatosPageTableBody.innerHTML = '<tr><td colspan="4" style="padding:2rem;text-align:center;color:var(--text-3)">Erro ao carregar contatos.</td></tr>';
+        if (contatosPageTableBody) contatosPageTableBody.innerHTML = '<tr><td colspan="5" style="padding:2rem;text-align:center;color:var(--text-3)">Erro ao carregar contatos.</td></tr>';
     }
 }
 
