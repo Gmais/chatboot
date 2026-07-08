@@ -28,6 +28,16 @@
 
 html { scroll-behavior: smooth; }
 
+/* Corrige o menu suspenso nativo dos <select>: sem isso o navegador usa
+   fundo branco padrão e o texto claro do tema fica invisível nele. */
+select {
+    color-scheme: dark;
+}
+select option {
+    background: var(--card-bg);
+    color: var(--text-1);
+}
+
 body {
     font-family: 'Inter', system-ui, sans-serif;
     background-color: var(--bg);
