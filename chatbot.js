@@ -254,6 +254,8 @@ async function initDB() {
     // Janela de horário permitida pra automação mandar mensagem (HH:mm) — vazio = sem restrição
     try { await db.exec(`ALTER TABLE automacoes ADD COLUMN horario_inicio TEXT DEFAULT NULL`); } catch(e) {}
     try { await db.exec(`ALTER TABLE automacoes ADD COLUMN horario_fim TEXT DEFAULT NULL`); } catch(e) {}
+    // Se, ao concluir a última etapa, a etiqueta que disparou a automação some do contato (padrão: sim)
+    try { await db.exec(`ALTER TABLE automacoes ADD COLUMN remove_etiqueta_ao_concluir INTEGER DEFAULT 1`); } catch(e) {}
     // Garante tabela conversas em instalações antigas
     try { await db.exec(`CREATE TABLE IF NOT EXISTS conversas (id INTEGER PRIMARY KEY AUTOINCREMENT, telefone TEXT NOT NULL, nome TEXT, direcao TEXT NOT NULL, texto TEXT, tipo TEXT DEFAULT 'text', ts DATETIME DEFAULT CURRENT_TIMESTAMP, lida INTEGER DEFAULT 0)`); } catch(e) {}
     try { await db.exec(`CREATE INDEX IF NOT EXISTS idx_conversas_tel ON conversas(telefone, ts)`); } catch(e) {}
@@ -1099,10 +1101,13 @@ async function executarEtapaAutomacao(telefone, automacao, etapa) {
             [numLimpo, automacao.id, etapa.ordem, proximaExecucao]
         );
     } else {
-        // Última etapa: automação concluída — some com o estado e a etiqueta que a disparou.
+        // Última etapa: automação concluída — some com o estado. A etiqueta só sai
+        // do contato se remove_etiqueta_ao_concluir estiver marcado (padrão: sim).
         await db.run('DELETE FROM contato_automacao_estado WHERE telefone = ? AND automacao_id = ?', [numLimpo, automacao.id]);
-        await db.run('DELETE FROM contato_etiquetas WHERE telefone = ? AND etiqueta_id = ?', [numLimpo, automacao.etiqueta_id]);
-        io.emit('etiqueta_atualizada', { telefone: numLimpo });
+        if (automacao.remove_etiqueta_ao_concluir === undefined || automacao.remove_etiqueta_ao_concluir === null || automacao.remove_etiqueta_ao_concluir) {
+            await db.run('DELETE FROM contato_etiquetas WHERE telefone = ? AND etiqueta_id = ?', [numLimpo, automacao.etiqueta_id]);
+            io.emit('etiqueta_atualizada', { telefone: numLimpo });
+        }
     }
     io.emit('automacoes_atualizadas');
 }
@@ -1192,7 +1197,7 @@ app.post('/api/automacoes', async (req, res) => {
 
 app.put('/api/automacoes/:id', async (req, res) => {
     const { id } = req.params;
-    const { nome, etiqueta_id, ativo, horario_inicio, horario_fim } = req.body;
+    const { nome, etiqueta_id, ativo, horario_inicio, horario_fim, remove_etiqueta_ao_concluir } = req.body;
     // Update parcial: só mexe no campo que veio no body — assim o toggle "Ativa"
     // (que só manda { ativo }) não apaga a janela de horário configurada, e vice-versa.
     const sets = [];
@@ -1202,6 +1207,7 @@ app.put('/api/automacoes/:id', async (req, res) => {
     if (ativo !== undefined) { sets.push('ativo = ?'); params.push(ativo ? 1 : 0); }
     if (horario_inicio !== undefined) { sets.push('horario_inicio = ?'); params.push(horario_inicio || null); }
     if (horario_fim !== undefined) { sets.push('horario_fim = ?'); params.push(horario_fim || null); }
+    if (remove_etiqueta_ao_concluir !== undefined) { sets.push('remove_etiqueta_ao_concluir = ?'); params.push(remove_etiqueta_ao_concluir ? 1 : 0); }
     if (sets.length === 0) return res.json({ success: true });
     try {
         params.push(id);

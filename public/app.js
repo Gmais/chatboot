@@ -2598,6 +2598,7 @@ const btnSalvarEtapas = document.getElementById('btn-salvar-etapas');
 let automacoesGlobais = [];
 let automacaoEditandoId = null;
 let etapasEditando = [];
+let removerEtiquetaAoConcluir = true;
 
 async function loadAutomacoes() {
     if (!automacoesLista) return;
@@ -2726,6 +2727,9 @@ async function abrirConfigurarEtapas(automacaoId, nome) {
     const automacao = automacoesGlobais.find(a => String(a.id) === String(automacaoId));
     if (etapasHorarioInicio) etapasHorarioInicio.value = automacao?.horario_inicio || '';
     if (etapasHorarioFim) etapasHorarioFim.value = automacao?.horario_fim || '';
+    removerEtiquetaAoConcluir = automacao?.remove_etiqueta_ao_concluir === undefined || automacao?.remove_etiqueta_ao_concluir === null
+        ? true
+        : !!automacao.remove_etiqueta_ao_concluir;
     etapasAutomacaoLista.innerHTML = '<div style="padding:2rem;text-align:center;color:var(--text-3)">Carregando etapas...</div>';
     modalEtapasAutomacao?.classList.add('open');
     try {
@@ -2781,7 +2785,10 @@ function renderEtapasLista() {
                             <input type="number" class="etapa-dias" data-index="${i}" min="0" value="${etapa.dias_proxima_etapa ?? 1}" style="width:56px;background:var(--input-bg);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:.3rem .4rem;color:var(--text-1);text-align:center">
                             dia(s) e passar pra etapa ${i + 2}
                         </span>
-                    ` : `<span style="margin-left:auto;font-size:.78rem;color:var(--text-3)">✅ Ao enviar, a etiqueta é removida do contato</span>`}
+                    ` : `<label style="margin-left:auto;display:flex;align-items:center;gap:.4rem;font-size:.78rem;color:var(--text-3);cursor:pointer">
+                            <input type="checkbox" id="etapa-final-remover-etiqueta" ${removerEtiquetaAoConcluir ? 'checked' : ''} style="accent-color:var(--green);width:15px;height:15px">
+                            Ao enviar, remove a etiqueta do contato
+                        </label>`}
                 </div>
             </div>
         `;
@@ -2796,6 +2803,9 @@ etapasAutomacaoLista?.addEventListener('input', (e) => {
 });
 
 etapasAutomacaoLista?.addEventListener('change', async (e) => {
+    const checkboxRemover = e.target.closest('#etapa-final-remover-etiqueta');
+    if (checkboxRemover) { removerEtiquetaAoConcluir = checkboxRemover.checked; return; }
+
     const fileInput = e.target.closest('.etapa-anexo-input');
     if (!fileInput || !fileInput.files?.[0]) return;
     const index = Number(fileInput.dataset.index);
@@ -2870,7 +2880,8 @@ btnSalvarEtapas?.addEventListener('click', async () => {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 horario_inicio: etapasHorarioInicio?.value || '',
-                horario_fim: etapasHorarioFim?.value || ''
+                horario_fim: etapasHorarioFim?.value || '',
+                remove_etiqueta_ao_concluir: removerEtiquetaAoConcluir
             })
         });
 
