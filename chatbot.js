@@ -1847,6 +1847,79 @@ app.get('/api/pacto/consulta-aluno', async (req, res) => {
     }
 });
 
+// Importação em massa Contatos ← Pacto. A API da Pacto não tem endpoint de
+// listagem (só busca por matrícula exata — testado ao vivo, confirmado nos
+// comentários da rota de Consulta Aluno acima), então varremos um intervalo
+// de matrículas numéricas em paralelo (a faixa 000001–009000 cobre com folga
+// o intervalo real de matrículas usadas, amostrado manualmente antes de
+// implementar isso). Roda em background — várias milhares de chamadas
+// levariam minutos demais pra segurar a requisição HTTP do dashboard aberta.
+let pactoImportRunning = false;
+let pactoImportProgress = { total: 0, verificadas: 0, importados: 0, ja_existiam: 0, sem_telefone: 0, nao_encontrados: 0, running: false };
+const PACTO_IMPORT_MATRICULA_MIN = 1;
+const PACTO_IMPORT_MATRICULA_MAX = 9000;
+const PACTO_IMPORT_CONCORRENCIA = 5;
+
+app.get('/api/pacto/importar-contatos/status', (req, res) => res.json(pactoImportProgress));
+
+app.post('/api/pacto/importar-contatos', async (req, res) => {
+    if (pactoImportRunning) return res.status(400).json({ error: 'Uma importação do Pacto já está em andamento.' });
+
+    const total = PACTO_IMPORT_MATRICULA_MAX - PACTO_IMPORT_MATRICULA_MIN + 1;
+    pactoImportRunning = true;
+    pactoImportProgress = { total, verificadas: 0, importados: 0, ja_existiam: 0, sem_telefone: 0, nao_encontrados: 0, running: true };
+    io.emit('pacto_import_progress', pactoImportProgress);
+    res.json({ success: true, total });
+
+    (async () => {
+        async function processarMatricula(numero) {
+            const matricula = String(numero).padStart(6, '0');
+            try {
+                const aluno = await buscarAlunoPorMatricula(matricula);
+                if (!aluno) { pactoImportProgress.nao_encontrados++; return; }
+
+                const telefone = normalizarTelefoneImportado(aluno.pessoa?.telefones?.[0]?.numero);
+                if (!telefone) { pactoImportProgress.sem_telefone++; return; }
+
+                const existente = await db.get(
+                    'SELECT telefone FROM leads WHERE telefone = ? OR telefone = ? OR telefone = ?',
+                    [telefone, `${telefone}@c.us`, `${telefone}@lid`]
+                );
+                if (existente) { pactoImportProgress.ja_existiam++; return; }
+
+                await db.run(
+                    'INSERT INTO leads (telefone, nome, origem, matricula) VALUES (?, ?, ?, ?)',
+                    [telefone, aluno.pessoa?.nome || null, 'pacto', aluno.matricula || matricula]
+                );
+                leadsSet.add(telefone);
+                stats.leads++;
+                pactoImportProgress.importados++;
+            } catch (err) {
+                console.error(`❌ Erro ao importar matrícula ${matricula} do Pacto:`, err.message);
+                pactoImportProgress.nao_encontrados++;
+            }
+        }
+
+        let atual = PACTO_IMPORT_MATRICULA_MIN;
+        while (atual <= PACTO_IMPORT_MATRICULA_MAX && pactoImportRunning) {
+            const lote = [];
+            for (let i = 0; i < PACTO_IMPORT_CONCORRENCIA && atual <= PACTO_IMPORT_MATRICULA_MAX; i++, atual++) {
+                lote.push(processarMatricula(atual));
+            }
+            await Promise.all(lote);
+            pactoImportProgress.verificadas += lote.length;
+            io.emit('pacto_import_progress', pactoImportProgress);
+        }
+
+        pactoImportProgress.running = false;
+        pactoImportRunning = false;
+        io.emit('stats', stats);
+        io.emit('pacto_import_progress', pactoImportProgress);
+        io.emit('pacto_import_done', pactoImportProgress);
+        console.log(`✅ Importação Pacto finalizada: ${pactoImportProgress.importados} novos contatos de ${pactoImportProgress.verificadas} matrículas verificadas.`);
+    })();
+});
+
 app.post('/api/disconnect', async (req, res) => {
     // Responde imediatamente para não travar o frontend
     res.json({ success: true });

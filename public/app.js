@@ -2703,6 +2703,52 @@ btnConsultaAluno?.addEventListener('click', buscarConsultaAluno);
 consultaAlunoTermo?.addEventListener('keydown', (e) => { if (e.key === 'Enter') buscarConsultaAluno(); });
 
 // =====================================
+// INTEGRAÇÃO — CRM PACTO (IMPORTAR CONTATOS EM MASSA)
+// =====================================
+const btnPactoImportar = document.getElementById('btn-pacto-importar');
+const pactoImportarResultado = document.getElementById('pacto-importar-resultado');
+
+function renderPactoImportProgress(p) {
+    if (!pactoImportarResultado) return;
+    const pct = p.total ? Math.round((p.verificadas / p.total) * 100) : 0;
+    pactoImportarResultado.innerHTML = `
+        <div style="margin-bottom:.5rem">⏳ Verificando matrículas... ${p.verificadas}/${p.total} (${pct}%)</div>
+        <div style="background:rgba(255,255,255,0.08);border-radius:50px;height:8px;overflow:hidden;margin-bottom:.8rem">
+            <div style="background:var(--green);height:100%;width:${pct}%;transition:width .3s"></div>
+        </div>
+        <div>✅ Importados: <strong style="color:var(--text-1)">${p.importados}</strong></div>
+        <div>👥 Já existiam: <strong style="color:var(--text-1)">${p.ja_existiam}</strong></div>
+        <div>📵 Sem telefone: <strong style="color:var(--text-1)">${p.sem_telefone}</strong></div>
+    `;
+}
+
+btnPactoImportar?.addEventListener('click', async () => {
+    btnPactoImportar.disabled = true;
+    btnPactoImportar.textContent = '⏳ Importando...';
+    try {
+        const res = await fetch('/api/pacto/importar-contatos', { method: 'POST' });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Erro ao iniciar importação');
+        renderPactoImportProgress({ total: data.total, verificadas: 0, importados: 0, ja_existiam: 0, sem_telefone: 0 });
+    } catch (e) {
+        showToast('Erro', e.message, 'error');
+        btnPactoImportar.disabled = false;
+        btnPactoImportar.textContent = '📥 Importar Contatos do Pacto';
+    }
+});
+
+socket.on('pacto_import_progress', renderPactoImportProgress);
+
+socket.on('pacto_import_done', (p) => {
+    if (btnPactoImportar) {
+        btnPactoImportar.disabled = false;
+        btnPactoImportar.textContent = '📥 Importar Contatos do Pacto';
+    }
+    showToast('Importação concluída!', `${p.importados} novos contatos importados do Pacto.`, 'success', 6000);
+    loadContatos();
+});
+
+// =====================================
 // AUTOMAÇÃO (sequência disparada por etiqueta)
 // =====================================
 const automacoesLista = document.getElementById('automacoes-lista');
