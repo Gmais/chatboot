@@ -1174,7 +1174,7 @@ function renderContatosPage() {
     if (!contatosPageTableBody) return;
     const filtrados = contatosPageFiltrados();
     if (filtrados.length === 0) {
-        contatosPageTableBody.innerHTML = '<tr><td colspan="5" style="padding:2rem;text-align:center;color:var(--text-3)">Nenhum contato encontrado.</td></tr>';
+        contatosPageTableBody.innerHTML = '<tr><td colspan="6" style="padding:2rem;text-align:center;color:var(--text-3)">Nenhum contato encontrado.</td></tr>';
         return;
     }
     contatosPageTableBody.innerHTML = filtrados.map(c => {
@@ -1189,6 +1189,7 @@ function renderContatosPage() {
                     <div style="font-size:.75rem;color:var(--text-3)">${c.telefone}</div>
                 </td>
                 <td style="color:var(--text-2);font-size:.85rem">${c.matricula || '-'}</td>
+                <td style="color:var(--text-2);font-size:.85rem">${formatarDataNascimento(c.data_nascimento)}</td>
                 <td style="color:var(--text-2);font-size:.85rem">${dataStr}</td>
                 <td style="text-align:right;color:var(--text-2)">
                     <span style="background:rgba(255,255,255,0.05);padding:.2rem .5rem;border-radius:4px">${c.mensagens_recebidas} msg${c.mensagens_recebidas !== 1 ? 's' : ''}</span>
@@ -1212,7 +1213,7 @@ async function loadContatos() {
     } catch (e) {
         console.error('Erro ao carregar contatos', e);
         if (contatosLista) contatosLista.innerHTML = '<p style="color:var(--text-3);text-align:center;padding:2rem">Erro ao carregar contatos.</p>';
-        if (contatosPageTableBody) contatosPageTableBody.innerHTML = '<tr><td colspan="5" style="padding:2rem;text-align:center;color:var(--text-3)">Erro ao carregar contatos.</td></tr>';
+        if (contatosPageTableBody) contatosPageTableBody.innerHTML = '<tr><td colspan="6" style="padding:2rem;text-align:center;color:var(--text-3)">Erro ao carregar contatos.</td></tr>';
     }
 }
 
@@ -1222,7 +1223,15 @@ async function loadContatos() {
 const modalEditarContatoOverlay = document.getElementById('modal-editar-contato-overlay');
 const editarContatoNome = document.getElementById('editar-contato-nome');
 const editarContatoMatricula = document.getElementById('editar-contato-matricula');
+const editarContatoNascimento = document.getElementById('editar-contato-nascimento');
 const editarContatoTelefone = document.getElementById('editar-contato-telefone');
+
+// leads.data_nascimento pode vir como "YYYY-MM-DD" (digitado manualmente) ou
+// como timestamp ISO completo (importado do Pacto) — <input type="date"> só
+// aceita "YYYY-MM-DD", daí o corte dos 10 primeiros caracteres cobre os dois casos.
+function paraInputDate(valor) {
+    return valor ? String(valor).slice(0, 10) : '';
+}
 const editarContatoEtiquetas = document.getElementById('editar-contato-etiquetas');
 const editarContatoAddEtiqueta = document.getElementById('editar-contato-add-etiqueta');
 const btnEditarContatoSalvar = document.getElementById('btn-editar-contato-salvar');
@@ -1259,6 +1268,7 @@ function abrirEditarContato(telefone) {
     contatoEditandoTelefone = telefone;
     if (editarContatoNome) editarContatoNome.value = c.nome === telefone ? '' : c.nome;
     if (editarContatoMatricula) editarContatoMatricula.value = c.matricula || '';
+    if (editarContatoNascimento) editarContatoNascimento.value = paraInputDate(c.data_nascimento);
     if (editarContatoTelefone) editarContatoTelefone.textContent = telefone;
     modalEditarContatoOverlay?.classList.add('open');
     renderEditarContatoEtiquetas();
@@ -1309,12 +1319,13 @@ btnEditarContatoSalvar?.addEventListener('click', async () => {
     if (!contatoEditandoTelefone) return;
     const nome = (editarContatoNome?.value || '').trim();
     const matricula = (editarContatoMatricula?.value || '').trim();
+    const data_nascimento = (editarContatoNascimento?.value || '').trim() || null;
     if (!nome) { showToast('Nome obrigatório', 'Digite um nome para o contato.', 'error'); return; }
     try {
         const res = await fetch(`/api/contatos/${encodeURIComponent(contatoEditandoTelefone)}`, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ nome, matricula })
+            body: JSON.stringify({ nome, matricula, data_nascimento })
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || 'Erro ao salvar');
@@ -1395,12 +1406,14 @@ btnImportarContatosEnviar?.addEventListener('click', async () => {
 const modalNovoContato = document.getElementById('modal-novo-contato-overlay');
 const novoContatoNome = document.getElementById('novo-contato-nome');
 const novoContatoTelefone = document.getElementById('novo-contato-telefone');
+const novoContatoNascimento = document.getElementById('novo-contato-nascimento');
 const novoContatoEtiqueta = document.getElementById('novo-contato-etiqueta');
 const btnNovoContatoSalvar = document.getElementById('btn-novo-contato-salvar');
 
 async function abrirModalNovoContato() {
     if (novoContatoNome) novoContatoNome.value = '';
     if (novoContatoTelefone) novoContatoTelefone.value = '';
+    if (novoContatoNascimento) novoContatoNascimento.value = '';
     if (novoContatoEtiqueta) {
         await loadEtiquetas();
         novoContatoEtiqueta.innerHTML = '<option value="">Nenhuma</option>' +
@@ -1418,6 +1431,7 @@ document.getElementById('modal-novo-contato-fechar')?.addEventListener('click', 
 btnNovoContatoSalvar?.addEventListener('click', async () => {
     const nome = (novoContatoNome?.value || '').trim();
     const telefone = (novoContatoTelefone?.value || '').trim();
+    const data_nascimento = (novoContatoNascimento?.value || '').trim() || null;
     const etiqueta_id = novoContatoEtiqueta?.value;
     if (!nome) { showToast('Nome obrigatório', 'Digite o nome do contato.', 'error'); return; }
     if (!telefone) { showToast('Telefone obrigatório', 'Digite o telefone com DDD.', 'error'); return; }
@@ -1426,7 +1440,7 @@ btnNovoContatoSalvar?.addEventListener('click', async () => {
         const res = await fetch('/api/contatos', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ nome, telefone, etiqueta_id: etiqueta_id ? Number(etiqueta_id) : null })
+            body: JSON.stringify({ nome, telefone, data_nascimento, etiqueta_id: etiqueta_id ? Number(etiqueta_id) : null })
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || 'Erro ao criar contato');

@@ -277,6 +277,7 @@ async function initDB() {
     // exige codigo_cliente/codigo_pessoa) pra permitir contato sem vínculo formal
     // com o Pacto ainda assim ter uma matrícula cadastrada (mesmo padrão do nome).
     try { await db.exec(`ALTER TABLE leads ADD COLUMN matricula TEXT DEFAULT NULL`); } catch(e) {}
+    try { await db.exec(`ALTER TABLE leads ADD COLUMN data_nascimento TEXT DEFAULT NULL`); } catch(e) {}
     // Janela de horário permitida pra automação mandar mensagem (HH:mm) — vazio = sem restrição
     try { await db.exec(`ALTER TABLE automacoes ADD COLUMN horario_inicio TEXT DEFAULT NULL`); } catch(e) {}
     try { await db.exec(`ALTER TABLE automacoes ADD COLUMN horario_fim TEXT DEFAULT NULL`); } catch(e) {}
@@ -802,7 +803,7 @@ app.get('/api/leads/export', async (req, res) => {
 // contatos com nome pra seleção manual nos disparos em massa.
 app.get('/api/contatos', async (req, res) => {
     try {
-        const leads = await db.all('SELECT telefone, nome, origem, matricula, data_captura, mensagens_recebidas FROM leads ORDER BY data_captura DESC');
+        const leads = await db.all('SELECT telefone, nome, origem, matricula, data_nascimento, data_captura, mensagens_recebidas FROM leads ORDER BY data_captura DESC');
         const nomes = await db.all(`
             SELECT c.telefone, c.nome
             FROM conversas c
@@ -841,6 +842,7 @@ app.get('/api/contatos', async (req, res) => {
                 origem: l.origem || 'whatsapp',
                 // Matrícula editada manualmente tem prioridade sobre a do vínculo Pacto.
                 matricula: l.matricula || matriculaDoTelefone(telefone),
+                data_nascimento: l.data_nascimento,
                 data_captura: sqliteTsParaIso(l.data_captura),
                 mensagens_recebidas: l.mensagens_recebidas,
                 etiquetas: etiquetasPorTelefone.get(telefone) || []
@@ -874,7 +876,7 @@ app.delete('/api/contatos/:telefone', async (req, res) => {
 // mesmo caminho de dados de quem chega pelo WhatsApp: fica disponível na hora
 // pra Disparos, Fluxos e Automação.
 app.post('/api/contatos', async (req, res) => {
-    const { nome, telefone, etiqueta_id } = req.body;
+    const { nome, telefone, data_nascimento, etiqueta_id } = req.body;
     if (!nome || !nome.trim()) return res.status(400).json({ error: 'Nome é obrigatório.' });
     const telefoneNormalizado = normalizarTelefoneImportado(telefone);
     if (!telefoneNormalizado) return res.status(400).json({ error: 'Telefone inválido. Informe com DDD (ex: 46999998888).' });
@@ -884,7 +886,10 @@ app.post('/api/contatos', async (req, res) => {
             [telefoneNormalizado, `${telefoneNormalizado}@c.us`, `${telefoneNormalizado}@lid`]
         );
         if (existente) return res.status(400).json({ error: 'Já existe um contato com esse telefone.' });
-        await db.run('INSERT INTO leads (telefone, nome, origem) VALUES (?, ?, ?)', [telefoneNormalizado, nome.trim(), 'manual']);
+        await db.run(
+            'INSERT INTO leads (telefone, nome, origem, data_nascimento) VALUES (?, ?, ?, ?)',
+            [telefoneNormalizado, nome.trim(), 'manual', (data_nascimento || '').trim() || null]
+        );
         leadsSet.add(telefoneNormalizado);
         stats.leads++;
         io.emit('stats', stats);
@@ -901,15 +906,15 @@ app.post('/api/contatos', async (req, res) => {
 // — por isso o WHERE tenta todos os formatos, não só o número limpo que o front manda.
 app.put('/api/contatos/:telefone', async (req, res) => {
     const { telefone } = req.params;
-    const { nome, matricula } = req.body;
+    const { nome, matricula, data_nascimento } = req.body;
     if (!nome || !nome.trim()) return res.status(400).json({ error: 'Nome é obrigatório.' });
     try {
         const result = await db.run(
-            'UPDATE leads SET nome = ?, matricula = ? WHERE telefone = ? OR telefone = ? OR telefone = ?',
-            [nome.trim(), (matricula || '').trim() || null, telefone, `${telefone}@c.us`, `${telefone}@lid`]
+            'UPDATE leads SET nome = ?, matricula = ?, data_nascimento = ? WHERE telefone = ? OR telefone = ? OR telefone = ?',
+            [nome.trim(), (matricula || '').trim() || null, (data_nascimento || '').trim() || null, telefone, `${telefone}@c.us`, `${telefone}@lid`]
         );
         if (result.changes === 0) return res.status(404).json({ error: 'Contato não encontrado.' });
-        res.json({ success: true, nome: nome.trim(), matricula: (matricula || '').trim() || null });
+        res.json({ success: true, nome: nome.trim(), matricula: (matricula || '').trim() || null, data_nascimento: (data_nascimento || '').trim() || null });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
@@ -1887,9 +1892,10 @@ app.post('/api/pacto/importar-contatos', async (req, res) => {
                 );
                 if (existente) { pactoImportProgress.ja_existiam++; return; }
 
+                const dataNascimento = aluno.pessoa?.datanasc ? String(aluno.pessoa.datanasc).slice(0, 10) : null;
                 await db.run(
-                    'INSERT INTO leads (telefone, nome, origem, matricula) VALUES (?, ?, ?, ?)',
-                    [telefone, aluno.pessoa?.nome || null, 'pacto', aluno.matricula || matricula]
+                    'INSERT INTO leads (telefone, nome, origem, matricula, data_nascimento) VALUES (?, ?, ?, ?, ?)',
+                    [telefone, aluno.pessoa?.nome || null, 'pacto', aluno.matricula || matricula, dataNascimento]
                 );
                 leadsSet.add(telefone);
                 stats.leads++;
