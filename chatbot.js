@@ -1360,6 +1360,27 @@ async function iniciarAutomacoesParaEtiqueta(telefone, etiquetaId) {
     }
 }
 
+// iniciarAutomacoesParaEtiqueta só dispara no INSTANTE em que a etiqueta é
+// aplicada — quem já tinha a etiqueta antes da automação existir (ou antes
+// dela ganhar etapas) nunca é matriculado sozinho. Chamada depois de salvar
+// etapas ou reativar uma automação, pra pegar esses contatos "atrasados".
+async function enrolarContatosExistentesNaAutomacao(automacaoId) {
+    const automacao = await db.get('SELECT * FROM automacoes WHERE id = ?', automacaoId);
+    if (!automacao || !automacao.ativo) return;
+    const etapa1 = await db.get('SELECT * FROM automacao_etapas WHERE automacao_id = ? ORDER BY ordem ASC LIMIT 1', automacaoId);
+    if (!etapa1) return;
+    const contatos = await db.all('SELECT telefone FROM contato_etiquetas WHERE etiqueta_id = ?', automacao.etiqueta_id);
+    for (const c of contatos) {
+        const jaMatriculado = await db.get(
+            'SELECT 1 FROM contato_automacao_estado WHERE telefone = ? AND automacao_id = ?',
+            [c.telefone, automacaoId]
+        );
+        if (jaMatriculado) continue;
+        await executarEtapaAutomacao(c.telefone, automacao, etapa1);
+        await delay(1000);
+    }
+}
+
 // Roda periodicamente: busca contatos cuja etapa atual já venceu (dias
 // passaram) e avança pra próxima etapa da automação.
 async function processarAutomacoesPendentes() {
@@ -1654,6 +1675,8 @@ app.put('/api/automacoes/:id', async (req, res) => {
         await db.run(`UPDATE automacoes SET ${sets.join(', ')} WHERE id = ?`, params);
         io.emit('automacoes_atualizadas');
         res.json({ success: true });
+        // Reativou a automação: pega quem já tem a etiqueta mas ainda não foi matriculado.
+        if (ativo) enrolarContatosExistentesNaAutomacao(id).catch(e => console.error('Erro ao matricular contatos existentes:', e.message));
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
@@ -1676,6 +1699,19 @@ app.get('/api/automacoes/:id/etapas', async (req, res) => {
         etapa.mensagens = (await db.all('SELECT mensagem_id FROM automacao_etapa_mensagens WHERE etapa_id = ?', etapa.id)).map(r => r.mensagem_id);
     }
     res.json(etapas);
+});
+
+// Força matricular agora quem já tem a etiqueta da automação mas ficou de fora
+// (etiqueta aplicada antes da automação existir/ter etapas) — mesmo caso que
+// roda sozinho ao salvar etapas ou reativar, só que sob demanda.
+app.post('/api/automacoes/:id/matricular-existentes', async (req, res) => {
+    const { id } = req.params;
+    try {
+        await enrolarContatosExistentesNaAutomacao(id);
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
 // Acompanhamento: quem está em andamento na automação agora, em que etapa cada
@@ -1757,6 +1793,10 @@ app.put('/api/automacoes/:id/etapas', async (req, res) => {
         }
         io.emit('automacoes_atualizadas');
         res.json({ success: true });
+        // Acabou de ganhar etapa 1: pega quem já tem a etiqueta da automação mas
+        // ainda não foi matriculado (a etiqueta pode ter sido aplicada antes de
+        // a automação existir ou antes dela ter etapas configuradas).
+        enrolarContatosExistentesNaAutomacao(id).catch(e => console.error('Erro ao matricular contatos existentes:', e.message));
     } catch (err) {
         res.status(500).json({ error: err.message });
     }

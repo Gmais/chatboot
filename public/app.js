@@ -2824,6 +2824,7 @@ function renderAutomacoesLista() {
                     Ativa
                 </label>
                 <button type="button" class="btn-secondary btn-config-etapas" data-id="${a.id}" data-nome="${a.nome}" style="padding:.5rem .8rem;font-size:.82rem">⚙️ Configurar Etapas</button>
+                <button type="button" class="btn-secondary btn-matricular-existentes" data-id="${a.id}" style="padding:.5rem .7rem;font-size:.82rem" title="Matricula quem já tem a etiqueta mas ficou de fora (ex: etiqueta aplicada antes desta automação existir)">🔄 Matricular quem já tem a etiqueta</button>
                 <button type="button" class="btn-danger btn-excluir-automacao" data-id="${a.id}" style="padding:.5rem .7rem;font-size:.82rem">🗑️</button>
             </div>
         `;
@@ -2848,6 +2849,22 @@ automacoesLista?.addEventListener('change', async (e) => {
 automacoesLista?.addEventListener('click', async (e) => {
     const btnConfig = e.target.closest('.btn-config-etapas');
     if (btnConfig) { abrirConfigurarEtapas(btnConfig.dataset.id, btnConfig.dataset.nome); return; }
+
+    const btnMatricular = e.target.closest('.btn-matricular-existentes');
+    if (btnMatricular) {
+        btnMatricular.disabled = true;
+        btnMatricular.textContent = '⏳ Matriculando...';
+        try {
+            await fetch(`/api/automacoes/${btnMatricular.dataset.id}/matricular-existentes`, { method: 'POST' });
+            showToast('Feito!', 'Quem já tinha a etiqueta e estava de fora foi matriculado.', 'success', 3000);
+        } catch (e) {
+            showToast('Erro', 'Não foi possível matricular os contatos existentes', 'error');
+        } finally {
+            btnMatricular.disabled = false;
+            btnMatricular.textContent = '🔄 Matricular quem já tem a etiqueta';
+        }
+        return;
+    }
 
     const btnExcluir = e.target.closest('.btn-excluir-automacao');
     if (btnExcluir) {
