@@ -1545,13 +1545,20 @@ async function engineExecutarFluxo(telefoneReal, numLimpo, nomeContato, fluxoId,
     
     let currentNodeId = startNodeId;
     if (!currentNodeId) {
-        // Encontra o nó inicial (sem inputs conectados)
-        for (const key in nodes) {
-            const n = nodes[key];
-            const in1 = n.inputs?.input_1?.connections;
-            if (!in1 || in1.length === 0) {
-                currentNodeId = n.id;
-                break;
+        // Prioriza o bloco "start" explícito (o robô pula direto pro que vem
+        // depois dele, já que o start em si não faz nada). Fluxos antigos sem
+        // esse bloco caem no heurístico anterior: primeiro nó sem conexão de entrada.
+        const startNode = Object.values(nodes).find(n => n.name === 'start');
+        if (startNode) {
+            currentNodeId = getNextNodeId(startNode, 'output_1');
+        } else {
+            for (const key in nodes) {
+                const n = nodes[key];
+                const in1 = n.inputs?.input_1?.connections;
+                if (!in1 || in1.length === 0) {
+                    currentNodeId = n.id;
+                    break;
+                }
             }
         }
     }
@@ -1620,7 +1627,20 @@ async function engineExecutarFluxo(telefoneReal, numLimpo, nomeContato, fluxoId,
             }
             currentNodeId = getNextNodeId(node, 'output_1');
         }
+        else if (node.name === 'condition') {
+            let possui = false;
+            if (node.data.etiquetaId) {
+                const row = await db.get(
+                    'SELECT 1 FROM contato_etiquetas WHERE telefone = ? AND etiqueta_id = ?',
+                    [numLimpo, node.data.etiquetaId]
+                );
+                possui = !!row;
+            }
+            currentNodeId = getNextNodeId(node, possui ? 'output_1' : 'output_2');
+        }
         else {
+            // Cobre o bloco "start" (não faz nada, só passa adiante) e
+            // qualquer tipo de nó desconhecido — segue pela primeira saída.
             currentNodeId = getNextNodeId(node, 'output_1');
         }
         

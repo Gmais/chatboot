@@ -1777,22 +1777,50 @@ window.excluirFluxo = async (id) => {
 };
 
 // ==========================================
+// STATUS DO FLUXO (salvo / não salvo / erro)
+// ==========================================
+const fluxoStatusEl = document.getElementById('fluxo-status');
+const FLUXO_STATUS_MAP = {
+    novo:        { texto: '●&nbsp;Novo fluxo',              cor: 'var(--text-3)' },
+    salvo:       { texto: '✅&nbsp;Salvo',                   cor: 'var(--green)' },
+    'nao-salvo': { texto: '⚠️&nbsp;Alterações não salvas',   cor: 'var(--amber)' },
+    salvando:    { texto: '⏳&nbsp;Salvando...',              cor: 'var(--text-3)' },
+    erro:        { texto: '❌&nbsp;Erro ao salvar',           cor: 'var(--red)' }
+};
+function marcarFluxoStatus(estado) {
+    if (!fluxoStatusEl) return;
+    const s = FLUXO_STATUS_MAP[estado] || FLUXO_STATUS_MAP.novo;
+    fluxoStatusEl.innerHTML = s.texto;
+    fluxoStatusEl.style.color = s.cor;
+}
+function marcarFluxoSujo() { marcarFluxoStatus('nao-salvo'); }
+
+// ==========================================
 // INICIALIZAÇÃO DO DRAWFLOW
 // ==========================================
 function initDrawflow() {
     if (editor) return; // já inicializado
     const id = document.getElementById("drawflow");
     if (!id) return;
-    
+
     editor = new Drawflow(id);
     editor.reroute = true;
-    
-    // Configura os conteúdos HTML para cada tipo de bloco (data é preenchido pelo df-*)
-    const getTagOptions = () => {
-        return todasEtiquetas.map(e => `<option value="${e.id}">${e.nome}</option>`).join('');
-    };
-    
     editor.start();
+
+    // Rastreia qualquer alteração no canvas pra avisar que há mudanças não salvas
+    editor.on('nodeCreated', marcarFluxoSujo);
+    editor.on('nodeRemoved', marcarFluxoSujo);
+    editor.on('nodeMoved', marcarFluxoSujo);
+    editor.on('nodeDataChanged', marcarFluxoSujo);
+    editor.on('connectionCreated', marcarFluxoSujo);
+    editor.on('connectionRemoved', marcarFluxoSujo);
+}
+
+// Garante que o fluxo sempre tenha o bloco Inicial — obrigatório em fluxos
+// novos e retrocompatível com fluxos antigos que não tinham esse bloco.
+function garantirBlocoInicial() {
+    const jaTem = Object.values(editor.drawflow.drawflow.Home.data).some(n => n.name === 'start');
+    if (!jaTem) addNodeToDrawflow('start', 80, 80, true);
 }
 
 btnNovoFluxo?.addEventListener('click', () => {
@@ -1804,6 +1832,8 @@ btnNovoFluxo?.addEventListener('click', () => {
 
     initDrawflow();
     editor.clear(); // Começa com canvas limpo
+    garantirBlocoInicial();
+    marcarFluxoStatus('novo');
 });
 
 window.editarFluxo = (id) => {
@@ -1817,7 +1847,7 @@ window.editarFluxo = (id) => {
 
     initDrawflow();
     editor.clear();
-    
+
     try {
         if (f.flow_data && Object.keys(f.flow_data).length > 0) {
             editor.import(f.flow_data);
@@ -1825,6 +1855,8 @@ window.editarFluxo = (id) => {
     } catch (e) {
         console.error("Erro ao importar drawflow", e);
     }
+    garantirBlocoInicial(); // fluxos criados antes dessa versão não tinham o bloco Inicial
+    marcarFluxoStatus('salvo'); // acabou de carregar do banco, não é "alteração não salva"
 };
 
 // ==========================================
@@ -1846,18 +1878,47 @@ window.allowDrop = function(ev) {
     ev.preventDefault();
 }
 
-function addNodeToDrawflow(name, pos_x, pos_y) {
+function addNodeToDrawflow(name, pos_x, pos_y, posicaoJaEmCoordenadasDoCanvas) {
     if (!editor) return;
-    // Corrige posição X,Y baseada no canvas
-    pos_x = pos_x * (editor.precanvas.clientWidth / (editor.precanvas.clientWidth * editor.zoom)) - (editor.precanvas.getBoundingClientRect().x * (editor.precanvas.clientWidth / (editor.precanvas.clientWidth * editor.zoom)));
-    pos_y = pos_y * (editor.precanvas.clientHeight / (editor.precanvas.clientHeight * editor.zoom)) - (editor.precanvas.getBoundingClientRect().y * (editor.precanvas.clientHeight / (editor.precanvas.clientHeight * editor.zoom)));
-    
+    // Corrige posição X,Y baseada no canvas (pula esse cálculo quando o
+    // node é criado programaticamente, ex: bloco Inicial automático, que já
+    // recebe a posição final em vez de coordenadas de clique do mouse).
+    if (!posicaoJaEmCoordenadasDoCanvas) {
+        pos_x = pos_x * (editor.precanvas.clientWidth / (editor.precanvas.clientWidth * editor.zoom)) - (editor.precanvas.getBoundingClientRect().x * (editor.precanvas.clientWidth / (editor.precanvas.clientWidth * editor.zoom)));
+        pos_y = pos_y * (editor.precanvas.clientHeight / (editor.precanvas.clientHeight * editor.zoom)) - (editor.precanvas.getBoundingClientRect().y * (editor.precanvas.clientHeight / (editor.precanvas.clientHeight * editor.zoom)));
+    }
+
     let html = '';
     let inputs = 1;
     let outputs = 1;
     let data = {};
-    
-    if (name === 'message') {
+    const tagOptionsHtml = todasEtiquetas.map(e => `<option value="${e.id}">${e.nome}</option>`).join('');
+
+    if (name === 'start') {
+        inputs = 0;
+        outputs = 1;
+        html = `
+            <div class="title-box">🏁 Início do Fluxo</div>
+            <div class="box" style="color:var(--text-3);font-size:.75rem">Todo fluxo começa por aqui. Conecte a saída ao primeiro bloco da conversa.</div>
+        `;
+    } else if (name === 'condition') {
+        inputs = 1;
+        outputs = 2;
+        html = `
+            <div class="title-box">🔀 Condição</div>
+            <div class="box">
+                <div style="font-size:.72rem;color:var(--text-3);margin-bottom:4px">O contato possui esta etiqueta?</div>
+                <select df-etiquetaId class="df-input">
+                    <option value="">Selecione uma etiqueta...</option>
+                    ${tagOptionsHtml}
+                </select>
+                <div style="display:flex;justify-content:space-between;font-size:.68rem;color:var(--text-3);margin-top:8px">
+                    <span>✅ Saída de cima = Sim</span>
+                    <span>❌ Saída de baixo = Não</span>
+                </div>
+            </div>
+        `;
+    } else if (name === 'message') {
         html = `
             <div class="title-box">📝 Enviar Texto</div>
             <div class="box">
@@ -1887,7 +1948,10 @@ function addNodeToDrawflow(name, pos_x, pos_y) {
                     <option value="add_tag">Adicionar Etiqueta</option>
                     <option value="remove_tag">Remover Etiqueta</option>
                 </select>
-                <input type="number" df-tagId class="df-input" placeholder="ID da Etiqueta (Ver painel)">
+                <select df-tagId class="df-input">
+                    <option value="">Selecione uma etiqueta...</option>
+                    ${tagOptionsHtml}
+                </select>
             </div>
         `;
     } else if (name === 'question') {
@@ -1923,7 +1987,8 @@ btnSalvarFluxo?.addEventListener('click', async () => {
         flow_data: editor.export(), // Extrai a árvore mágica do Drawflow!
         ativo: 1
     };
-    
+
+    marcarFluxoStatus('salvando');
     try {
         if (fluxoEditandoId) {
             await fetch(`/api/fluxos/${fluxoEditandoId}`, {
@@ -1940,9 +2005,11 @@ btnSalvarFluxo?.addEventListener('click', async () => {
             });
             showToast('Sucesso', 'Fluxo criado!', 'success');
         }
+        marcarFluxoStatus('salvo');
         fecharModalFluxo();
         loadFluxos();
     } catch(e) {
+        marcarFluxoStatus('erro');
         showToast('Erro', 'Não foi possível salvar o fluxo.', 'error');
     }
 });
