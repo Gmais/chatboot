@@ -1222,6 +1222,58 @@ contatosLista?.addEventListener('change', (e) => {
 contatosBusca?.addEventListener('input', renderContatos);
 contatosPageBusca?.addEventListener('input', renderContatosPage);
 
+// =====================================
+// IMPORTAR CONTATOS (planilha CSV)
+// =====================================
+const modalImportarOverlay   = document.getElementById('modal-importar-contatos-overlay');
+const importarContatosArquivo = document.getElementById('importar-contatos-arquivo');
+const importarContatosResultado = document.getElementById('importar-contatos-resultado');
+const btnImportarContatosEnviar = document.getElementById('btn-importar-contatos-enviar');
+
+function abrirModalImportarContatos() {
+    if (importarContatosArquivo) importarContatosArquivo.value = '';
+    if (importarContatosResultado) importarContatosResultado.innerHTML = '';
+    modalImportarOverlay?.classList.add('open');
+}
+function fecharModalImportarContatos() {
+    modalImportarOverlay?.classList.remove('open');
+}
+
+document.getElementById('btn-importar-contatos')?.addEventListener('click', abrirModalImportarContatos);
+document.getElementById('modal-importar-contatos-fechar')?.addEventListener('click', fecharModalImportarContatos);
+
+btnImportarContatosEnviar?.addEventListener('click', async () => {
+    const arquivo = importarContatosArquivo?.files?.[0];
+    if (!arquivo) {
+        showToast('Selecione um arquivo', 'Escolha um arquivo .csv para importar.', 'error');
+        return;
+    }
+    btnImportarContatosEnviar.disabled = true;
+    btnImportarContatosEnviar.textContent = 'Importando...';
+    try {
+        const formData = new FormData();
+        formData.append('planilha', arquivo);
+        const res = await fetch('/api/contatos/importar', { method: 'POST', body: formData });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Falha ao importar.');
+        if (importarContatosResultado) {
+            importarContatosResultado.innerHTML = `
+                <div style="background:rgba(37,211,102,0.1);border:1px solid rgba(37,211,102,0.3);border-radius:8px;padding:.8rem">
+                    ✅ ${data.importados} novo(s) contato(s) importado(s)<br>
+                    🔄 ${data.atualizados} contato(s) já existente(s) atualizado(s)<br>
+                    ${data.ignorados > 0 ? `⚠️ ${data.ignorados} linha(s) ignorada(s) (telefone inválido)` : ''}
+                </div>`;
+        }
+        showToast('Importação concluída!', `${data.importados + data.atualizados} contato(s) processado(s).`, 'success');
+        loadContatos();
+    } catch (e) {
+        showToast('Erro ao importar', e.message, 'error');
+    } finally {
+        btnImportarContatosEnviar.disabled = false;
+        btnImportarContatosEnviar.textContent = 'Importar';
+    }
+});
+
 contatosSelectAll?.addEventListener('change', () => {
     const visiveis = contatosFiltrados();
     if (contatosSelectAll.checked) visiveis.forEach(c => contatosSelecionados.add(c.telefone));

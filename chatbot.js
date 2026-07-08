@@ -91,6 +91,8 @@ const storage = multer.diskStorage({
     }
 });
 const upload = multer({ storage, limits: { fileSize: 50 * 1024 * 1024 } }); // 50MB
+// Importação de contatos via planilha CSV — fica só em memória, nunca salva no disco
+const uploadCsv = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } });
 
 // =====================================
 // BANCO DE DADOS (SQLite)
@@ -202,6 +204,9 @@ async function initDB() {
     try { await db.exec(`ALTER TABLE respostas ADD COLUMN media_path TEXT DEFAULT NULL`); } catch(e) {}
     try { await db.exec(`ALTER TABLE respostas ADD COLUMN media_tipo TEXT DEFAULT NULL`); } catch(e) {}
     try { await db.exec(`ALTER TABLE respostas ADD COLUMN etiqueta_id INTEGER DEFAULT NULL`); } catch(e) {}
+    // Nome do contato importado via planilha (antes de ele mandar a primeira mensagem)
+    try { await db.exec(`ALTER TABLE leads ADD COLUMN nome TEXT DEFAULT NULL`); } catch(e) {}
+    try { await db.exec(`ALTER TABLE leads ADD COLUMN origem TEXT DEFAULT NULL`); } catch(e) {}
     // Garante tabela conversas em instalações antigas
     try { await db.exec(`CREATE TABLE IF NOT EXISTS conversas (id INTEGER PRIMARY KEY AUTOINCREMENT, telefone TEXT NOT NULL, nome TEXT, direcao TEXT NOT NULL, texto TEXT, tipo TEXT DEFAULT 'text', ts DATETIME DEFAULT CURRENT_TIMESTAMP, lida INTEGER DEFAULT 0)`); } catch(e) {}
     try { await db.exec(`CREATE INDEX IF NOT EXISTS idx_conversas_tel ON conversas(telefone, ts)`); } catch(e) {}
@@ -638,7 +643,7 @@ app.get('/api/leads/export', async (req, res) => {
 // contatos com nome pra seleção manual nos disparos em massa.
 app.get('/api/contatos', async (req, res) => {
     try {
-        const leads = await db.all('SELECT telefone, data_captura, mensagens_recebidas FROM leads ORDER BY data_captura DESC');
+        const leads = await db.all('SELECT telefone, nome, origem, data_captura, mensagens_recebidas FROM leads ORDER BY data_captura DESC');
         const nomes = await db.all(`
             SELECT c.telefone, c.nome
             FROM conversas c
@@ -662,7 +667,8 @@ app.get('/api/contatos', async (req, res) => {
             const telefone = l.telefone.replace('@c.us', '').replace('@lid', '');
             return {
                 telefone,
-                nome: nomePorTelefone.get(telefone) || telefone,
+                nome: nomePorTelefone.get(telefone) || l.nome || telefone,
+                origem: l.origem || 'whatsapp',
                 data_captura: l.data_captura,
                 mensagens_recebidas: l.mensagens_recebidas,
                 etiquetas: etiquetasPorTelefone.get(telefone) || []
@@ -671,6 +677,120 @@ app.get('/api/contatos', async (req, res) => {
         res.json(contatos);
     } catch (err) {
         console.error('Erro /api/contatos:', err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Modelo de planilha para o usuário baixar e preencher (Nome / Telefone / Etiqueta)
+app.get('/api/contatos/modelo-planilha', (req, res) => {
+    const csv = 'Nome;Telefone;Etiqueta\nJoão da Silva;46999998888;Interessado\nMaria Souza;46988887777;\n';
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename="modelo-contatos.csv"');
+    res.send('﻿' + csv); // BOM na frente pra abrir certo no Excel
+});
+
+// Faz o parse manual de um CSV simples (aceita separador ; ou ,), sem depender
+// de biblioteca externa — evita puxar pacotes de terceiros só pra isso.
+function parseCsv(texto) {
+    const semBom = texto.replace(/^﻿/, '');
+    const linhas = semBom.split(/\r\n|\n|\r/).filter(l => l.trim().length > 0);
+    if (linhas.length === 0) return [];
+
+    const separador = (linhas[0].match(/;/g) || []).length >= (linhas[0].match(/,/g) || []).length ? ';' : ',';
+
+    function parseLinha(linha) {
+        const campos = [];
+        let atual = '';
+        let dentroAspas = false;
+        for (let i = 0; i < linha.length; i++) {
+            const c = linha[i];
+            if (c === '"') {
+                if (dentroAspas && linha[i + 1] === '"') { atual += '"'; i++; }
+                else dentroAspas = !dentroAspas;
+            } else if (c === separador && !dentroAspas) {
+                campos.push(atual.trim());
+                atual = '';
+            } else {
+                atual += c;
+            }
+        }
+        campos.push(atual.trim());
+        return campos;
+    }
+
+    const cabecalho = parseLinha(linhas[0]).map(h => h.toLowerCase());
+    const idxNome = cabecalho.findIndex(h => h.includes('nome'));
+    const idxTelefone = cabecalho.findIndex(h => h.includes('telefone') || h.includes('celular') || h.includes('whatsapp') || h.includes('phone'));
+    const idxEtiqueta = cabecalho.findIndex(h => h.includes('etiqueta') || h.includes('tag'));
+
+    const linhasDeDados = linhas.slice(1);
+    return linhasDeDados.map(linha => {
+        const campos = parseLinha(linha);
+        return {
+            nome: idxNome >= 0 ? campos[idxNome] : '',
+            telefone: idxTelefone >= 0 ? campos[idxTelefone] : '',
+            etiqueta: idxEtiqueta >= 0 ? campos[idxEtiqueta] : ''
+        };
+    });
+}
+
+// Normaliza número para o mesmo formato usado nas outras tabelas (só dígitos, com DDI 55)
+function normalizarTelefoneImportado(raw) {
+    let digitos = String(raw || '').replace(/\D/g, '');
+    if (digitos.length === 10 || digitos.length === 11) digitos = '55' + digitos;
+    if (digitos.length < 12 || digitos.length > 13) return null;
+    return digitos;
+}
+
+app.post('/api/contatos/importar', uploadCsv.single('planilha'), async (req, res) => {
+    if (!req.file) return res.status(400).json({ error: 'Nenhum arquivo enviado.' });
+    try {
+        const texto = req.file.buffer.toString('utf8');
+        const linhas = parseCsv(texto);
+
+        let importados = 0, atualizados = 0, ignorados = 0;
+        const etiquetaIdCache = new Map();
+
+        for (const linha of linhas) {
+            const telefone = normalizarTelefoneImportado(linha.telefone);
+            if (!telefone) { ignorados++; continue; }
+
+            const nome = (linha.nome || '').trim() || null;
+            const existente = await db.get('SELECT telefone FROM leads WHERE telefone = ?', telefone);
+
+            if (existente) {
+                if (nome) await db.run('UPDATE leads SET nome = ? WHERE telefone = ?', [nome, telefone]);
+                atualizados++;
+            } else {
+                await db.run('INSERT INTO leads (telefone, nome, origem) VALUES (?, ?, ?)', [telefone, nome, 'planilha']);
+                leadsSet.add(telefone);
+                stats.leads++;
+                importados++;
+            }
+
+            const nomeEtiqueta = (linha.etiqueta || '').trim();
+            if (nomeEtiqueta) {
+                let etiquetaId = etiquetaIdCache.get(nomeEtiqueta.toLowerCase());
+                if (!etiquetaId) {
+                    let row = await db.get('SELECT id FROM etiquetas WHERE LOWER(nome) = LOWER(?)', nomeEtiqueta);
+                    if (!row) {
+                        const cores = ['#25D366', '#128C7E', '#F59E0B', '#3B82F6', '#EF4444', '#8B5CF6'];
+                        const cor = cores[Math.floor(Math.random() * cores.length)];
+                        const result = await db.run('INSERT INTO etiquetas (nome, cor) VALUES (?, ?)', [nomeEtiqueta, cor]);
+                        row = { id: result.lastID };
+                    }
+                    etiquetaId = row.id;
+                    etiquetaIdCache.set(nomeEtiqueta.toLowerCase(), etiquetaId);
+                }
+                await db.run('INSERT OR IGNORE INTO contato_etiquetas (telefone, etiqueta_id) VALUES (?, ?)', [telefone, etiquetaId]);
+            }
+        }
+
+        io.emit('stats', stats);
+        if (etiquetaIdCache.size > 0) io.emit('etiquetas_atualizadas');
+        res.json({ success: true, importados, atualizados, ignorados, total: linhas.length });
+    } catch (err) {
+        console.error('Erro /api/contatos/importar:', err.message);
         res.status(500).json({ error: err.message });
     }
 });

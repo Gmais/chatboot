@@ -68,7 +68,7 @@
             </a>
             <a href="#" class="nav-btn" data-target="contatos-section">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20"/></svg>
-                Contatos
+                Audiência
             </a>
             <a href="#" class="nav-btn" data-target="disparos-section">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
@@ -401,18 +401,20 @@
             </div>
         </div>
 
-        <!-- ===================== CONTATOS ===================== -->
+        <!-- ===================== AUDIÊNCIA ===================== -->
         <div id="contatos-section" class="page-section hidden">
             <div class="card glass">
                 <div class="section-header">
-                    <h3>📇 Gerenciador de Contatos</h3>
+                    <h3>👥 Audiência</h3>
                     <div style="display:flex;gap:.8rem;align-items:center;flex-wrap:wrap">
                         <input type="text" id="contatos-page-busca" placeholder="Buscar por nome ou telefone..." style="background:var(--input-bg);border:1px solid rgba(255,255,255,0.1);border-radius:var(--radius-sm);padding:.5rem .8rem;color:var(--text-1);font-size:.85rem;min-width:220px">
+                        <button type="button" class="btn-secondary" id="btn-importar-contatos" style="padding:.5rem 1rem;font-size:.85rem">📥 Importar Contatos</button>
                         <button type="button" class="btn-secondary" id="btn-gerenciar-etiquetas-page" style="padding:.5rem 1rem;font-size:.85rem">⚙️ Etiquetas</button>
                     </div>
                 </div>
+                <p style="color:var(--text-3);font-size:.8rem;margin:-.6rem 0 1rem">Todos os contatos que já falaram com o robô ou foram importados, prontos pra receber transmissões e etiquetas.</p>
                 <div style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:center;margin-bottom:1rem" id="contatos-page-filtro-etiquetas"></div>
-                
+
                 <table class="leads-table">
                     <thead>
                         <tr>
@@ -771,6 +773,23 @@ Sempre tente agendar uma aula experimental."></textarea>
             <div class="modal-footer">
                 <button class="btn-cancel" id="modal-etiquetas-fechar">Fechar</button>
                 <button class="btn-primary" id="btn-etiquetas-nova">+ Nova Etiqueta</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal-overlay" id="modal-importar-contatos-overlay">
+        <div class="modal">
+            <h3>📥 Importar Contatos</h3>
+            <p style="color:var(--text-3);font-size:.85rem;margin:.5rem 0 1rem">
+                Envie uma planilha CSV com as colunas <strong>Nome</strong>, <strong>Telefone</strong> e <strong>Etiqueta</strong> (opcional).
+                Depois de importados, os contatos ficam disponíveis pra Disparos e Fluxos.
+            </p>
+            <a href="/api/contatos/modelo-planilha" download style="display:inline-block;margin-bottom:1rem;font-size:.85rem;color:var(--green)">⬇️ Baixar modelo de planilha (.csv)</a>
+            <input type="file" id="importar-contatos-arquivo" accept=".csv,text/csv" style="display:block;width:100%;background:var(--input-bg);border:1px solid rgba(255,255,255,0.1);border-radius:var(--radius-sm);padding:.6rem;color:var(--text-1);font-size:.85rem">
+            <div id="importar-contatos-resultado" style="margin-top:1rem;font-size:.85rem"></div>
+            <div class="modal-footer">
+                <button class="btn-cancel" id="modal-importar-contatos-fechar">Fechar</button>
+                <button class="btn-primary" id="btn-importar-contatos-enviar">Importar</button>
             </div>
         </div>
     </div>
