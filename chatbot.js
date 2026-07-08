@@ -1220,6 +1220,23 @@ function proximoInicioJanela(automacao) {
     return candidato.toISOString();
 }
 
+// true só quando a janela de hoje já FECHOU (passou do horario_fim) — nesse
+// caso não faz sentido empurrar o envio pro dia seguinte (ex: mensagem de
+// aniversário mandada um dia atrasado perde o sentido). Se a janela ainda nem
+// abriu hoje (antes do horario_inicio), não conta como "fechada" — aí sim
+// vale esperar abrir, ainda no mesmo dia.
+function janelaFechouHoje(automacao) {
+    if (!automacao.horario_inicio || !automacao.horario_fim) return false;
+    const [hIni, mIni] = automacao.horario_inicio.split(':').map(Number);
+    const [hFim, mFim] = automacao.horario_fim.split(':').map(Number);
+    const minutosIni = hIni * 60 + mIni;
+    const minutosFim = hFim * 60 + mFim;
+    if (minutosIni > minutosFim) return false; // janela cruza a meia-noite, não "fecha" no dia civil
+    const agora = moment.tz('America/Sao_Paulo');
+    const minutosAgora = agora.hours() * 60 + agora.minutes();
+    return minutosAgora > minutosFim;
+}
+
 // Espera entre um envio de automação e o próximo — mesma config ("Intervalo
 // entre envios") usada na tela de Disparos. Evita que N contatos que vencem a
 // etapa ao mesmo tempo (ex: todos fazem aniversário no mesmo dia) recebam a
@@ -1242,8 +1259,16 @@ async function executarEtapaAutomacao(telefone, automacao, etapa) {
     const numLimpo = telefone.replace('@c.us','').replace('@lid','');
 
     if (!dentroDoHorarioAutomacao(automacao)) {
-        // Fora da janela permitida: não manda agora, só remarca pra tentar de novo
-        // quando ela abrir — não avança de etapa, não conta como enviado.
+        if (janelaFechouHoje(automacao)) {
+            // A janela de hoje já fechou — cancela em vez de empurrar pra amanhã
+            // com um conteúdo que pode não fazer mais sentido no dia seguinte
+            // (ex: "feliz aniversário" um dia atrasado).
+            await db.run('DELETE FROM contato_automacao_estado WHERE telefone = ? AND automacao_id = ?', [numLimpo, automacao.id]);
+            io.emit('automacoes_atualizadas');
+            return;
+        }
+        // Janela ainda não abriu hoje: espera abrir, sem cancelar — não avança
+        // de etapa, não conta como enviado.
         await db.run(
             `INSERT INTO contato_automacao_estado (telefone, automacao_id, etapa_atual, entrou_em, proxima_execucao_em)
              VALUES (?, ?, ?, CURRENT_TIMESTAMP, ?)
@@ -1672,6 +1697,20 @@ app.post('/api/automacoes/:id/matricular-existentes', async (req, res) => {
     try {
         await enrolarContatosExistentesNaAutomacao(id);
         res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Limpeza pontual: cancela quem ficou "preso" esperando a janela de um dia
+// que já passou (etapa_atual = 0 = nunca chegou a enviar nada) — resquício de
+// antes da correção que parou de empurrar envio pra dia seguinte.
+app.post('/api/automacoes/:id/cancelar-atrasados', async (req, res) => {
+    const { id } = req.params;
+    try {
+        const result = await db.run('DELETE FROM contato_automacao_estado WHERE automacao_id = ? AND etapa_atual = 0', id);
+        io.emit('automacoes_atualizadas');
+        res.json({ success: true, removidos: result.changes });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
