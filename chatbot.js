@@ -574,7 +574,26 @@ app.post('/api/etiquetas', async (req, res) => {
     try {
         const result = await db.run('INSERT INTO etiquetas (nome, cor) VALUES (?, ?)', [nome.trim(), cor || '#25D366']);
         const nova = await db.get('SELECT *, 0 AS total_contatos FROM etiquetas WHERE id = ?', result.lastID);
+        io.emit('etiquetas_atualizadas');
         res.json(nova);
+    } catch (err) {
+        res.status(400).json({ error: err.message.includes('UNIQUE') ? 'Já existe uma etiqueta com esse nome.' : err.message });
+    }
+});
+
+app.put('/api/etiquetas/:id', async (req, res) => {
+    const { id } = req.params;
+    const { nome, cor } = req.body;
+    if (!nome || !nome.trim()) return res.status(400).json({ error: 'Nome da etiqueta é obrigatório.' });
+    try {
+        await db.run('UPDATE etiquetas SET nome = ?, cor = ? WHERE id = ?', [nome.trim(), cor || '#25D366', id]);
+        const atualizada = await db.get(`
+            SELECT e.*, COUNT(ce.telefone) AS total_contatos
+            FROM etiquetas e LEFT JOIN contato_etiquetas ce ON ce.etiqueta_id = e.id
+            WHERE e.id = ? GROUP BY e.id
+        `, id);
+        io.emit('etiquetas_atualizadas');
+        res.json(atualizada);
     } catch (err) {
         res.status(400).json({ error: err.message.includes('UNIQUE') ? 'Já existe uma etiqueta com esse nome.' : err.message });
     }
@@ -583,7 +602,9 @@ app.post('/api/etiquetas', async (req, res) => {
 app.delete('/api/etiquetas/:id', async (req, res) => {
     const { id } = req.params;
     await db.run('DELETE FROM contato_etiquetas WHERE etiqueta_id = ?', id);
+    await db.run('UPDATE respostas SET etiqueta_id = NULL WHERE etiqueta_id = ?', id);
     await db.run('DELETE FROM etiquetas WHERE id = ?', id);
+    io.emit('etiquetas_atualizadas');
     res.json({ success: true });
 });
 
@@ -1559,8 +1580,19 @@ client.on('message', async (msg) => {
                 if (!global.chatHistory) global.chatHistory = new Map();
                 const history = global.chatHistory.get(telefoneReal) || [];
 
-                if (history.length === 0 && config.openai_treinamento) {
-                    history.push({ role: 'system', content: config.openai_treinamento });
+                if (history.length === 0) {
+                    // Monta o prompt de sistema combinando o treinamento configurado
+                    // com o nome real do contato — assim a IA nunca precisa usar [nome].
+                    const nomeParaIA = nomeContato && nomeContato !== numLimpo
+                        ? nomeContato.split(' ')[0]  // usa só o primeiro nome
+                        : null;
+                    let systemContent = config.openai_treinamento || '';
+                    if (nomeParaIA) {
+                        systemContent = systemContent
+                            ? `${systemContent}\n\nVocê está conversando com ${nomeParaIA}. Ao personalizar a mensagem, use esse nome diretamente — nunca use [nome] ou {nome} como placeholder.`
+                            : `Você está conversando com ${nomeParaIA}.`;
+                    }
+                    if (systemContent) history.push({ role: 'system', content: systemContent });
                 }
 
                 history.push({ role: 'user', content: texto });
@@ -1590,7 +1622,18 @@ client.on('message', async (msg) => {
 
                 try {
                     const completion = await chamarIA();
-                    const respostaIA = completion.choices[0].message.content;
+                    // Substitui placeholders de nome antes de enviar — caso o treinamento
+                    // ou o modelo ainda use [nome] ou {nome}, o aluno vê o nome de verdade.
+                    const nomeExibir = (nomeContato && nomeContato !== numLimpo)
+                        ? nomeContato.split(' ')[0]
+                        : '';
+                    const respostaIARaw = completion.choices[0].message.content;
+                    const respostaIA = nomeExibir
+                        ? respostaIARaw
+                            .replace(/\[nome\]/gi, nomeExibir)
+                            .replace(/\{nome\}/gi, nomeExibir)
+                        : respostaIARaw;
+
                     history.push({ role: 'assistant', content: respostaIA });
 
                     if (history.length > 7) {
@@ -1619,7 +1662,14 @@ client.on('message', async (msg) => {
         else if (hora >= 12 && hora < 18) saudacao = 'Boa tarde';
         else saudacao = 'Boa noite';
 
-        const textoFinal = regraAtiva.resposta.replace(/{saudacao}/g, saudacao);
+        // Substitui placeholders na resposta da regra
+        const nomeExibir = (nomeContato && nomeContato !== numLimpo)
+            ? nomeContato.split(' ')[0]
+            : '';
+        const textoFinal = regraAtiva.resposta
+            .replace(/{saudacao}/g, saudacao)
+            .replace(/\[nome\]/gi, nomeExibir || '')
+            .replace(/{nome}/gi, nomeExibir || '');
         console.log(`📤 Regra #${regraAtiva.id} ativada → respondendo para ${numLimpo}`);
 
         // Aplica automaticamente a etiqueta configurada nesta regra (se houver)
