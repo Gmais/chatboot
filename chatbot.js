@@ -198,6 +198,11 @@ async function initDB() {
             variaveis TEXT DEFAULT '{}',
             atualizado_em DATETIME DEFAULT CURRENT_TIMESTAMP
         );
+        CREATE TABLE IF NOT EXISTS conversas_status (
+            telefone TEXT PRIMARY KEY,
+            status TEXT NOT NULL DEFAULT 'aberta',
+            atualizado_em DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
     `);
 
     // Adiciona colunas novas se migrando de versão anterior
@@ -887,33 +892,55 @@ app.get('/api/mensagens/enviadas', async (req, res) => {
 });
 
 // =====================================
-// API REST — CONVERSAS (GERENCIADOR)
+// API REST — CONVERSAS (GERENCIADOR / BATE PAPO AO VIVO)
 // =====================================
+
+// Lista todas as conversas (uma por contato, com último texto, não lidas,
+// status Aberta/Fechada e etiquetas) — usado tanto pela rota REST quanto
+// pela carga inicial via Socket.IO, pra não duplicar a query em dois lugares.
+async function listarConversasComEtiquetas() {
+    const conversas = await db.all(`
+        SELECT
+            c.telefone,
+            c.nome,
+            c.texto AS ultimo_texto,
+            c.direcao AS ultima_direcao,
+            c.tipo AS ultimo_tipo,
+            c.ts AS ultimo_ts,
+            (SELECT COUNT(*) FROM conversas WHERE telefone = c.telefone AND lida = 0 AND direcao = 'in') AS nao_lidas,
+            (CASE WHEN ch.telefone IS NULL THEN 0 ELSE 1 END) AS assumida_humano,
+            COALESCE(cs.status, 'aberta') AS status
+        FROM conversas c
+        INNER JOIN (
+            SELECT telefone, MAX(ts) AS max_ts
+            FROM conversas
+            GROUP BY telefone
+        ) latest ON c.telefone = latest.telefone AND c.ts = latest.max_ts
+        LEFT JOIN conversas_humano ch ON ch.telefone = c.telefone
+        LEFT JOIN conversas_status cs ON cs.telefone = c.telefone
+        GROUP BY c.telefone
+        ORDER BY c.ts DESC
+        LIMIT 200
+    `);
+
+    const etiquetasRows = await db.all(`
+        SELECT ce.telefone, e.id, e.nome, e.cor
+        FROM contato_etiquetas ce
+        INNER JOIN etiquetas e ON e.id = ce.etiqueta_id
+    `);
+    const etiquetasPorTelefone = new Map();
+    etiquetasRows.forEach(r => {
+        if (!etiquetasPorTelefone.has(r.telefone)) etiquetasPorTelefone.set(r.telefone, []);
+        etiquetasPorTelefone.get(r.telefone).push({ id: r.id, nome: r.nome, cor: r.cor });
+    });
+
+    return conversas.map(c => ({ ...c, etiquetas: etiquetasPorTelefone.get(c.telefone) || [] }));
+}
 
 // Lista todas as conversas (uma por contato, com o último texto e count de não lidas)
 app.get('/api/conversas', async (req, res) => {
     try {
-        const conversas = await db.all(`
-            SELECT
-                c.telefone,
-                c.nome,
-                c.texto AS ultimo_texto,
-                c.direcao AS ultima_direcao,
-                c.tipo AS ultimo_tipo,
-                c.ts AS ultimo_ts,
-                (SELECT COUNT(*) FROM conversas WHERE telefone = c.telefone AND lida = 0 AND direcao = 'in') AS nao_lidas,
-                (CASE WHEN ch.telefone IS NULL THEN 0 ELSE 1 END) AS assumida_humano
-            FROM conversas c
-            INNER JOIN (
-                SELECT telefone, MAX(ts) AS max_ts
-                FROM conversas
-                GROUP BY telefone
-            ) latest ON c.telefone = latest.telefone AND c.ts = latest.max_ts
-            LEFT JOIN conversas_humano ch ON ch.telefone = c.telefone
-            GROUP BY c.telefone
-            ORDER BY c.ts DESC
-            LIMIT 200
-        `);
+        const conversas = await listarConversasComEtiquetas();
         res.json(conversas);
     } catch(err) {
         console.error('Erro /api/conversas:', err.message);
@@ -979,6 +1006,67 @@ app.post('/api/conversas/:telefone/lida', async (req, res) => {
         io.emit('conversa_lida', { telefone });
         res.json({ success: true });
     } catch(err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Resolve (fecha) ou reabre uma conversa. Uma conversa fechada some da aba
+// "Abertas" mas reabre sozinha assim que o contato manda mensagem de novo
+// (ver client.on('message') mais abaixo).
+app.post('/api/conversas/:telefone/status', async (req, res) => {
+    const { telefone } = req.params;
+    const { status } = req.body;
+    if (status !== 'aberta' && status !== 'fechada') return res.status(400).json({ error: 'status inválido.' });
+    try {
+        await db.run(
+            'INSERT INTO conversas_status (telefone, status, atualizado_em) VALUES (?, ?, CURRENT_TIMESTAMP) ON CONFLICT(telefone) DO UPDATE SET status = excluded.status, atualizado_em = CURRENT_TIMESTAMP',
+            [telefone, status]
+        );
+        io.emit('conversa_status_atualizada', { telefone, status });
+        res.json({ success: true, status });
+    } catch(err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Apaga todo o histórico de uma conversa — ação irreversível, usada com
+// moderação pelo botão "Excluir" no Bate Papo ao Vivo.
+app.delete('/api/conversas/:telefone', async (req, res) => {
+    const { telefone } = req.params;
+    try {
+        await db.run('DELETE FROM conversas WHERE telefone = ?', telefone);
+        await db.run('DELETE FROM conversas_humano WHERE telefone = ?', telefone);
+        await db.run('DELETE FROM conversas_status WHERE telefone = ?', telefone);
+        io.emit('conversa_excluida', { telefone });
+        res.json({ success: true });
+    } catch(err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Envia um arquivo (imagem, documento, etc.) pelo dashboard para um contato
+app.post('/api/conversas/:telefone/enviar-arquivo', upload.single('arquivo'), async (req, res) => {
+    const { telefone } = req.params;
+    if (!req.file) return res.status(400).json({ error: 'Nenhum arquivo enviado.' });
+    if (!isConnected) return res.status(400).json({ error: 'WhatsApp não está conectado.' });
+    try {
+        const chatId = telefone.includes('@') ? telefone : `${telefone}@c.us`;
+        const media = MessageMedia.fromFilePath(req.file.path);
+        const legenda = (req.body.legenda || '').trim();
+        await client.sendMessage(chatId, media, legenda ? { caption: legenda } : undefined);
+        if (fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
+
+        const tipo = req.file.mimetype.startsWith('image/') ? 'image'
+            : req.file.mimetype.startsWith('video/') ? 'video'
+            : req.file.mimetype.startsWith('audio/') ? 'audio'
+            : 'document';
+        const nome = await resolverNomeContato(telefone);
+        const numeroLimpo = telefone.replace('@c.us', '').replace('@lid', '');
+        await salvarNaConversa(numeroLimpo, nome, 'out', legenda || req.file.originalname, tipo);
+        io.emit('stats', stats);
+        res.json({ success: true });
+    } catch(err) {
+        console.error('Erro ao enviar arquivo:', err.message);
         res.status(500).json({ error: err.message });
     }
 });
@@ -1241,18 +1329,7 @@ io.on('connection', async (socket) => {
 
         // Envia lista de conversas para popular o gerenciador
         try {
-            const conversas = await db.all(`
-                SELECT c.telefone, c.nome, c.texto AS ultimo_texto, c.direcao AS ultima_direcao,
-                       c.tipo AS ultimo_tipo, c.ts AS ultimo_ts,
-                       (SELECT COUNT(*) FROM conversas WHERE telefone = c.telefone AND lida = 0 AND direcao = 'in') AS nao_lidas,
-                       (CASE WHEN ch.telefone IS NULL THEN 0 ELSE 1 END) AS assumida_humano
-                FROM conversas c
-                INNER JOIN (SELECT telefone, MAX(ts) AS max_ts FROM conversas GROUP BY telefone) latest
-                    ON c.telefone = latest.telefone AND c.ts = latest.max_ts
-                LEFT JOIN conversas_humano ch ON ch.telefone = c.telefone
-                GROUP BY c.telefone
-                ORDER BY c.ts DESC LIMIT 200
-            `);
+            const conversas = await listarConversasComEtiquetas();
             socket.emit('all_conversas', conversas);
         } catch(e) { console.error('Erro ao carregar conversas:', e.message); }
     }
@@ -1911,6 +1988,13 @@ client.on('message', async (msg) => {
         // Salva na tabela de conversas (mensagens recebidas)
         const textoExibir = transcricaoAudio ? `🎤 ${transcricaoAudio}` : (msg.body || `[${tipoMsg}]`);
         await salvarNaConversa(numLimpo, nomeContato, 'in', textoExibir, tipoMsg);
+        // Reabre a conversa automaticamente no Bate Papo ao Vivo se ela tinha sido
+        // resolvida/fechada — o cliente voltou a falar, então volta pra aba "Abertas".
+        await db.run(
+            "INSERT INTO conversas_status (telefone, status, atualizado_em) VALUES (?, 'aberta', CURRENT_TIMESTAMP) ON CONFLICT(telefone) DO UPDATE SET status = 'aberta', atualizado_em = CURRENT_TIMESTAMP",
+            numLimpo
+        );
+        io.emit('conversa_status_atualizada', { telefone: numLimpo, status: 'aberta' });
 
         // Ignora mensagens sem texto (stickers, imagens sem legenda, áudio sem transcrição)
         if (!texto && !msg.body) return;

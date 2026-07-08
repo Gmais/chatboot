@@ -1389,10 +1389,12 @@ btnParar?.addEventListener('click', async () => {
 // =====================================
 const CM = (() => {
     // ---- Estado interno ----
-    let contacts    = new Map(); // telefone -> { nome, ultimo_texto, ultima_direcao, ultimo_ts, nao_lidas }
+    let contacts    = new Map(); // telefone -> { nome, ultimo_texto, ultima_direcao, ultimo_ts, nao_lidas, status, etiquetas }
     let activePhone = null;
     let totalNaoLidas = 0;
     let searchQuery = '';
+    let activeTab = 'aberta'; // 'aberta' | 'fechada'
+    let notifMuted = localStorage.getItem('chatNotifMuted') === '1';
 
     // ---- Referências DOM ----
     const contactList    = document.getElementById('chat-contact-list');
@@ -1405,6 +1407,8 @@ const CM = (() => {
     const chatHeaderTags = document.getElementById('chat-header-tags');
     const chatHeaderAddTag = document.getElementById('chat-header-add-tag');
     const btnChatAssumir = document.getElementById('btn-chat-assumir');
+    const btnChatResolver = document.getElementById('btn-chat-resolver');
+    const btnChatExcluir = document.getElementById('btn-chat-excluir');
     const chatMessages   = document.getElementById('chat-messages');
     const chatInputBar   = document.getElementById('chat-input-bar');
     const chatTypingBar  = document.getElementById('chat-typing-bar');
@@ -1413,6 +1417,17 @@ const CM = (() => {
     const btnReload      = document.getElementById('btn-chat-reload');
     const searchInput    = document.getElementById('chat-search');
     const badgeNaoLidas  = document.getElementById('badge-nao-lidas');
+    const tabAbertas     = document.getElementById('tab-chat-abertas');
+    const tabFechadas    = document.getElementById('tab-chat-fechadas');
+    const btnVolume      = document.getElementById('btn-chat-volume');
+    const btnNovaConversa = document.getElementById('btn-chat-nova-conversa');
+    const btnEmoji        = document.getElementById('btn-chat-emoji');
+    const emojiPicker     = document.getElementById('chat-emoji-picker');
+    const btnAnexo         = document.getElementById('btn-chat-anexo');
+    const anexoInput       = document.getElementById('chat-anexo-input');
+    const modalNovaConversa = document.getElementById('modal-nova-conversa-overlay');
+    const novaConversaBusca = document.getElementById('nova-conversa-busca');
+    const novaConversaLista = document.getElementById('nova-conversa-lista');
 
     // ---- Utilitários ----
     function avatarLetter(nome) {
@@ -1451,6 +1466,28 @@ const CM = (() => {
         return d.toLocaleDateString('pt-BR', { day: '2-digit', month: 'long', year: 'numeric' });
     }
 
+    // ---- Som de notificação (sintetizado, sem depender de arquivo de áudio) ----
+    function tocarNotificacao() {
+        if (notifMuted) return;
+        try {
+            const ctx = new (window.AudioContext || window.webkitAudioContext)();
+            const osc = ctx.createOscillator();
+            const gain = ctx.createGain();
+            osc.connect(gain);
+            gain.connect(ctx.destination);
+            osc.type = 'sine';
+            osc.frequency.value = 880;
+            gain.gain.setValueAtTime(0.15, ctx.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.35);
+            osc.start();
+            osc.stop(ctx.currentTime + 0.35);
+        } catch (_) {}
+    }
+
+    function atualizarIconeVolume() {
+        if (btnVolume) btnVolume.textContent = notifMuted ? '🔕' : '🔔';
+    }
+
     function tipoIcon(tipo) {
         const icons = { image: '🖼️ Imagem', audio: '🎤 Áudio', video: '🎥 Vídeo', document: '📄 Documento', sticker: '🎭 Sticker', ptt: '🎤 Áudio' };
         return icons[tipo] || null;
@@ -1479,13 +1516,19 @@ const CM = (() => {
 
         // Filtra e ordena: por data decrescente
         const filtered = [...contacts.values()].filter(c => {
+            const status = c.status || 'aberta';
+            if (status !== activeTab) return false;
             if (!searchQuery) return true;
             const q = searchQuery.toLowerCase();
-            return c.nome.toLowerCase().includes(q) || c.telefone.includes(q);
+            const bateEtiqueta = (c.etiquetas || []).some(e => e.nome.toLowerCase().includes(q));
+            return c.nome.toLowerCase().includes(q) || c.telefone.includes(q) || bateEtiqueta;
         }).sort((a, b) => new Date(b.ultimo_ts) - new Date(a.ultimo_ts));
 
         if (filtered.length === 0) {
-            if (chatEmpty) chatEmpty.style.display = 'block';
+            if (chatEmpty) {
+                chatEmpty.style.display = 'block';
+                chatEmpty.textContent = activeTab === 'fechada' ? 'Nenhuma conversa resolvida ainda.' : 'Nenhuma conversa encontrada.';
+            }
             return;
         }
         if (chatEmpty) chatEmpty.style.display = 'none';
@@ -1577,6 +1620,45 @@ const CM = (() => {
             showToast(assumida ? 'Conversa devolvida ao robô' : 'Conversa assumida', assumida ? '' : 'O robô não vai responder esse contato até você devolver.', 'success', 3000);
         } catch (e) {
             showToast('Erro', 'Não foi possível atualizar a conversa', 'error');
+        }
+    });
+
+    // ---- Resolver (fechar) a conversa ativa ----
+    btnChatResolver?.addEventListener('click', async () => {
+        if (!activePhone) return;
+        try {
+            await fetch(`/api/conversas/${encodeURIComponent(activePhone)}/status`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ status: 'fechada' })
+            });
+            upsertContact({ telefone: activePhone, status: 'fechada' });
+            renderContactList();
+            showToast('Conversa resolvida', 'Ela volta pra aba Abertas automaticamente se o cliente escrever de novo.', 'success', 3000);
+        } catch (e) {
+            showToast('Erro', 'Não foi possível resolver a conversa', 'error');
+        }
+    });
+
+    // ---- Excluir a conversa ativa (irreversível) ----
+    btnChatExcluir?.addEventListener('click', async () => {
+        if (!activePhone) return;
+        const nome = contacts.get(activePhone)?.nome || activePhone;
+        if (!confirm(`Excluir todo o histórico da conversa com ${nome}?\n\nEssa ação é IRREVERSÍVEL.`)) return;
+        try {
+            const res = await fetch(`/api/conversas/${encodeURIComponent(activePhone)}`, { method: 'DELETE' });
+            if (!res.ok) throw new Error('Falha ao excluir');
+            contacts.delete(activePhone);
+            activePhone = null;
+            if (chatHeader) chatHeader.style.display = 'none';
+            if (chatMessages) chatMessages.style.display = 'none';
+            if (chatInputBar) chatInputBar.style.display = 'none';
+            if (chatPlaceholder) chatPlaceholder.style.display = 'flex';
+            renderContactList();
+            updateGlobalBadge();
+            showToast('Conversa excluída', '', 'success', 3000);
+        } catch (e) {
+            showToast('Erro', 'Não foi possível excluir a conversa', 'error');
         }
     });
 
@@ -1726,6 +1808,81 @@ const CM = (() => {
         }
     }
 
+    // ---- Emojis (grade fixa, sem depender de biblioteca externa) ----
+    const EMOJI_LISTA = ['😀','😁','😂','🤣','😊','😍','😘','😉','😎','🤔','😅','😢','😭','😡','👍','👎','🙏','👏','💪','🙌','❤️','💚','💙','💛','🔥','✅','❌','⚠️','🎉','🎁','📅','⏰','📎','📸','💬','👋','🙋','🤝','💰','🏋️'];
+
+    function montarEmojiPicker() {
+        if (!emojiPicker || emojiPicker.childElementCount > 0) return;
+        EMOJI_LISTA.forEach(emoji => {
+            const span = document.createElement('span');
+            span.textContent = emoji;
+            span.addEventListener('click', () => {
+                if (!chatInput) return;
+                const start = chatInput.selectionStart || chatInput.value.length;
+                const end = chatInput.selectionEnd || chatInput.value.length;
+                chatInput.value = chatInput.value.slice(0, start) + emoji + chatInput.value.slice(end);
+                chatInput.focus();
+                chatInput.selectionStart = chatInput.selectionEnd = start + emoji.length;
+            });
+            emojiPicker.appendChild(span);
+        });
+    }
+
+    // ---- Anexa e envia um arquivo na conversa ativa ----
+    async function enviarArquivo(file) {
+        if (!activePhone || !file) return;
+        try {
+            const formData = new FormData();
+            formData.append('arquivo', file);
+            const res = await fetch(`/api/conversas/${encodeURIComponent(activePhone)}/enviar-arquivo`, { method: 'POST', body: formData });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || 'Erro ao enviar arquivo');
+            // A bolha aparece via evento socket nova_mensagem
+        } catch (err) {
+            showToast('Erro ao enviar arquivo', err.message, 'error');
+        }
+    }
+
+    // ---- Modal "Nova Conversa" ----
+    async function renderNovaConversaLista() {
+        if (!novaConversaLista) return;
+        const termo = (novaConversaBusca?.value || '').trim().toLowerCase();
+        let soDigitos = termo.replace(/\D/g, '');
+        if (soDigitos.length === 10 || soDigitos.length === 11) soDigitos = '55' + soDigitos;
+        novaConversaLista.innerHTML = '<p style="color:var(--text-3);text-align:center;padding:.8rem;font-size:.82rem">Carregando contatos...</p>';
+        try {
+            const res = await fetch('/api/contatos');
+            const todos = await res.json();
+            const filtrados = todos.filter(c => !termo || c.nome.toLowerCase().includes(termo) || c.telefone.includes(termo.replace(/\D/g, '') || termo)).slice(0, 50);
+
+            let html = filtrados.map(c => `
+                <div class="chat-contact-item nova-conversa-item" data-telefone="${c.telefone}" style="border-radius:8px;cursor:pointer">
+                    <div class="chat-contact-avatar">${avatarLetter(c.nome)}</div>
+                    <div class="chat-contact-body">
+                        <div class="chat-contact-name">${c.nome}</div>
+                        <div class="chat-contact-preview">${c.telefone}</div>
+                    </div>
+                </div>
+            `).join('');
+
+            if (soDigitos.length >= 12 && soDigitos.length <= 13 && !todos.some(c => c.telefone === soDigitos)) {
+                html += `
+                    <div class="chat-contact-item nova-conversa-item" data-telefone="${soDigitos}" style="border-radius:8px;cursor:pointer">
+                        <div class="chat-contact-avatar">#</div>
+                        <div class="chat-contact-body">
+                            <div class="chat-contact-name">Usar número ${soDigitos}</div>
+                            <div class="chat-contact-preview">Contato ainda não cadastrado</div>
+                        </div>
+                    </div>
+                `;
+            }
+
+            novaConversaLista.innerHTML = html || '<p style="color:var(--text-3);text-align:center;padding:.8rem;font-size:.82rem">Nenhum contato encontrado. Digite um número completo com DDD.</p>';
+        } catch (e) {
+            novaConversaLista.innerHTML = '<p style="color:var(--text-3);text-align:center;padding:.8rem;font-size:.82rem">Erro ao carregar contatos.</p>';
+        }
+    }
+
     // ---- API pública ----
     function init() {
         // Busca de contato
@@ -1756,12 +1913,91 @@ const CM = (() => {
             if (activePhone) loadHistory(activePhone);
         });
 
+        // Abas Abertas / Fechadas
+        tabAbertas?.addEventListener('click', () => {
+            activeTab = 'aberta';
+            tabAbertas.classList.add('active');
+            tabFechadas?.classList.remove('active');
+            renderContactList();
+        });
+        tabFechadas?.addEventListener('click', () => {
+            activeTab = 'fechada';
+            tabFechadas.classList.add('active');
+            tabAbertas?.classList.remove('active');
+            renderContactList();
+        });
+
+        // Volume das notificações (liga/desliga)
+        atualizarIconeVolume();
+        btnVolume?.addEventListener('click', () => {
+            notifMuted = !notifMuted;
+            localStorage.setItem('chatNotifMuted', notifMuted ? '1' : '0');
+            atualizarIconeVolume();
+            if (!notifMuted) tocarNotificacao();
+        });
+
+        // Emoji picker
+        montarEmojiPicker();
+        btnEmoji?.addEventListener('click', (e) => {
+            e.stopPropagation();
+            emojiPicker?.classList.toggle('open');
+        });
+        document.addEventListener('click', (e) => {
+            if (emojiPicker?.classList.contains('open') && !emojiPicker.contains(e.target) && e.target !== btnEmoji) {
+                emojiPicker.classList.remove('open');
+            }
+        });
+
+        // Anexar arquivo
+        btnAnexo?.addEventListener('click', () => anexoInput?.click());
+        anexoInput?.addEventListener('change', () => {
+            const file = anexoInput.files?.[0];
+            if (file) enviarArquivo(file);
+            anexoInput.value = '';
+        });
+
+        // Nova conversa
+        btnNovaConversa?.addEventListener('click', () => {
+            modalNovaConversa?.classList.add('open');
+            if (novaConversaBusca) novaConversaBusca.value = '';
+            renderNovaConversaLista();
+        });
+        document.getElementById('modal-nova-conversa-fechar')?.addEventListener('click', () => {
+            modalNovaConversa?.classList.remove('open');
+        });
+        novaConversaBusca?.addEventListener('input', () => renderNovaConversaLista());
+        novaConversaLista?.addEventListener('click', (e) => {
+            const item = e.target.closest('.nova-conversa-item');
+            if (!item) return;
+            modalNovaConversa?.classList.remove('open');
+            openChat(item.dataset.telefone);
+        });
+
         // Eventos Socket.IO
         socket.on('all_conversas', (lista) => {
             contacts.clear();
             lista.forEach(c => contacts.set(c.telefone, c));
             updateGlobalBadge();
             renderContactList();
+        });
+
+        socket.on('conversa_status_atualizada', ({ telefone, status }) => {
+            const c = contacts.get(telefone);
+            if (c) upsertContact({ ...c, status });
+            renderContactList();
+        });
+
+        socket.on('conversa_excluida', ({ telefone }) => {
+            contacts.delete(telefone);
+            if (activePhone === telefone) {
+                activePhone = null;
+                if (chatHeader) chatHeader.style.display = 'none';
+                if (chatMessages) chatMessages.style.display = 'none';
+                if (chatInputBar) chatInputBar.style.display = 'none';
+                if (chatPlaceholder) chatPlaceholder.style.display = 'flex';
+            }
+            renderContactList();
+            updateGlobalBadge();
         });
 
         socket.on('nova_mensagem', (data) => {
@@ -1783,6 +2019,8 @@ const CM = (() => {
 
             updateGlobalBadge();
             renderContactList();
+
+            if (data.direcao === 'in' && activePhone !== data.telefone) tocarNotificacao();
 
             // Se é a conversa ativa, adiciona a bolha
             if (activePhone === data.telefone && chatMessages && chatMessages.style.display !== 'none') {

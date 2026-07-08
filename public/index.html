@@ -59,7 +59,7 @@
             </a>
             <a href="#" class="nav-btn" data-target="conversas-section" id="nav-conversas">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 8h2a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2h-2v4l-4-4H9a1.994 1.994 0 0 1-1.414-.586"/><path d="M15 2H6a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h2v4l4-4h3a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2z"/></svg>
-                Conversas
+                Bate Papo ao Vivo
                 <span id="badge-nao-lidas" style="display:none;background:var(--red);color:#fff;border-radius:50px;padding:0.1rem 0.45rem;font-size:0.7rem;font-weight:700;margin-left:auto;">0</span>
             </a>
             <a href="#" class="nav-btn" data-target="leads-section">
@@ -316,10 +316,20 @@
                 <!-- Lista de Conversas -->
                 <div class="chat-list-col">
                     <div class="chat-list-header">
-                        <h3>💬 Conversas</h3>
+                        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.8rem">
+                            <h3 style="margin-bottom:0">💬 Bate Papo ao Vivo</h3>
+                            <div style="display:flex;gap:.3rem;align-items:center">
+                                <button type="button" id="btn-chat-volume" class="btn-secondary" style="padding:.35rem .5rem;font-size:.85rem;line-height:1" title="Volume das notificações">🔔</button>
+                                <button type="button" id="btn-chat-nova-conversa" class="btn-secondary" style="padding:.35rem .5rem;font-size:.85rem;line-height:1" title="Iniciar nova conversa">✏️</button>
+                            </div>
+                        </div>
                         <div class="chat-search-wrap">
                             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
-                            <input type="text" id="chat-search" placeholder="Buscar contato...">
+                            <input type="text" id="chat-search" placeholder="Buscar por nome, telefone ou etiqueta...">
+                        </div>
+                        <div style="display:flex;gap:.4rem;margin-top:.7rem">
+                            <button type="button" class="chat-status-tab active" id="tab-chat-abertas" data-status="aberta">Abertas</button>
+                            <button type="button" class="chat-status-tab" id="tab-chat-fechadas" data-status="fechada">Fechadas</button>
                         </div>
                     </div>
                     <div id="chat-contact-list">
@@ -351,6 +361,8 @@
                                 <option value="">🏷️ Etiqueta...</option>
                             </select>
                             <button id="btn-chat-assumir" class="btn-secondary" style="padding:.35rem .8rem;font-size:.75rem;white-space:nowrap">🙋 Assumir Conversa</button>
+                            <button id="btn-chat-resolver" class="btn-secondary" style="padding:.35rem .7rem;font-size:.75rem;white-space:nowrap" title="Marcar como resolvida">✅ Resolver</button>
+                            <button id="btn-chat-excluir" class="btn-danger" style="padding:.35rem .7rem;font-size:.75rem" title="Excluir conversa (irreversível)">🗑️</button>
                             <button id="btn-chat-reload" class="btn-secondary" style="padding:.35rem .7rem;font-size:.75rem" title="Recarregar histórico">↻</button>
                         </div>
                     </div>
@@ -369,9 +381,13 @@
                     </div>
 
                     <!-- Barra de Input -->
-                    <div class="chat-input-bar" id="chat-input-bar" style="display:none">
+                    <div class="chat-input-bar" id="chat-input-bar" style="display:none;position:relative">
+                        <div id="chat-emoji-picker" class="chat-emoji-picker"></div>
+                        <button type="button" id="btn-chat-emoji" class="btn-secondary" style="padding:.5rem .6rem;border-radius:50%;flex-shrink:0" title="Emojis">😊</button>
+                        <button type="button" id="btn-chat-anexo" class="btn-secondary" style="padding:.5rem .6rem;border-radius:50%;flex-shrink:0" title="Anexar arquivo">📎</button>
+                        <input type="file" id="chat-anexo-input" style="display:none">
                         <textarea id="chat-input-text" placeholder="Digite uma mensagem..." rows="1"></textarea>
-                        <button id="btn-chat-send" class="btn-primary" style="padding:.6rem 1.1rem;border-radius:50px">
+                        <button id="btn-chat-send" class="btn-primary" style="padding:.6rem 1.1rem;border-radius:50px;flex-shrink:0">
                             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" width="18" height="18"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
                         </button>
                     </div>
@@ -790,6 +806,18 @@ Sempre tente agendar uma aula experimental."></textarea>
             <div class="modal-footer">
                 <button class="btn-cancel" id="modal-importar-contatos-fechar">Fechar</button>
                 <button class="btn-primary" id="btn-importar-contatos-enviar">Importar</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal-overlay" id="modal-nova-conversa-overlay">
+        <div class="modal">
+            <h3>✏️ Iniciar Nova Conversa</h3>
+            <p style="color:var(--text-3);font-size:.85rem;margin:.5rem 0 1rem">Escolha um contato já cadastrado ou digite um número de WhatsApp.</p>
+            <input type="text" id="nova-conversa-busca" placeholder="Buscar contato por nome ou telefone..." style="width:100%;background:var(--input-bg);border:1px solid rgba(255,255,255,0.1);border-radius:var(--radius-sm);padding:.6rem .8rem;color:var(--text-1);font-size:.85rem;margin-bottom:.8rem">
+            <div id="nova-conversa-lista" style="max-height:220px;overflow-y:auto;display:flex;flex-direction:column;gap:.3rem;margin-bottom:1rem"></div>
+            <div class="modal-footer">
+                <button class="btn-cancel" id="modal-nova-conversa-fechar">Fechar</button>
             </div>
         </div>
     </div>

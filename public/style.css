@@ -739,6 +739,25 @@ header h1 {
 }
 .chat-search-wrap input:focus { outline: none; border-color: var(--green); }
 
+.chat-status-tab {
+    flex: 1;
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: var(--radius-sm);
+    padding: 0.4rem 0.6rem;
+    color: var(--text-3);
+    font-size: 0.75rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+.chat-status-tab:hover { background: rgba(255,255,255,0.07); }
+.chat-status-tab.active {
+    background: rgba(37,211,102,0.12);
+    border-color: var(--green);
+    color: var(--green);
+}
+
 #chat-contact-list {
     flex: 1;
     overflow-y: auto;
@@ -837,7 +856,7 @@ header h1 {
 .chat-header-info { flex: 1; }
 .chat-header-name { font-size: 0.95rem; font-weight: 700; color: var(--text-1); }
 .chat-header-status { font-size: 0.75rem; color: var(--green); margin-top: 0.1rem; }
-.chat-header-actions { display: flex; gap: 0.5rem; }
+.chat-header-actions { display: flex; gap: 0.5rem; flex-wrap: wrap; justify-content: flex-end; max-width: 46%; }
 
 /* Área de Mensagens */
 .chat-messages {
@@ -982,6 +1001,37 @@ header h1 {
 }
 .chat-input-bar textarea:focus { outline: none; border-color: var(--green); }
 .chat-input-bar textarea::placeholder { color: var(--text-3); }
+
+.chat-emoji-picker {
+    display: none;
+    position: absolute;
+    bottom: 100%;
+    left: 1.25rem;
+    margin-bottom: 0.5rem;
+    width: 280px;
+    max-height: 220px;
+    overflow-y: auto;
+    background: var(--card-bg);
+    border: 1px solid rgba(255,255,255,0.1);
+    border-radius: var(--radius-sm);
+    box-shadow: var(--shadow);
+    padding: 0.6rem;
+    grid-template-columns: repeat(8, 1fr);
+    gap: 0.15rem;
+    z-index: 20;
+}
+.chat-emoji-picker.open { display: grid; }
+.chat-emoji-picker span {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.15rem;
+    padding: 0.3rem;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: background 0.12s;
+}
+.chat-emoji-picker span:hover { background: rgba(255,255,255,0.08); }
 
 /* Responsividade */
 @media (max-width: 900px) {
