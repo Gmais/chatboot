@@ -1509,20 +1509,41 @@ client.on('message_create', (msg) => {
         console.log(`🔍 [DEBUG] ${dir} from=${msg.from} body="${(msg.body||'[sem texto]').slice(0,40)}"`);
     }
 });// =====================================
-// ENGINE DE FLUXOS (Flow Builder)
+// ENGINE DE FLUXOS (Flow Builder - Drawflow)
 // =====================================
+
+function getNextNodeId(node, outputKey = 'output_1') {
+    if (!node || !node.outputs || !node.outputs[outputKey]) return null;
+    const conns = node.outputs[outputKey].connections;
+    if (!conns || conns.length === 0) return null;
+    return conns[0].node; // ID do próximo nó
+}
 
 async function engineExecutarFluxo(telefoneReal, numLimpo, nomeContato, fluxoId, startNodeId) {
     const fluxo = await db.get('SELECT * FROM fluxos WHERE id = ?', fluxoId);
     if (!fluxo) return;
     
-    let nodes = [];
-    try { nodes = JSON.parse(fluxo.flow_data); } catch(e) { return; }
+    let drawflow = {};
+    try { drawflow = JSON.parse(fluxo.flow_data); } catch(e) { return; }
+    
+    const nodes = drawflow?.drawflow?.Home?.data;
+    if (!nodes) return;
     
     let currentNodeId = startNodeId;
+    if (!currentNodeId) {
+        // Encontra o nó inicial (sem inputs conectados)
+        for (const key in nodes) {
+            const n = nodes[key];
+            const in1 = n.inputs?.input_1?.connections;
+            if (!in1 || in1.length === 0) {
+                currentNodeId = n.id;
+                break;
+            }
+        }
+    }
     
     while (currentNodeId) {
-        const node = nodes.find(n => n.id === currentNodeId);
+        const node = nodes[currentNodeId];
         if (!node) {
             await db.run('DELETE FROM contato_estado_fluxo WHERE telefone = ?', telefoneReal);
             break;
@@ -1533,7 +1554,7 @@ async function engineExecutarFluxo(telefoneReal, numLimpo, nomeContato, fluxoId,
             [telefoneReal, fluxoId, currentNodeId]
         );
 
-        if (node.type === 'message') {
+        if (node.name === 'message') {
             if (node.data.text) {
                 const txt = node.data.text.replace(/\{nome\}|\[nome\]/gi, nomeContato);
                 await simularDigitando(client.getChatById(telefoneReal));
@@ -1541,14 +1562,14 @@ async function engineExecutarFluxo(telefoneReal, numLimpo, nomeContato, fluxoId,
                 await client.sendMessage(telefoneReal, txt);
                 await registrarMensagemEnviada(telefoneReal, txt, nomeContato);
             }
-            currentNodeId = node.data.next || null;
+            currentNodeId = getNextNodeId(node, 'output_1');
         } 
-        else if (node.type === 'delay') {
+        else if (node.name === 'delay') {
             const segs = parseInt(node.data.delaySeconds) || 1;
             await delay(segs * 1000);
-            currentNodeId = node.data.next || null;
+            currentNodeId = getNextNodeId(node, 'output_1');
         }
-        else if (node.type === 'media') {
+        else if (node.name === 'media') {
             if (node.data.mediaUrl) {
                 const mediaPath = path.join(__dirname, 'public', node.data.mediaUrl);
                 if (fs.existsSync(mediaPath)) {
@@ -1559,12 +1580,17 @@ async function engineExecutarFluxo(telefoneReal, numLimpo, nomeContato, fluxoId,
                     await registrarMensagemEnviada(telefoneReal, cap || '[Mídia]', nomeContato);
                 }
             }
-            currentNodeId = node.data.next || null;
+            currentNodeId = getNextNodeId(node, 'output_1');
         }
-        else if (node.type === 'question') {
+        else if (node.name === 'question') {
             let txt = (node.data.text || '').replace(/\{nome\}|\[nome\]/gi, nomeContato) + '\n';
-            if (node.data.options && node.data.options.length > 0) {
-                txt += '\n' + node.data.options.map((opt, i) => `${i+1} - ${opt.label}`).join('\n');
+            const opts = [];
+            if (node.data.opt1) opts.push({ lbl: node.data.opt1, out: 'output_1' });
+            if (node.data.opt2) opts.push({ lbl: node.data.opt2, out: 'output_2' });
+            if (node.data.opt3) opts.push({ lbl: node.data.opt3, out: 'output_3' });
+            
+            if (opts.length > 0) {
+                txt += '\n' + opts.map((o, i) => `${i+1} - ${o.lbl}`).join('\n');
             }
             await simularDigitando(client.getChatById(telefoneReal));
             await delay(calcularDelayDigitacao(txt));
@@ -1572,16 +1598,16 @@ async function engineExecutarFluxo(telefoneReal, numLimpo, nomeContato, fluxoId,
             await registrarMensagemEnviada(telefoneReal, txt, nomeContato);
             break; // PARA E ESPERA O USUÁRIO RESPONDER
         }
-        else if (node.type === 'action') {
+        else if (node.name === 'action') {
             if (node.data.actionType === 'add_tag') {
                 await aplicarEtiquetaContato(numLimpo, node.data.tagId);
             } else if (node.data.actionType === 'remove_tag') {
                 await removerEtiquetaContato(numLimpo, node.data.tagId);
             }
-            currentNodeId = node.data.next || null;
+            currentNodeId = getNextNodeId(node, 'output_1');
         }
         else {
-            currentNodeId = node.data.next || null;
+            currentNodeId = getNextNodeId(node, 'output_1');
         }
         
         if (!currentNodeId) {
@@ -1600,28 +1626,37 @@ async function engineContinuarFluxo(telefoneReal, numLimpo, nomeContato, textoMe
         return false;
     }
     
-    let nodes = [];
-    try { nodes = JSON.parse(fluxo.flow_data); } catch(e) { return false; }
+    let drawflow = {};
+    try { drawflow = JSON.parse(fluxo.flow_data); } catch(e) { return false; }
     
-    const node = nodes.find(n => n.id === estado.current_node_id);
-    if (!node || node.type !== 'question') {
-        await engineExecutarFluxo(telefoneReal, numLimpo, nomeContato, estado.fluxo_id, node ? node.data.next : null);
+    const nodes = drawflow?.drawflow?.Home?.data;
+    if (!nodes) return false;
+    
+    const node = nodes[estado.current_node_id];
+    if (!node || node.name !== 'question') {
+        await engineExecutarFluxo(telefoneReal, numLimpo, nomeContato, estado.fluxo_id, getNextNodeId(node, 'output_1'));
         return true; 
     }
     
-    let optionMatch = null;
     const msg = textoMensagem.trim().toLowerCase();
-    const opts = node.data.options || [];
+    
+    const opts = [];
+    if (node.data.opt1) opts.push({ lbl: node.data.opt1, out: 'output_1' });
+    if (node.data.opt2) opts.push({ lbl: node.data.opt2, out: 'output_2' });
+    if (node.data.opt3) opts.push({ lbl: node.data.opt3, out: 'output_3' });
+    
+    let targetOutput = null;
     
     for (let i = 0; i < opts.length; i++) {
-        if (msg === (i+1).toString() || msg === opts[i].label.toLowerCase()) {
-            optionMatch = opts[i];
+        if (msg === (i+1).toString() || msg === opts[i].lbl.toLowerCase().trim()) {
+            targetOutput = opts[i].out;
             break;
         }
     }
     
-    if (optionMatch) {
-        await engineExecutarFluxo(telefoneReal, numLimpo, nomeContato, estado.fluxo_id, optionMatch.target);
+    if (targetOutput) {
+        const nextNodeId = getNextNodeId(node, targetOutput);
+        await engineExecutarFluxo(telefoneReal, numLimpo, nomeContato, estado.fluxo_id, nextNodeId);
     } else {
         await client.sendMessage(telefoneReal, 'Opção inválida, por favor digite o número correto da opção.');
         await engineExecutarFluxo(telefoneReal, numLimpo, nomeContato, estado.fluxo_id, estado.current_node_id);
@@ -1777,14 +1812,9 @@ client.on('message', async (msg) => {
                 if (!fluxo.gatilho) continue;
                 const gatilhos = fluxo.gatilho.split(',').map(g => g.trim().toLowerCase());
                 if (gatilhos.some(g => texto === g || texto.includes(g))) {
-                    let nodes = [];
-                    try { nodes = JSON.parse(fluxo.flow_data); } catch(e) {}
-                    const initialNode = nodes.length > 0 ? nodes[0].id : null;
-                    if (initialNode) {
-                        await engineExecutarFluxo(telefoneReal, numLimpo, nomeContato, fluxo.id, initialNode);
-                        fluxoIniciado = true;
-                        break;
-                    }
+                    await engineExecutarFluxo(telefoneReal, numLimpo, nomeContato, fluxo.id, null);
+                    fluxoIniciado = true;
+                    break;
                 }
             }
             if (fluxoIniciado) {
