@@ -441,6 +441,7 @@ navBtns.forEach(btn => {
         if (targetId === 'contatos-section' || targetId === 'disparos-section') loadContatos();
         if (targetId === 'integracoes-section') loadCrmColaboradores();
         if (targetId === 'automacoes-section') { loadEtiquetas().then(() => loadAutomacoes()); }
+        if (targetId === 'disparos-section') loadAcompanhamentoAutomacoes();
     });
 });
 
@@ -2949,5 +2950,128 @@ btnSalvarEtapas?.addEventListener('click', async () => {
 socket.on('automacoes_atualizadas', () => {
     if (document.getElementById('automacoes-section') && !document.getElementById('automacoes-section').classList.contains('hidden')) {
         loadAutomacoes();
+    }
+    if (document.getElementById('disparos-section') && !document.getElementById('disparos-section').classList.contains('hidden')) {
+        loadAcompanhamentoAutomacoes();
+    }
+});
+
+// =====================================
+// ACOMPANHAMENTO DE AUTOMAÇÕES (tela de Disparos)
+// =====================================
+const acompanhamentoAutomacoesLista = document.getElementById('acompanhamento-automacoes-lista');
+const progressoAbertoPorAutomacao = new Set();
+
+async function loadAcompanhamentoAutomacoes() {
+    if (!acompanhamentoAutomacoesLista) return;
+    try {
+        const res = await fetch('/api/automacoes');
+        const automacoes = await res.json();
+        renderAcompanhamentoAutomacoes(automacoes);
+    } catch (e) {
+        acompanhamentoAutomacoesLista.innerHTML = '<div style="padding:1.5rem;text-align:center;color:var(--text-3)">Erro ao carregar automações.</div>';
+    }
+}
+
+function renderAcompanhamentoAutomacoes(automacoes) {
+    if (!acompanhamentoAutomacoesLista) return;
+    if (automacoes.length === 0) {
+        acompanhamentoAutomacoesLista.innerHTML = '<div style="padding:1.5rem;text-align:center;color:var(--text-3)">Nenhuma automação criada ainda.</div>';
+        return;
+    }
+    acompanhamentoAutomacoesLista.innerHTML = automacoes.map(a => {
+        const etiquetaChip = a.etiqueta_nome
+            ? etiquetaChipHtml({ id: a.etiqueta_id, nome: a.etiqueta_nome, cor: a.etiqueta_cor || '#25D366' }, false)
+            : '<span style="color:var(--text-3);font-size:.75rem">Etiqueta removida</span>';
+        const aberto = progressoAbertoPorAutomacao.has(a.id);
+        return `
+            <div class="card glass" style="padding:1rem 1.2rem" data-acompanhar-id="${a.id}">
+                <div style="display:flex;align-items:center;gap:1rem;flex-wrap:wrap">
+                    <div style="flex:1;min-width:180px">
+                        <div style="font-weight:600;color:var(--text-1);font-size:.9rem;margin-bottom:.25rem">${a.nome}</div>
+                        <div style="display:flex;align-items:center;gap:.5rem;flex-wrap:wrap">${etiquetaChip}</div>
+                    </div>
+                    <div style="text-align:center">
+                        <div style="font-size:1.2rem;font-weight:700;color:var(--green)">${a.total_ativos}</div>
+                        <div style="font-size:.7rem;color:var(--text-3)">em andamento</div>
+                    </div>
+                    <div style="text-align:center">
+                        <div style="font-size:1.2rem;font-weight:700;color:var(--text-1)">${a.total_concluidos || 0}</div>
+                        <div style="font-size:.7rem;color:var(--text-3)">concluídos</div>
+                    </div>
+                    <button type="button" class="btn-secondary btn-toggle-progresso" data-id="${a.id}" style="padding:.4rem .8rem;font-size:.78rem">
+                        ${aberto ? '▲ Esconder' : '▼ Ver contatos'}
+                    </button>
+                </div>
+                <div class="acompanhamento-detalhe" data-id="${a.id}" style="margin-top:1rem;${aberto ? '' : 'display:none'}">
+                    <div style="padding:1rem;text-align:center;color:var(--text-3);font-size:.82rem">Carregando...</div>
+                </div>
+            </div>
+        `;
+    }).join('');
+    progressoAbertoPorAutomacao.forEach(id => carregarProgressoDetalhe(id));
+}
+
+function formatDataCurta(tsStr) {
+    if (!tsStr) return '-';
+    const d = new Date(tsStr);
+    if (isNaN(d)) return '-';
+    return d.toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+}
+
+async function carregarProgressoDetalhe(automacaoId) {
+    const container = acompanhamentoAutomacoesLista?.querySelector(`.acompanhamento-detalhe[data-id="${automacaoId}"]`);
+    if (!container) return;
+    try {
+        const res = await fetch(`/api/automacoes/${automacaoId}/progresso`);
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Erro ao carregar progresso');
+        if (data.contatos.length === 0) {
+            container.innerHTML = '<div style="padding:1rem;text-align:center;color:var(--text-3);font-size:.82rem">Ninguém em andamento nessa automação agora.</div>';
+            return;
+        }
+        container.innerHTML = `
+            <table class="leads-table">
+                <thead>
+                    <tr>
+                        <th>Contato</th>
+                        <th>Etapa</th>
+                        <th>Próxima mensagem</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${data.contatos.map(c => `
+                        <tr>
+                            <td>
+                                <div style="font-weight:500;color:var(--text-1);font-size:.85rem">${c.nome}</div>
+                                <div style="font-size:.72rem;color:var(--text-3)">${c.telefone}</div>
+                            </td>
+                            <td style="color:var(--text-2);font-size:.85rem">${c.etapa_atual} de ${data.total_etapas}</td>
+                            <td style="color:var(--text-2);font-size:.85rem">${formatDataCurta(c.proxima_execucao_em)}</td>
+                        </tr>
+                    `).join('')}
+                </tbody>
+            </table>
+        `;
+    } catch (e) {
+        container.innerHTML = `<div style="padding:1rem;text-align:center;color:var(--red);font-size:.82rem">Erro ao carregar detalhes.</div>`;
+    }
+}
+
+acompanhamentoAutomacoesLista?.addEventListener('click', (e) => {
+    const btn = e.target.closest('.btn-toggle-progresso');
+    if (!btn) return;
+    const id = Number(btn.dataset.id);
+    const detalhe = acompanhamentoAutomacoesLista.querySelector(`.acompanhamento-detalhe[data-id="${id}"]`);
+    if (!detalhe) return;
+    if (progressoAbertoPorAutomacao.has(id)) {
+        progressoAbertoPorAutomacao.delete(id);
+        detalhe.style.display = 'none';
+        btn.textContent = '▼ Ver contatos';
+    } else {
+        progressoAbertoPorAutomacao.add(id);
+        detalhe.style.display = 'block';
+        btn.textContent = '▲ Esconder';
+        carregarProgressoDetalhe(id);
     }
 });

@@ -256,6 +256,8 @@ async function initDB() {
     try { await db.exec(`ALTER TABLE automacoes ADD COLUMN horario_fim TEXT DEFAULT NULL`); } catch(e) {}
     // Se, ao concluir a última etapa, a etiqueta que disparou a automação some do contato (padrão: sim)
     try { await db.exec(`ALTER TABLE automacoes ADD COLUMN remove_etiqueta_ao_concluir INTEGER DEFAULT 1`); } catch(e) {}
+    // Contador histórico de quantos contatos já terminaram a automação inteira
+    try { await db.exec(`ALTER TABLE automacoes ADD COLUMN total_concluidos INTEGER DEFAULT 0`); } catch(e) {}
     // Garante tabela conversas em instalações antigas
     try { await db.exec(`CREATE TABLE IF NOT EXISTS conversas (id INTEGER PRIMARY KEY AUTOINCREMENT, telefone TEXT NOT NULL, nome TEXT, direcao TEXT NOT NULL, texto TEXT, tipo TEXT DEFAULT 'text', ts DATETIME DEFAULT CURRENT_TIMESTAMP, lida INTEGER DEFAULT 0)`); } catch(e) {}
     try { await db.exec(`CREATE INDEX IF NOT EXISTS idx_conversas_tel ON conversas(telefone, ts)`); } catch(e) {}
@@ -1129,6 +1131,7 @@ async function executarEtapaAutomacao(telefone, automacao, etapa) {
         // Última etapa: automação concluída — some com o estado. A etiqueta só sai
         // do contato se remove_etiqueta_ao_concluir estiver marcado (padrão: sim).
         await db.run('DELETE FROM contato_automacao_estado WHERE telefone = ? AND automacao_id = ?', [numLimpo, automacao.id]);
+        await db.run('UPDATE automacoes SET total_concluidos = total_concluidos + 1 WHERE id = ?', automacao.id);
         if (automacao.remove_etiqueta_ao_concluir === undefined || automacao.remove_etiqueta_ao_concluir === null || automacao.remove_etiqueta_ao_concluir) {
             await db.run('DELETE FROM contato_etiquetas WHERE telefone = ? AND etiqueta_id = ?', [numLimpo, automacao.etiqueta_id]);
             io.emit('etiqueta_atualizada', { telefone: numLimpo });
@@ -1257,6 +1260,49 @@ app.get('/api/automacoes/:id/etapas', async (req, res) => {
     const { id } = req.params;
     const etapas = await db.all('SELECT * FROM automacao_etapas WHERE automacao_id = ? ORDER BY ordem ASC', id);
     res.json(etapas);
+});
+
+// Acompanhamento: quem está em andamento na automação agora, em que etapa cada
+// um está e quando recebe a próxima mensagem — pra tela de Disparos monitorar.
+app.get('/api/automacoes/:id/progresso', async (req, res) => {
+    const { id } = req.params;
+    try {
+        const automacao = await db.get('SELECT * FROM automacoes WHERE id = ?', id);
+        if (!automacao) return res.status(404).json({ error: 'Automação não encontrada.' });
+
+        const totalEtapas = (await db.get('SELECT COUNT(*) AS c FROM automacao_etapas WHERE automacao_id = ?', id)).c;
+        const estados = await db.all(
+            'SELECT telefone, etapa_atual, entrou_em, proxima_execucao_em FROM contato_automacao_estado WHERE automacao_id = ? ORDER BY proxima_execucao_em ASC',
+            id
+        );
+
+        const nomePorTelefone = new Map();
+        const nomesConversas = await db.all(`
+            SELECT c.telefone, c.nome FROM conversas c
+            INNER JOIN (SELECT telefone, MAX(ts) AS max_ts FROM conversas GROUP BY telefone) latest
+                ON c.telefone = latest.telefone AND c.ts = latest.max_ts
+        `);
+        nomesConversas.forEach(n => nomePorTelefone.set(n.telefone, n.nome));
+        const leadsComNome = await db.all('SELECT telefone, nome FROM leads WHERE nome IS NOT NULL');
+        leadsComNome.forEach(l => nomePorTelefone.set(l.telefone.replace('@c.us','').replace('@lid',''), l.nome));
+
+        const contatos = estados.map(e => ({
+            telefone: e.telefone,
+            nome: nomePorTelefone.get(e.telefone) || e.telefone,
+            etapa_atual: e.etapa_atual,
+            entrou_em: sqliteTsParaIso(e.entrou_em),
+            proxima_execucao_em: e.proxima_execucao_em || null
+        }));
+
+        res.json({
+            total_etapas: totalEtapas,
+            total_ativos: estados.length,
+            total_concluidos: automacao.total_concluidos || 0,
+            contatos
+        });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
 // Substitui todas as etapas de uma automação de uma vez (o editor manda a lista
