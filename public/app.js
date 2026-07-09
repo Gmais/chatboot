@@ -3051,7 +3051,7 @@ function renderEtapasLista() {
                 <textarea class="etapa-texto" data-index="${i}" placeholder="Mensagem ou legenda do arquivo..." rows="2" style="width:100%;background:var(--input-bg);border:1px solid rgba(255,255,255,0.1);border-radius:var(--radius-sm);padding:.6rem .8rem;color:var(--text-1);font-size:.85rem;font-family:'Inter',sans-serif;resize:vertical;margin-bottom:.4rem">${etapa.texto || ''}</textarea>
                 <div style="display:flex;align-items:center;gap:.5rem;margin-bottom:.6rem">
                     <button type="button" class="btn-secondary btn-inserir-nome" data-index="${i}" style="padding:.25rem .6rem;font-size:.72rem">➕ Nome do aluno</button>
-                    <span style="font-size:.72rem;color:var(--text-3)">insere {nome} — vira o primeiro nome dele na hora de enviar</span>
+                    <span style="font-size:.72rem;color:var(--text-3)">insere {nome} — vira o primeiro nome dele na hora de enviar. Também dá pra usar {nome_completo}, {matricula} e, pra quem está na lista de inadimplentes, {parcelas}, {valor} e {dias_atrasados}.</span>
                 </div>
 
                 <div style="margin-bottom:.6rem;background:rgba(255,255,255,0.02);border-radius:var(--radius-sm);padding:.7rem .8rem">

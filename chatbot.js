@@ -1309,7 +1309,19 @@ async function executarEtapaAutomacao(telefone, automacao, etapa) {
         const chatId = await resolverChatId(numLimpo);
         const nome = await resolverNomeContato(numLimpo);
         const primeiroNome = (nome && nome !== numLimpo) ? nome.split(' ')[0] : '';
+        const nomeCompleto = (nome && nome !== numLimpo) ? nome : '';
         const matricula = await resolverMatriculaContato(numLimpo);
+
+        // {parcelas}/{valor}/{dias_atrasados} só fazem sentido pra quem está no
+        // cache de inadimplentes (Integração → Ativos com Parcelas Atrasadas) —
+        // contato fora dali simplesmente não tem esses placeholders preenchidos.
+        const inadimplente = await db.get(
+            'SELECT * FROM pacto_inadimplentes WHERE telefone = ? OR telefone = ? OR telefone = ?',
+            [numLimpo, `${numLimpo}@c.us`, `${numLimpo}@lid`]
+        );
+        const parcelasStr = inadimplente ? String(inadimplente.qtd_parcelas_atrasadas) : '';
+        const valorStr = inadimplente ? new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(inadimplente.valor_total_atrasado) : '';
+        const diasAtrasadosStr = inadimplente ? String(inadimplente.dias_atraso_mais_antiga) : '';
 
         // Se a etapa tem mensagens da biblioteca "Mensagens Personalizadas"
         // anexadas, usa uma delas (aleatória ou sempre a primeira) em vez do
@@ -1333,7 +1345,11 @@ async function executarEtapaAutomacao(telefone, automacao, etapa) {
 
         const texto = (textoBase || '')
             .replace(/\{nome\}/gi, primeiroNome).replace(/\[nome\]/gi, primeiroNome)
-            .replace(/\{matricula\}/gi, matricula).replace(/\[matricula\]/gi, matricula);
+            .replace(/\{nome_completo\}/gi, nomeCompleto).replace(/\[nome_completo\]/gi, nomeCompleto)
+            .replace(/\{matricula\}/gi, matricula).replace(/\[matricula\]/gi, matricula)
+            .replace(/\{parcelas\}/gi, parcelasStr).replace(/\[parcelas\]/gi, parcelasStr)
+            .replace(/\{valor\}/gi, valorStr).replace(/\[valor\]/gi, valorStr)
+            .replace(/\{dias_atrasados\}/gi, diasAtrasadosStr).replace(/\[dias_atrasados\]/gi, diasAtrasadosStr);
         if (mediaPathBase) {
             const mediaFullPath = path.join(__dirname, 'public', mediaPathBase.replace(/^\//, ''));
             if (fs.existsSync(mediaFullPath)) {
@@ -2988,6 +3004,7 @@ async function engineExecutarFluxo(telefoneReal, numLimpo, nomeContato, fluxoId,
     const matriculaContato = await resolverMatriculaContato(numLimpo);
     const aplicarPlaceholders = (txt) => txt
         .replace(/\{nome\}|\[nome\]/gi, nomeContato)
+        .replace(/\{nome_completo\}|\[nome_completo\]/gi, nomeContato)
         .replace(/\{matricula\}|\[matricula\]/gi, matriculaContato);
 
     let currentNodeId = startNodeId;
@@ -3427,11 +3444,14 @@ client.on('message', async (msg) => {
         const nomeExibir = (nomeContato && nomeContato !== numLimpo)
             ? nomeContato.split(' ')[0]
             : '';
+        const nomeCompletoExibir = (nomeContato && nomeContato !== numLimpo) ? nomeContato : '';
         const matriculaExibir = await resolverMatriculaContato(numLimpo);
         const textoFinal = regraAtiva.resposta
             .replace(/{saudacao}/g, saudacao)
             .replace(/\[nome\]/gi, nomeExibir || '')
             .replace(/{nome}/gi, nomeExibir || '')
+            .replace(/\[nome_completo\]/gi, nomeCompletoExibir || '')
+            .replace(/{nome_completo}/gi, nomeCompletoExibir || '')
             .replace(/\[matricula\]/gi, matriculaExibir || '')
             .replace(/{matricula}/gi, matriculaExibir || '');
         console.log(`📤 Regra #${regraAtiva.id} ativada → respondendo para ${numLimpo}`);
