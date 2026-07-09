@@ -3326,6 +3326,17 @@ const mpModalFile = document.getElementById('mp-modal-file');
 const mpUploadPreview = document.getElementById('mp-upload-preview');
 const btnMensagemPersonalizadaSalvar = document.getElementById('btn-mensagem-personalizada-salvar');
 
+modalMensagemPersonalizada?.addEventListener('click', (e) => {
+    const btn = e.target.closest('.btn-inserir-placeholder-mp');
+    if (!btn || !mensagemPersonalizadaTexto) return;
+    const placeholder = btn.dataset.placeholder;
+    const start = mensagemPersonalizadaTexto.selectionStart ?? mensagemPersonalizadaTexto.value.length;
+    const end = mensagemPersonalizadaTexto.selectionEnd ?? mensagemPersonalizadaTexto.value.length;
+    mensagemPersonalizadaTexto.value = mensagemPersonalizadaTexto.value.slice(0, start) + placeholder + mensagemPersonalizadaTexto.value.slice(end);
+    mensagemPersonalizadaTexto.focus();
+    mensagemPersonalizadaTexto.selectionStart = mensagemPersonalizadaTexto.selectionEnd = start + placeholder.length;
+});
+
 let mensagensPersonalizadasGlobais = [];
 
 async function loadMensagensPersonalizadas() {
