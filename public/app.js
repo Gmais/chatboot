@@ -3066,6 +3066,7 @@ async function carregarContatosComEtiqueta() {
                     <div style="font-weight:500;color:var(--text-1);font-size:.88rem">${c.nome}</div>
                     <div style="font-size:.75rem;color:var(--text-3);margin-bottom:.3rem">${c.telefone}</div>
                     <div style="display:flex;gap:.3rem;flex-wrap:wrap">${c.etiquetas.map(e => etiquetaChipHtml(e, false)).join('')}</div>
+                    ${c.mensagem_nome ? `<div style="font-size:.72rem;color:var(--text-3);margin-top:.3rem">💬 Mensagem sorteada: <strong style="color:var(--text-2)">${c.mensagem_nome}</strong></div>` : ''}
                 </div>
                 <span style="font-size:.75rem;font-weight:600;padding:.25rem .6rem;border-radius:50px;white-space:nowrap;${c.matriculado ? 'background:rgba(37,211,102,0.12);color:var(--green)' : 'background:rgba(245,158,11,0.12);color:var(--amber)'}">
                     ${c.matriculado ? '✅ Já importado' : '⏳ Aguardando importar'}
@@ -3592,6 +3593,7 @@ function renderAcompanhamentoAutomacoes(automacoes) {
                     <button type="button" class="btn-secondary btn-toggle-progresso" data-id="${a.id}" style="padding:.4rem .8rem;font-size:.78rem">
                         ${aberto ? '▲ Esconder' : '▼ Ver contatos'}
                     </button>
+                    <button type="button" class="btn-primary btn-disparar-automacao" data-id="${a.id}" data-nome="${a.nome}" style="padding:.4rem .8rem;font-size:.78rem" title="Manda a mensagem sorteada pra cada contato em andamento">🚀 Disparar Mensagens</button>
                 </div>
                 <div class="acompanhamento-detalhe" data-id="${a.id}" style="margin-top:1rem;${aberto ? '' : 'display:none'}">
                     <div style="padding:1rem;text-align:center;color:var(--text-3);font-size:.82rem">Carregando...</div>
@@ -3663,7 +3665,26 @@ acompanhamentoAutomacoesLista?.addEventListener('change', async (e) => {
     }
 });
 
-acompanhamentoAutomacoesLista?.addEventListener('click', (e) => {
+acompanhamentoAutomacoesLista?.addEventListener('click', async (e) => {
+    const btnDisparar = e.target.closest('.btn-disparar-automacao');
+    if (btnDisparar) {
+        if (!confirm(`Disparar as mensagens da automação "${btnDisparar.dataset.nome}"? Cada contato em andamento recebe a mensagem que foi sorteada pra ele. O envio é espaçado (30-120s por contato) pra não arriscar bloqueio no WhatsApp — pode levar minutos.`)) return;
+        btnDisparar.disabled = true;
+        btnDisparar.textContent = '⏳ Disparando...';
+        try {
+            const res = await fetch(`/api/automacoes/${btnDisparar.dataset.id}/disparar`, { method: 'POST' });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || 'Erro ao iniciar disparo');
+            showToast('Disparo iniciado!', 'Rodando em segundo plano — os números vão atualizando sozinhos conforme cada mensagem for enviada.', 'success', 6000);
+        } catch (err) {
+            showToast('Erro', err.message, 'error');
+        } finally {
+            btnDisparar.disabled = false;
+            btnDisparar.textContent = '🚀 Disparar Mensagens';
+        }
+        return;
+    }
+
     const btn = e.target.closest('.btn-toggle-progresso');
     if (!btn) return;
     const id = Number(btn.dataset.id);

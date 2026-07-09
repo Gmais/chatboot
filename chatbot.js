@@ -318,6 +318,11 @@ async function initDB() {
     // Se a etapa tem mensagens da biblioteca (Mensagens Personalizadas) anexadas
     // e mais de uma, manda uma diferente por contato em vez de sempre a mesma.
     try { await db.exec(`ALTER TABLE automacao_etapas ADD COLUMN envio_aleatorio INTEGER DEFAULT 0`); } catch(e) {}
+    // Mensagem sorteada (de entre as anexadas nas etapas da automação) que
+    // esse contato específico vai receber quando o disparo dessa automação
+    // rodar em Disparos — cada contato recebe UMA, escolhida na hora do
+    // disparo se ainda não tiver uma atribuída, e mantém a mesma depois.
+    try { await db.exec(`ALTER TABLE contato_automacao_estado ADD COLUMN mensagem_id INTEGER DEFAULT NULL`); } catch(e) {}
     // Janela de horário permitida pra automação mandar mensagem (HH:mm) — vazio = sem restrição
     try { await db.exec(`ALTER TABLE automacoes ADD COLUMN horario_inicio TEXT DEFAULT NULL`); } catch(e) {}
     try { await db.exec(`ALTER TABLE automacoes ADD COLUMN horario_fim TEXT DEFAULT NULL`); } catch(e) {}
@@ -1290,6 +1295,99 @@ async function executarEtapaAutomacao(telefone, automacao, etapa) {
     io.emit('automacoes_atualizadas');
 }
 
+// Pool de mensagens dessa automação: todas as "Mensagens Personalizadas"
+// anexadas em qualquer etapa dela (via "Adicionar Mensagem" em Configurar
+// Etapas) — não importa em qual etapa foram anexadas, contam pro mesmo pool.
+async function poolMensagensDaAutomacao(automacaoId) {
+    return db.all(
+        `SELECT DISTINCT mp.* FROM automacao_etapas ae
+         INNER JOIN automacao_etapa_mensagens aem ON aem.etapa_id = ae.id
+         INNER JOIN mensagens_personalizadas mp ON mp.id = aem.mensagem_id
+         WHERE ae.automacao_id = ?`,
+        automacaoId
+    );
+}
+
+let automacaoDisparoRodando = {};
+
+// Disparo de verdade da automação: cada contato "em andamento" recebe UMA
+// mensagem sorteada do pool (se ainda não tiver uma atribuída, sorteia agora
+// e grava — assim uma tentativa que falhar tenta de novo com a MESMA
+// mensagem, não sorteia outra à toa). Ao enviar com sucesso, sai da lista
+// "em andamento" (conta como concluído) — não mexe em etiqueta nenhuma,
+// essa continua sendo gerida só pelos robôs dedicados (Aniversariante,
+// Inadimplente). Espaça os envios com o mesmo intervalo anti-bloqueio usado
+// em Disparos e no restante do sistema.
+async function dispararMensagensDaAutomacao(automacaoId) {
+    const automacao = await db.get('SELECT * FROM automacoes WHERE id = ?', automacaoId);
+    if (!automacao) return;
+    const pool = await poolMensagensDaAutomacao(automacaoId);
+    const pendentes = await db.all('SELECT * FROM contato_automacao_estado WHERE automacao_id = ?', automacaoId);
+
+    let primeiro = true;
+    for (const estado of pendentes) {
+        if (!primeiro) await delay(await obterProximoDelayAutomacao());
+        primeiro = false;
+
+        let mensagemId = estado.mensagem_id;
+        if (!mensagemId) {
+            if (pool.length === 0) continue; // nenhuma mensagem configurada nas etapas — nada pra mandar
+            mensagemId = pool[Math.floor(Math.random() * pool.length)].id;
+            await db.run('UPDATE contato_automacao_estado SET mensagem_id = ? WHERE telefone = ? AND automacao_id = ?', [mensagemId, estado.telefone, automacaoId]);
+        }
+
+        try {
+            const msg = await db.get('SELECT * FROM mensagens_personalizadas WHERE id = ?', mensagemId);
+            if (!msg) continue;
+            const numLimpo = estado.telefone;
+            const chatId = await resolverChatId(numLimpo);
+            const nome = await resolverNomeContato(numLimpo);
+            const primeiroNome = (nome && nome !== numLimpo) ? nome.split(' ')[0] : '';
+            const nomeCompleto = (nome && nome !== numLimpo) ? nome : '';
+            const matricula = await resolverMatriculaContato(numLimpo);
+            const inadimplente = await db.get(
+                'SELECT * FROM pacto_inadimplentes WHERE telefone = ? OR telefone = ? OR telefone = ?',
+                [numLimpo, `${numLimpo}@c.us`, `${numLimpo}@lid`]
+            );
+            const parcelasStr = inadimplente ? String(inadimplente.qtd_parcelas_atrasadas) : '';
+            const valorStr = inadimplente ? new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(inadimplente.valor_total_atrasado) : '';
+            const diasAtrasadosStr = inadimplente ? String(inadimplente.dias_atraso_mais_antiga) : '';
+            const texto = (msg.texto || '')
+                .replace(/\{nome\}/gi, primeiroNome).replace(/\[nome\]/gi, primeiroNome)
+                .replace(/\{nome_completo\}/gi, nomeCompleto).replace(/\[nome_completo\]/gi, nomeCompleto)
+                .replace(/\{matricula\}/gi, matricula).replace(/\[matricula\]/gi, matricula)
+                .replace(/\{parcelas\}/gi, parcelasStr).replace(/\[parcelas\]/gi, parcelasStr)
+                .replace(/\{valor\}/gi, valorStr).replace(/\[valor\]/gi, valorStr)
+                .replace(/\{dias_atrasados\}/gi, diasAtrasadosStr).replace(/\[dias_atrasados\]/gi, diasAtrasadosStr);
+
+            let sucesso = false;
+            if (msg.media_path) {
+                const mediaFullPath = path.join(__dirname, 'public', msg.media_path.replace(/^\//, ''));
+                if (fs.existsSync(mediaFullPath)) {
+                    const media = MessageMedia.fromFilePath(mediaFullPath);
+                    const sent = await client.sendMessage(chatId, media, texto ? { caption: texto } : undefined);
+                    await registrarMensagemEnviada(numLimpo, texto || '[mídia]', nome, sent.id?._serialized);
+                    sucesso = true;
+                } else {
+                    console.error(`Disparo automação #${automacaoId}: mídia não encontrada (${msg.media_path}) pra ${numLimpo}`);
+                }
+            } else if (texto) {
+                const sent = await client.sendMessage(chatId, texto);
+                await registrarMensagemEnviada(numLimpo, texto, nome, sent.id?._serialized);
+                sucesso = true;
+            }
+
+            if (sucesso) {
+                await db.run('DELETE FROM contato_automacao_estado WHERE telefone = ? AND automacao_id = ?', [numLimpo, automacaoId]);
+                await db.run('UPDATE automacoes SET total_concluidos = total_concluidos + 1 WHERE id = ?', automacaoId);
+            }
+        } catch (e) {
+            console.error(`Erro ao disparar mensagem da automação #${automacaoId} pra ${estado.telefone}:`, e.message);
+        }
+        io.emit('automacoes_atualizadas');
+    }
+}
+
 // Matricula o contato em toda automação ativa vinculada à etiqueta recém-aplicada
 // (se ainda não estiver matriculado) e dispara a etapa 1 na hora.
 async function iniciarAutomacoesParaEtiqueta(telefone, etiquetaId) {
@@ -1647,6 +1745,21 @@ app.post('/api/automacoes/:id/importar-contatos', async (req, res) => {
     }
 });
 
+// Dispara de verdade os contatos "em andamento" dessa automação — cada um
+// recebe a mensagem sorteada pra ele (ver dispararMensagensDaAutomacao).
+// Roda em background (espaçado, pode levar minutos) — front acompanha pelo
+// socket "automacoes_atualizadas", que já dispara a cada contato concluído.
+app.post('/api/automacoes/:id/disparar', async (req, res) => {
+    const { id } = req.params;
+    if (automacaoDisparoRodando[id]) return res.status(400).json({ error: 'Já tem um disparo rodando pra essa automação.' });
+    if (!isConnected) return res.status(400).json({ error: 'WhatsApp não está conectado.' });
+    automacaoDisparoRodando[id] = true;
+    res.json({ success: true });
+    dispararMensagensDaAutomacao(id)
+        .catch(e => console.error('Erro ao disparar automação:', e.message))
+        .finally(() => { automacaoDisparoRodando[id] = false; });
+});
+
 // Lista quem já tem a etiqueta que dispara essa automação, com as etiquetas
 // de cada um e se já está matriculado ou não — pra revisar antes de mandar
 // matricular quem falta.
@@ -1659,12 +1772,17 @@ app.get('/api/automacoes/:id/contatos-com-etiqueta', async (req, res) => {
         const resultado = [];
         for (const c of contatos) {
             const nome = await resolverNomeContato(c.telefone);
-            const matriculado = await db.get('SELECT 1 FROM contato_automacao_estado WHERE telefone = ? AND automacao_id = ?', [c.telefone, id]);
+            const estado = await db.get('SELECT mensagem_id FROM contato_automacao_estado WHERE telefone = ? AND automacao_id = ?', [c.telefone, id]);
             const etiquetas = await db.all(
                 `SELECT e.id, e.nome, e.cor FROM contato_etiquetas ce INNER JOIN etiquetas e ON e.id = ce.etiqueta_id WHERE ce.telefone = ?`,
                 c.telefone
             );
-            resultado.push({ telefone: c.telefone, nome: nome || c.telefone, matriculado: !!matriculado, etiquetas });
+            let mensagemNome = null;
+            if (estado?.mensagem_id) {
+                const msg = await db.get('SELECT nome FROM mensagens_personalizadas WHERE id = ?', estado.mensagem_id);
+                mensagemNome = msg?.nome || null;
+            }
+            resultado.push({ telefone: c.telefone, nome: nome || c.telefone, matriculado: !!estado, mensagem_nome: mensagemNome, etiquetas });
         }
         res.json(resultado);
     } catch (err) {
