@@ -792,6 +792,38 @@ Sempre tente agendar uma aula experimental."></textarea>
                     </div>
                 </div>
 
+                <div class="card glass">
+                    <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:.8rem;margin-bottom:1rem">
+                        <div>
+                            <h3 style="margin-bottom:.3rem">💰 CRM Pacto — Ativos com Parcelas Atrasadas</h3>
+                            <p style="color:var(--text-2);font-size:.85rem;max-width:560px">Varre os contatos com matrícula conhecida, confere quem está ativo no Pacto e com parcela vencida, e etiqueta como "Inadimplente" sozinho (some da etiqueta quando quitar ou deixar de ser ativo). Use a etiqueta pra criar uma Automação de cobrança. Leva alguns minutos.</p>
+                        </div>
+                    </div>
+
+                    <button class="btn-primary" id="btn-pacto-inadimplentes" style="padding:.6rem 1.1rem;font-size:.85rem;margin-bottom:1rem">🔄 Atualizar Lista</button>
+
+                    <div id="pacto-inadimplentes-resultado" style="background:rgba(255,255,255,0.03);border-radius:var(--radius-sm);padding:1rem;font-size:.82rem;color:var(--text-2);line-height:1.6;margin-bottom:1rem">
+                        Clique em "Atualizar Lista" pra começar.
+                    </div>
+
+                    <div style="overflow-x:auto">
+                        <table class="leads-table">
+                            <thead>
+                                <tr>
+                                    <th>Contato</th>
+                                    <th>Matrícula</th>
+                                    <th style="text-align:right">Parcelas</th>
+                                    <th style="text-align:right">Valor Atrasado</th>
+                                    <th style="text-align:right">Atraso</th>
+                                </tr>
+                            </thead>
+                            <tbody id="pacto-inadimplentes-lista">
+                                <tr><td colspan="5" style="padding:1.5rem;text-align:center;color:var(--text-3)">Nenhum dado ainda.</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
                 <div class="card glass" style="opacity:.6">
                     <h3 style="margin-bottom:.3rem">➕ Mais integrações em breve</h3>
                     <p style="color:var(--text-2);font-size:.85rem">Outros canais e sistemas serão adicionados aqui conforme a necessidade.</p>

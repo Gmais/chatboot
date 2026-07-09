@@ -292,6 +292,15 @@ async function initDB() {
             enviado_em DATETIME DEFAULT CURRENT_TIMESTAMP,
             PRIMARY KEY (mensagem_id, telefone, ano)
         );
+        CREATE TABLE IF NOT EXISTS pacto_inadimplentes (
+            telefone TEXT PRIMARY KEY,
+            nome TEXT,
+            matricula TEXT,
+            qtd_parcelas_atrasadas INTEGER,
+            valor_total_atrasado REAL,
+            dias_atraso_mais_antiga INTEGER,
+            atualizado_em DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
     `);
 
     // Adiciona colunas novas se migrando de versão anterior
@@ -2243,6 +2252,108 @@ app.post('/api/pacto/importar-contatos', async (req, res) => {
         io.emit('pacto_import_done', pactoImportProgress);
         console.log(`✅ Importação Pacto finalizada: ${pactoImportProgress.importados} novos contatos de ${pactoImportProgress.verificadas} matrículas verificadas.`);
     })();
+});
+
+// =====================================
+// PACTO — ALUNOS ATIVOS COM PARCELAS ATRASADAS
+// =====================================
+// Etiqueta "Inadimplente" já existe no sistema (usada manualmente até aqui) —
+// reaproveitamos ela em vez de criar uma nova, mesmo padrão de
+// garantirEtiquetaAniversariante: busca por nome, só cria se não existir.
+const NOME_ETIQUETA_INADIMPLENTE = 'Inadimplente';
+async function garantirEtiquetaInadimplente() {
+    const existente = await db.get('SELECT id FROM etiquetas WHERE LOWER(nome) = LOWER(?)', NOME_ETIQUETA_INADIMPLENTE);
+    if (existente) return existente.id;
+    const result = await db.run('INSERT INTO etiquetas (nome, cor) VALUES (?, ?)', [NOME_ETIQUETA_INADIMPLENTE, '#EF4444']);
+    return result.lastID;
+}
+
+let pactoInadimplentesRunning = false;
+let pactoInadimplentesProgress = { total: 0, verificados: 0, inadimplentes: 0, running: false };
+
+app.get('/api/pacto/inadimplentes/status', (req, res) => res.json(pactoInadimplentesProgress));
+
+app.get('/api/pacto/inadimplentes', async (req, res) => {
+    const lista = await db.all('SELECT * FROM pacto_inadimplentes ORDER BY dias_atraso_mais_antiga DESC');
+    res.json(lista);
+});
+
+// Varre os contatos que já têm matrícula conhecida (vindos do import anterior
+// ou cadastro manual) — mais rápido que escanear a faixa de matrículas
+// inteira de novo, já que só interessa quem já sabemos que é aluno. Pra cada
+// um: confere se está "Ativo" no Pacto e se tem parcela vencida; se sim,
+// aplica a etiqueta "Inadimplente" e guarda no cache local; se não (ou não
+// está mais ativo), remove a etiqueta SE foi este sistema quem aplicou
+// (rastreado pela própria linha em pacto_inadimplentes) — não mexe em quem
+// foi etiquetado manualmente por outro motivo.
+async function processarInadimplentesPacto() {
+    const contatos = await db.all("SELECT telefone, matricula FROM leads WHERE matricula IS NOT NULL AND matricula != ''");
+    const etiquetaId = await garantirEtiquetaInadimplente();
+
+    pactoInadimplentesRunning = true;
+    pactoInadimplentesProgress = { total: contatos.length, verificados: 0, inadimplentes: 0, running: true };
+    io.emit('pacto_inadimplentes_progress', pactoInadimplentesProgress);
+
+    const CONCORRENCIA = 5;
+    let indice = 0;
+
+    async function processarContato(contato) {
+        const numLimpo = contato.telefone.replace('@c.us', '').replace('@lid', '');
+        try {
+            const aluno = await buscarAlunoPorMatricula(contato.matricula);
+            const estaAtivo = aluno?.situacao?.codigo === 'AT';
+            let parcelasVencidas = [];
+            if (estaAtivo) {
+                const parcelas = await obterParcelasEmAberto(aluno.pessoa.codigo);
+                parcelasVencidas = (parcelas || []).filter(p => p.vencida);
+            }
+
+            const jaEstavaNoCache = await db.get('SELECT 1 FROM pacto_inadimplentes WHERE telefone = ?', numLimpo);
+
+            if (estaAtivo && parcelasVencidas.length > 0) {
+                const valorTotal = parcelasVencidas.reduce((soma, p) => soma + (p.valor || 0), 0);
+                const maisAntiga = Math.min(...parcelasVencidas.map(p => p.dataVencimentoDt));
+                const diasAtraso = Math.floor((Date.now() - maisAntiga) / 86400000);
+                await db.run(
+                    `INSERT INTO pacto_inadimplentes (telefone, nome, matricula, qtd_parcelas_atrasadas, valor_total_atrasado, dias_atraso_mais_antiga, atualizado_em)
+                     VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                     ON CONFLICT(telefone) DO UPDATE SET nome = excluded.nome, matricula = excluded.matricula,
+                        qtd_parcelas_atrasadas = excluded.qtd_parcelas_atrasadas, valor_total_atrasado = excluded.valor_total_atrasado,
+                        dias_atraso_mais_antiga = excluded.dias_atraso_mais_antiga, atualizado_em = CURRENT_TIMESTAMP`,
+                    [numLimpo, aluno.pessoa?.nome || null, aluno.matricula || contato.matricula, parcelasVencidas.length, valorTotal, diasAtraso]
+                );
+                await aplicarEtiquetaContato(numLimpo, etiquetaId);
+                pactoInadimplentesProgress.inadimplentes++;
+            } else if (jaEstavaNoCache) {
+                // Não é mais ativo ou já quitou as parcelas — some do cache e da
+                // etiqueta (só porque sabemos que fomos nós que aplicamos).
+                await db.run('DELETE FROM pacto_inadimplentes WHERE telefone = ?', numLimpo);
+                await removerEtiquetaContato(numLimpo, etiquetaId);
+            }
+        } catch (err) {
+            console.error(`❌ Erro ao checar inadimplência da matrícula ${contato.matricula}:`, err.message);
+        }
+        pactoInadimplentesProgress.verificados++;
+    }
+
+    while (indice < contatos.length && pactoInadimplentesRunning) {
+        const lote = contatos.slice(indice, indice + CONCORRENCIA);
+        await Promise.all(lote.map(processarContato));
+        indice += lote.length;
+        io.emit('pacto_inadimplentes_progress', pactoInadimplentesProgress);
+    }
+
+    pactoInadimplentesProgress.running = false;
+    pactoInadimplentesRunning = false;
+    io.emit('pacto_inadimplentes_progress', pactoInadimplentesProgress);
+    io.emit('pacto_inadimplentes_done', pactoInadimplentesProgress);
+    console.log(`✅ Varredura de inadimplentes finalizada: ${pactoInadimplentesProgress.inadimplentes} encontrados de ${pactoInadimplentesProgress.verificados} verificados.`);
+}
+
+app.post('/api/pacto/inadimplentes/atualizar', async (req, res) => {
+    if (pactoInadimplentesRunning) return res.status(400).json({ error: 'Uma varredura de inadimplentes já está em andamento.' });
+    res.json({ success: true });
+    processarInadimplentesPacto().catch(e => console.error('Erro ao processar inadimplentes:', e.message));
 });
 
 app.post('/api/disconnect', async (req, res) => {

@@ -439,7 +439,7 @@ navBtns.forEach(btn => {
         if (targetId === 'conversas-section') CM.onEnterSection();
         if (targetId === 'fluxos-section') { loadEtiquetas().then(() => loadFluxos()); }
         if (targetId === 'contatos-section' || targetId === 'disparos-section') loadContatos();
-        if (targetId === 'integracoes-section') loadCrmColaboradores();
+        if (targetId === 'integracoes-section') { loadCrmColaboradores(); loadPactoInadimplentes(); }
         if (targetId === 'automacoes-section') { loadEtiquetas().then(() => loadAutomacoes()); }
         if (targetId === 'mensagens-personalizadas-section') loadMensagensPersonalizadas();
         if (targetId === 'disparos-section') { loadAcompanhamentoAutomacoes(); loadAutomacaoDelayConfig(); }
@@ -2761,6 +2761,81 @@ socket.on('pacto_import_done', (p) => {
     }
     showToast('Importação concluída!', `${p.importados} novos contatos importados do Pacto.`, 'success', 6000);
     loadContatos();
+});
+
+// =====================================
+// INTEGRAÇÃO — CRM PACTO (ATIVOS COM PARCELAS ATRASADAS)
+// =====================================
+const btnPactoInadimplentes = document.getElementById('btn-pacto-inadimplentes');
+const pactoInadimplentesResultado = document.getElementById('pacto-inadimplentes-resultado');
+const pactoInadimplentesListaBody = document.getElementById('pacto-inadimplentes-lista');
+
+function renderPactoInadimplentesProgress(p) {
+    if (!pactoInadimplentesResultado) return;
+    const pct = p.total ? Math.round((p.verificados / p.total) * 100) : 0;
+    pactoInadimplentesResultado.innerHTML = `
+        <div style="margin-bottom:.5rem">⏳ Verificando contatos... ${p.verificados}/${p.total} (${pct}%)</div>
+        <div style="background:rgba(255,255,255,0.08);border-radius:50px;height:8px;overflow:hidden;margin-bottom:.8rem">
+            <div style="background:var(--red);height:100%;width:${pct}%;transition:width .3s"></div>
+        </div>
+        <div>🔴 Inadimplentes encontrados até agora: <strong style="color:var(--text-1)">${p.inadimplentes}</strong></div>
+    `;
+}
+
+function formatarMoeda(valor) {
+    return (valor || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+}
+
+async function loadPactoInadimplentes() {
+    if (!pactoInadimplentesListaBody) return;
+    try {
+        const res = await fetch('/api/pacto/inadimplentes');
+        const lista = await res.json();
+        if (lista.length === 0) {
+            pactoInadimplentesListaBody.innerHTML = '<tr><td colspan="5" style="padding:1.5rem;text-align:center;color:var(--text-3)">Nenhum inadimplente encontrado.</td></tr>';
+            return;
+        }
+        pactoInadimplentesListaBody.innerHTML = lista.map(i => `
+            <tr>
+                <td>
+                    <div style="font-weight:500;color:var(--text-1)">${i.nome || '-'}</div>
+                    <div style="font-size:.75rem;color:var(--text-3)">${i.telefone}</div>
+                </td>
+                <td style="color:var(--text-2);font-size:.85rem">${i.matricula || '-'}</td>
+                <td style="text-align:right;color:var(--text-2)">${i.qtd_parcelas_atrasadas}</td>
+                <td style="text-align:right;color:var(--red);font-weight:600">${formatarMoeda(i.valor_total_atrasado)}</td>
+                <td style="text-align:right;color:var(--text-2)">${i.dias_atraso_mais_antiga}d</td>
+            </tr>
+        `).join('');
+    } catch (e) {
+        pactoInadimplentesListaBody.innerHTML = '<tr><td colspan="5" style="padding:1.5rem;text-align:center;color:var(--text-3)">Erro ao carregar.</td></tr>';
+    }
+}
+
+btnPactoInadimplentes?.addEventListener('click', async () => {
+    btnPactoInadimplentes.disabled = true;
+    btnPactoInadimplentes.textContent = '⏳ Atualizando...';
+    try {
+        const res = await fetch('/api/pacto/inadimplentes/atualizar', { method: 'POST' });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Erro ao iniciar');
+        renderPactoInadimplentesProgress({ total: 0, verificados: 0, inadimplentes: 0 });
+    } catch (e) {
+        showToast('Erro', e.message, 'error');
+        btnPactoInadimplentes.disabled = false;
+        btnPactoInadimplentes.textContent = '🔄 Atualizar Lista';
+    }
+});
+
+socket.on('pacto_inadimplentes_progress', renderPactoInadimplentesProgress);
+
+socket.on('pacto_inadimplentes_done', (p) => {
+    if (btnPactoInadimplentes) {
+        btnPactoInadimplentes.disabled = false;
+        btnPactoInadimplentes.textContent = '🔄 Atualizar Lista';
+    }
+    showToast('Atualização concluída!', `${p.inadimplentes} alunos ativos com parcela atrasada.`, 'success', 6000);
+    loadPactoInadimplentes();
 });
 
 // =====================================
