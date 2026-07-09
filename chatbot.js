@@ -1717,14 +1717,15 @@ app.get('/api/automacoes/:id/etapas', async (req, res) => {
 // Força matricular agora quem já tem a etiqueta da automação mas ficou de fora
 // (etiqueta aplicada antes da automação existir/ter etapas) — mesmo caso que
 // roda sozinho ao salvar etapas ou reativar, só que sob demanda.
+// Roda em background (não espera terminar pra responder) — o envio é
+// espaçado de propósito (30-120s por contato, mesmo intervalo de Disparos)
+// pra não arriscar bloqueio no WhatsApp, então com vários contatos isso pode
+// levar minutos. O front acompanha via socket "automacoes_atualizadas", que
+// já dispara a cada contato matriculado.
 app.post('/api/automacoes/:id/matricular-existentes', async (req, res) => {
     const { id } = req.params;
-    try {
-        await enrolarContatosExistentesNaAutomacao(id);
-        res.json({ success: true });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
+    res.json({ success: true });
+    enrolarContatosExistentesNaAutomacao(id).catch(e => console.error('Erro ao matricular contatos existentes:', e.message));
 });
 
 // Lista quem já tem a etiqueta que dispara essa automação, com as etiquetas

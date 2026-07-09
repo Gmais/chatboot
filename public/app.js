@@ -3087,14 +3087,13 @@ document.getElementById('modal-contatos-etiqueta-fechar-x')?.addEventListener('c
 btnAdicionarQuemFalta?.addEventListener('click', async () => {
     if (!contatosEtiquetaAutomacaoId) return;
     btnAdicionarQuemFalta.disabled = true;
-    btnAdicionarQuemFalta.textContent = '⏳ Adicionando...';
+    btnAdicionarQuemFalta.textContent = '⏳ Iniciando...';
     try {
-        await fetch(`/api/automacoes/${contatosEtiquetaAutomacaoId}/matricular-existentes`, { method: 'POST' });
-        showToast('Feito!', 'Quem estava aguardando foi matriculado.', 'success', 3000);
-        await carregarContatosComEtiqueta();
-        loadAutomacoes();
+        const res = await fetch(`/api/automacoes/${contatosEtiquetaAutomacaoId}/matricular-existentes`, { method: 'POST' });
+        if (!res.ok) throw new Error('Erro ao iniciar');
+        showToast('Matriculando em segundo plano', 'O envio é espaçado (30-120s por contato) pra não arriscar bloqueio no WhatsApp — a lista abaixo atualiza sozinha conforme cada um for matriculado.', 'success', 6000);
     } catch (e) {
-        showToast('Erro', 'Não foi possível adicionar os contatos', 'error');
+        showToast('Erro', 'Não foi possível iniciar', 'error');
     } finally {
         btnAdicionarQuemFalta.disabled = false;
         btnAdicionarQuemFalta.textContent = '➕ Adicionar quem falta';
@@ -3333,6 +3332,9 @@ socket.on('automacoes_atualizadas', () => {
     }
     if (document.getElementById('disparos-section') && !document.getElementById('disparos-section').classList.contains('hidden')) {
         loadAcompanhamentoAutomacoes();
+    }
+    if (contatosEtiquetaAutomacaoId && modalContatosEtiqueta?.classList.contains('open')) {
+        carregarContatosComEtiqueta();
     }
 });
 
