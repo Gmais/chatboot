@@ -2882,24 +2882,34 @@ function renderAutomacoesLista() {
         const etiquetaChip = a.etiqueta_nome
             ? etiquetaChipHtml({ id: a.etiqueta_id, nome: a.etiqueta_nome, cor: a.etiqueta_cor || '#25D366' }, false)
             : '<span style="color:var(--text-3);font-size:.75rem">Etiqueta removida</span>';
+        const extras = a.etiquetas_extras || [];
+        const extrasChips = extras.map(e => `
+            <span class="etiqueta-chip" style="background:${e.cor}22;color:${e.cor};border:1px solid ${e.cor}55">${e.nome}<button type="button" class="automacao-remover-etiqueta-extra" data-id="${a.id}" data-etiqueta-id="${e.id}">×</button></span>
+        `).join('');
+        const idsJaVinculados = new Set([a.etiqueta_id, ...extras.map(e => e.id)]);
+        const opcoesDisponiveis = todasEtiquetas.filter(e => !idsJaVinculados.has(e.id));
         return `
             <div class="card glass" style="padding:1.1rem 1.3rem;display:flex;align-items:center;gap:1rem;flex-wrap:wrap" data-automacao-id="${a.id}">
                 <div style="flex:1;min-width:200px">
                     <div style="font-weight:600;color:var(--text-1);font-size:.95rem;margin-bottom:.3rem">${a.nome}</div>
-                    <div style="display:flex;align-items:center;gap:.5rem;flex-wrap:wrap">
+                    <div style="display:flex;align-items:center;gap:.5rem;flex-wrap:wrap;margin-bottom:.4rem">
                         ${etiquetaChip}
+                        ${extrasChips}
                         <span style="font-size:.75rem;color:var(--text-3)">${a.total_etapas} etapa${a.total_etapas !== 1 ? 's' : ''}</span>
                         <span style="font-size:.75rem;color:var(--text-3)">•</span>
                         <span style="font-size:.75rem;color:var(--text-3)">${a.total_ativos} contato${a.total_ativos !== 1 ? 's' : ''} em andamento</span>
                         ${a.horario_inicio && a.horario_fim ? `<span style="font-size:.75rem;color:var(--text-3)">• 🕐 ${a.horario_inicio}–${a.horario_fim}</span>` : ''}
                     </div>
+                    <select class="automacao-add-etiqueta-extra" data-id="${a.id}" style="background:var(--input-bg);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:.3rem .5rem;color:var(--text-1);font-size:.75rem;font-family:'Inter',sans-serif" title="Toda etiqueta adicionada aqui também dispara essa automação sozinha, igual a principal">
+                        <option value="">+ Adicionar Etiqueta...</option>
+                        ${opcoesDisponiveis.map(e => `<option value="${e.id}">${e.nome}</option>`).join('')}
+                    </select>
                 </div>
                 <label style="display:flex;align-items:center;gap:.4rem;font-size:.78rem;color:var(--text-3);cursor:pointer">
                     <input type="checkbox" class="automacao-toggle-ativo" data-id="${a.id}" ${a.ativo ? 'checked' : ''} style="accent-color:var(--green);width:16px;height:16px">
                     Ativa
                 </label>
                 <button type="button" class="btn-secondary btn-config-etapas" data-id="${a.id}" data-nome="${a.nome}" style="padding:.5rem .8rem;font-size:.82rem">⚙️ Configurar Etapas</button>
-                <button type="button" class="btn-secondary btn-matricular-existentes" data-id="${a.id}" style="padding:.5rem .7rem;font-size:.82rem" title="Matricula quem já tem a etiqueta mas ficou de fora (ex: etiqueta aplicada antes desta automação existir)">🔄 Matricular quem já tem a etiqueta</button>
                 <button type="button" class="btn-danger btn-excluir-automacao" data-id="${a.id}" style="padding:.5rem .7rem;font-size:.82rem">🗑️</button>
             </div>
         `;
@@ -2908,16 +2918,35 @@ function renderAutomacoesLista() {
 
 automacoesLista?.addEventListener('change', async (e) => {
     const toggle = e.target.closest('.automacao-toggle-ativo');
-    if (!toggle) return;
-    try {
-        await fetch(`/api/automacoes/${toggle.dataset.id}`, {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ ativo: toggle.checked })
-        });
-        showToast(toggle.checked ? 'Automação ativada' : 'Automação pausada', '', 'success', 2000);
-    } catch (e) {
-        showToast('Erro', 'Não foi possível atualizar a automação', 'error');
+    if (toggle) {
+        try {
+            await fetch(`/api/automacoes/${toggle.dataset.id}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ ativo: toggle.checked })
+            });
+            showToast(toggle.checked ? 'Automação ativada' : 'Automação pausada', '', 'success', 2000);
+        } catch (e) {
+            showToast('Erro', 'Não foi possível atualizar a automação', 'error');
+        }
+        return;
+    }
+
+    const addExtra = e.target.closest('.automacao-add-etiqueta-extra');
+    if (addExtra && addExtra.value) {
+        try {
+            const res = await fetch(`/api/automacoes/${addExtra.dataset.id}/etiquetas-extras`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ etiqueta_id: Number(addExtra.value) })
+            });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || 'Erro ao adicionar etiqueta');
+            showToast('Etiqueta adicionada', 'Quem já tem essa etiqueta foi matriculado automaticamente.', 'success', 3000);
+            loadAutomacoes();
+        } catch (e) {
+            showToast('Erro', e.message, 'error');
+        }
     }
 });
 
@@ -2925,18 +2954,14 @@ automacoesLista?.addEventListener('click', async (e) => {
     const btnConfig = e.target.closest('.btn-config-etapas');
     if (btnConfig) { abrirConfigurarEtapas(btnConfig.dataset.id, btnConfig.dataset.nome); return; }
 
-    const btnMatricular = e.target.closest('.btn-matricular-existentes');
-    if (btnMatricular) {
-        btnMatricular.disabled = true;
-        btnMatricular.textContent = '⏳ Matriculando...';
+    const btnRemoverExtra = e.target.closest('.automacao-remover-etiqueta-extra');
+    if (btnRemoverExtra) {
         try {
-            await fetch(`/api/automacoes/${btnMatricular.dataset.id}/matricular-existentes`, { method: 'POST' });
-            showToast('Feito!', 'Quem já tinha a etiqueta e estava de fora foi matriculado.', 'success', 3000);
+            await fetch(`/api/automacoes/${btnRemoverExtra.dataset.id}/etiquetas-extras/${btnRemoverExtra.dataset.etiquetaId}`, { method: 'DELETE' });
+            showToast('Etiqueta removida da automação', '', 'success', 2000);
+            loadAutomacoes();
         } catch (e) {
-            showToast('Erro', 'Não foi possível matricular os contatos existentes', 'error');
-        } finally {
-            btnMatricular.disabled = false;
-            btnMatricular.textContent = '🔄 Matricular quem já tem a etiqueta';
+            showToast('Erro', 'Não foi possível remover a etiqueta', 'error');
         }
         return;
     }
