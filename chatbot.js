@@ -2356,6 +2356,31 @@ app.post('/api/pacto/inadimplentes/atualizar', async (req, res) => {
     processarInadimplentesPacto().catch(e => console.error('Erro ao processar inadimplentes:', e.message));
 });
 
+// A etiqueta "Inadimplente" dura só 20h desde a última verificação que
+// confirmou o débito (atualizado_em é renovado a cada varredura em que o
+// contato continua inadimplente) — depois disso desvincula sozinha. Pra
+// reaparecer, precisa rodar uma nova verificação em Integração.
+const INADIMPLENTE_EXPIRACAO_HORAS = 20;
+async function expirarInadimplentesAntigos() {
+    if (!db) return;
+    try {
+        const etiquetaId = await garantirEtiquetaInadimplente();
+        const expirados = await db.all(
+            `SELECT telefone FROM pacto_inadimplentes WHERE atualizado_em <= datetime('now', ?)`,
+            `-${INADIMPLENTE_EXPIRACAO_HORAS} hours`
+        );
+        for (const c of expirados) {
+            await removerEtiquetaContato(c.telefone, etiquetaId);
+            await db.run('DELETE FROM pacto_inadimplentes WHERE telefone = ?', c.telefone);
+        }
+        if (expirados.length > 0) console.log(`⏳ ${expirados.length} etiqueta(s) "Inadimplente" expirada(s) após ${INADIMPLENTE_EXPIRACAO_HORAS}h.`);
+    } catch (e) {
+        console.error('Erro ao expirar inadimplentes antigos:', e.message);
+    }
+}
+setInterval(expirarInadimplentesAntigos, 30 * 60 * 1000);
+setTimeout(expirarInadimplentesAntigos, 90 * 1000);
+
 app.post('/api/disconnect', async (req, res) => {
     // Responde imediatamente para não travar o frontend
     res.json({ success: true });
