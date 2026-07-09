@@ -2355,6 +2355,21 @@ app.get('/api/pacto/inadimplentes', async (req, res) => {
     res.json(lista);
 });
 
+// Remoção manual: some da lista e desvincula a etiqueta "Inadimplente" na
+// hora. Se ele ainda estiver mesmo em atraso, volta a aparecer na próxima
+// verificação (Integração → Atualizar Lista) — isso aqui só limpa a leitura atual.
+app.delete('/api/pacto/inadimplentes/:telefone', async (req, res) => {
+    const { telefone } = req.params;
+    try {
+        const etiquetaId = await garantirEtiquetaInadimplente();
+        await removerEtiquetaContato(telefone, etiquetaId);
+        await db.run('DELETE FROM pacto_inadimplentes WHERE telefone = ?', telefone);
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
 // Varre os contatos que já têm matrícula conhecida (vindos do import anterior
 // ou cadastro manual) — mais rápido que escanear a faixa de matrículas
 // inteira de novo, já que só interessa quem já sabemos que é aluno. Pra cada

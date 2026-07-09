@@ -2792,7 +2792,7 @@ async function loadPactoInadimplentes() {
         const res = await fetch('/api/pacto/inadimplentes');
         const lista = await res.json();
         if (lista.length === 0) {
-            pactoInadimplentesListaBody.innerHTML = '<tr><td colspan="5" style="padding:1.5rem;text-align:center;color:var(--text-3)">Nenhum inadimplente encontrado.</td></tr>';
+            pactoInadimplentesListaBody.innerHTML = '<tr><td colspan="6" style="padding:1.5rem;text-align:center;color:var(--text-3)">Nenhum inadimplente encontrado.</td></tr>';
             return;
         }
         pactoInadimplentesListaBody.innerHTML = lista.map(i => `
@@ -2805,12 +2805,29 @@ async function loadPactoInadimplentes() {
                 <td style="text-align:right;color:var(--text-2)">${i.qtd_parcelas_atrasadas}</td>
                 <td style="text-align:right;color:var(--red);font-weight:600">${formatarMoeda(i.valor_total_atrasado)}</td>
                 <td style="text-align:right;color:var(--text-2)">${i.dias_atraso_mais_antiga}d</td>
+                <td style="text-align:right">
+                    <button type="button" class="btn-danger btn-excluir-inadimplente" data-telefone="${i.telefone}" data-nome="${i.nome || i.telefone}" style="padding:.35rem .6rem;font-size:.75rem" title="Excluir da lista e remover a etiqueta Inadimplente">🗑️</button>
+                </td>
             </tr>
         `).join('');
     } catch (e) {
-        pactoInadimplentesListaBody.innerHTML = '<tr><td colspan="5" style="padding:1.5rem;text-align:center;color:var(--text-3)">Erro ao carregar.</td></tr>';
+        pactoInadimplentesListaBody.innerHTML = '<tr><td colspan="6" style="padding:1.5rem;text-align:center;color:var(--text-3)">Erro ao carregar.</td></tr>';
     }
 }
+
+pactoInadimplentesListaBody?.addEventListener('click', async (e) => {
+    const btn = e.target.closest('.btn-excluir-inadimplente');
+    if (!btn) return;
+    if (!confirm(`Excluir "${btn.dataset.nome}" da lista de inadimplentes e remover a etiqueta "Inadimplente"?`)) return;
+    try {
+        const res = await fetch(`/api/pacto/inadimplentes/${encodeURIComponent(btn.dataset.telefone)}`, { method: 'DELETE' });
+        if (!res.ok) throw new Error('Falha ao excluir');
+        showToast('Removido', '', 'success', 2000);
+        loadPactoInadimplentes();
+    } catch (err) {
+        showToast('Erro', 'Não foi possível remover', 'error');
+    }
+});
 
 btnPactoInadimplentes?.addEventListener('click', async () => {
     btnPactoInadimplentes.disabled = true;
