@@ -1076,7 +1076,7 @@ const etiquetasFiltroAtivasPage = new Set();
 function contatosFiltrados() {
     const termo = (contatosBusca?.value || '').trim().toLowerCase();
     return todosContatos.filter(c => {
-        const bateBusca = !termo || c.nome.toLowerCase().includes(termo) || c.telefone.includes(termo);
+        const bateBusca = !termo || c.nome.toLowerCase().includes(termo) || c.telefone.includes(termo) || (c.matricula || '').toLowerCase().includes(termo);
         const bateEtiqueta = etiquetasFiltroAtivas.size === 0 || c.etiquetas.some(e => etiquetasFiltroAtivas.has(e.id));
         return bateBusca && bateEtiqueta;
     });
@@ -1165,7 +1165,7 @@ function renderContatos() {
 function contatosPageFiltrados() {
     const termo = (contatosPageBusca?.value || '').trim().toLowerCase();
     return todosContatos.filter(c => {
-        const bateBusca = !termo || c.nome.toLowerCase().includes(termo) || c.telefone.includes(termo);
+        const bateBusca = !termo || c.nome.toLowerCase().includes(termo) || c.telefone.includes(termo) || (c.matricula || '').toLowerCase().includes(termo);
         const bateEtiqueta = etiquetasFiltroAtivasPage.size === 0 || c.etiquetas.some(e => etiquetasFiltroAtivasPage.has(e.id));
         return bateBusca && bateEtiqueta;
     });
