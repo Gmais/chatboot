@@ -413,6 +413,13 @@ function sqliteTsParaIso(ts) {
     return ts.includes('T') ? ts : ts.replace(' ', 'T') + 'Z';
 }
 
+// Lista branca de tipos de mensagem "de verdade" (conversa real) — qualquer
+// msg.type fora daqui é ruído de protocolo do WhatsApp (sincronização entre
+// aparelhos, notificação de criptografia, mensagem que falhou ao decifrar,
+// etc.) e nunca deve virar conversa no Bate Papo ao Vivo. Whitelist em vez de
+// blacklist: mais seguro, não depende de prever cada tipo novo de ruído.
+const TIPOS_MSG_VALIDOS = new Set(['chat', 'image', 'video', 'audio', 'ptt', 'document', 'sticker', 'location', 'vcard', 'multi_vcard']);
+
 // Detecta o tipo de uma mensagem do whatsapp-web.js a partir de msg.type.
 // Compartilhado entre o handler de recebidas e o de enviadas (message_create).
 function detectarTipoMsg(msg) {
@@ -3032,6 +3039,7 @@ client.on('message_create', async (msg) => {
 
     if (!msg.fromMe || !db) return;
     if (!msg.to || msg.to.endsWith('@g.us') || msg.to.endsWith('@broadcast')) return;
+    if (!TIPOS_MSG_VALIDOS.has(msg.type)) return; // ruído de protocolo — nunca vira conversa
 
     const msgId = msg.id?._serialized;
     if (msgId) {
@@ -3266,6 +3274,7 @@ async function enviarResposta(msg, conteudo, opcoes = {}) {
 client.on('message', async (msg) => {
     try {
         if (!msg.from || msg.from.endsWith('@g.us') || msg.from.endsWith('@broadcast')) return;
+        if (!TIPOS_MSG_VALIDOS.has(msg.type)) return; // ruído de protocolo — nunca vira conversa
         const chat = await msg.getChat();
         if (chat.isGroup) return;
 
