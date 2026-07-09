@@ -1271,146 +1271,22 @@ async function obterProximoDelayAutomacao() {
 // etapa pra daqui a N dias, ou — se essa era a última — conclui a automação e
 // remove a etiqueta que a disparou. Usada tanto pra matricular (etapa 1) quanto
 // pra avançar (chamada pelo processarAutomacoesPendentes).
+// Automação é só organizacional — NUNCA manda mensagem. Isso foi removido de
+// propósito (não é uma trava de configuração, é estrutural) depois de um
+// incidente real: a etapa mandava a mensagem e, sendo a última, removia a
+// etiqueta ao concluir; 30min depois o robô que aplica a etiqueta
+// "Aniversariante" via aniversário (Data de Nascimento) reaplicava porque a
+// etiqueta tinha sumido, disparando a automação novamente — um contato
+// chegou a receber a mesma mensagem ~10 vezes num loop antes de perceberem.
+// Envio de mensagem de verdade agora é 100% manual, pela aba Disparos.
 async function executarEtapaAutomacao(telefone, automacao, etapa) {
     const numLimpo = telefone.replace('@c.us','').replace('@lid','');
-
-    if (!dentroDoHorarioAutomacao(automacao)) {
-        if (janelaFechouHoje(automacao)) {
-            // A janela de hoje já fechou — cancela em vez de empurrar pra amanhã
-            // com um conteúdo que pode não fazer mais sentido no dia seguinte
-            // (ex: "feliz aniversário" um dia atrasado).
-            await db.run('DELETE FROM contato_automacao_estado WHERE telefone = ? AND automacao_id = ?', [numLimpo, automacao.id]);
-            io.emit('automacoes_atualizadas');
-            return;
-        }
-        // Janela ainda não abriu hoje: espera abrir, sem cancelar — não avança
-        // de etapa, não conta como enviado.
-        await db.run(
-            `INSERT INTO contato_automacao_estado (telefone, automacao_id, etapa_atual, entrou_em, proxima_execucao_em)
-             VALUES (?, ?, ?, CURRENT_TIMESTAMP, ?)
-             ON CONFLICT(telefone, automacao_id) DO UPDATE SET proxima_execucao_em = excluded.proxima_execucao_em`,
-            [numLimpo, automacao.id, etapa.ordem - 1, proximoInicioJanela(automacao)]
-        );
-        return;
-    }
-
-    // "Grupo de Alunos" da etapa (opcional): se preenchido, só quem tem PELO
-    // MENOS UMA dessas etiquetas (além da etiqueta que dispara a automação
-    // inteira) recebe esta etapa. Quem não pertence pula a etapa sem receber
-    // nada, mas segue o timing normal da automação pras próximas.
-    const gruposEtapa = await db.all('SELECT etiqueta_id FROM automacao_etapa_grupos WHERE etapa_id = ?', etapa.id);
-    let pertenceAoGrupo = true;
-    if (gruposEtapa.length > 0) {
-        const match = await db.get(
-            `SELECT 1 FROM contato_etiquetas WHERE telefone = ? AND etiqueta_id IN (${gruposEtapa.map(() => '?').join(',')})`,
-            [numLimpo, ...gruposEtapa.map(g => g.etiqueta_id)]
-        );
-        pertenceAoGrupo = !!match;
-    }
-
-    let sucesso = false;
-    if (!pertenceAoGrupo) {
-        sucesso = true; // etapa "cumprida" sem enviar nada — não pertence ao grupo alvo
-    } else {
-    try {
-        const chatId = await resolverChatId(numLimpo);
-        const nome = await resolverNomeContato(numLimpo);
-        const primeiroNome = (nome && nome !== numLimpo) ? nome.split(' ')[0] : '';
-        const nomeCompleto = (nome && nome !== numLimpo) ? nome : '';
-        const matricula = await resolverMatriculaContato(numLimpo);
-
-        // {parcelas}/{valor}/{dias_atrasados} só fazem sentido pra quem está no
-        // cache de inadimplentes (Integração → Ativos com Parcelas Atrasadas) —
-        // contato fora dali simplesmente não tem esses placeholders preenchidos.
-        const inadimplente = await db.get(
-            'SELECT * FROM pacto_inadimplentes WHERE telefone = ? OR telefone = ? OR telefone = ?',
-            [numLimpo, `${numLimpo}@c.us`, `${numLimpo}@lid`]
-        );
-        const parcelasStr = inadimplente ? String(inadimplente.qtd_parcelas_atrasadas) : '';
-        const valorStr = inadimplente ? new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(inadimplente.valor_total_atrasado) : '';
-        const diasAtrasadosStr = inadimplente ? String(inadimplente.dias_atraso_mais_antiga) : '';
-
-        // Se a etapa tem mensagens da biblioteca "Mensagens Personalizadas"
-        // anexadas, usa uma delas (aleatória ou sempre a primeira) em vez do
-        // texto/mídia digitado direto na etapa — mantém compatibilidade com
-        // etapas antigas que só têm texto/mídia próprios.
-        const mensagensEtapa = await db.all(
-            `SELECT mp.* FROM automacao_etapa_mensagens aem
-             INNER JOIN mensagens_personalizadas mp ON mp.id = aem.mensagem_id
-             WHERE aem.etapa_id = ?`,
-            etapa.id
-        );
-        let textoBase = etapa.texto;
-        let mediaPathBase = etapa.media_path;
-        if (mensagensEtapa.length > 0) {
-            const escolhida = etapa.envio_aleatorio
-                ? mensagensEtapa[Math.floor(Math.random() * mensagensEtapa.length)]
-                : mensagensEtapa[0];
-            textoBase = escolhida.texto;
-            mediaPathBase = escolhida.media_path;
-        }
-
-        const texto = (textoBase || '')
-            .replace(/\{nome\}/gi, primeiroNome).replace(/\[nome\]/gi, primeiroNome)
-            .replace(/\{nome_completo\}/gi, nomeCompleto).replace(/\[nome_completo\]/gi, nomeCompleto)
-            .replace(/\{matricula\}/gi, matricula).replace(/\[matricula\]/gi, matricula)
-            .replace(/\{parcelas\}/gi, parcelasStr).replace(/\[parcelas\]/gi, parcelasStr)
-            .replace(/\{valor\}/gi, valorStr).replace(/\[valor\]/gi, valorStr)
-            .replace(/\{dias_atrasados\}/gi, diasAtrasadosStr).replace(/\[dias_atrasados\]/gi, diasAtrasadosStr);
-        if (mediaPathBase) {
-            const mediaFullPath = path.join(__dirname, 'public', mediaPathBase.replace(/^\//, ''));
-            if (fs.existsSync(mediaFullPath)) {
-                const media = MessageMedia.fromFilePath(mediaFullPath);
-                const sent = await client.sendMessage(chatId, media, texto ? { caption: texto } : undefined);
-                await registrarMensagemEnviada(numLimpo, texto || '[mídia]', nome, sent.id?._serialized);
-                sucesso = true;
-            } else {
-                console.error(`Automação #${automacao.id}: arquivo de mídia não encontrado (${mediaPathBase}) pra ${numLimpo}`);
-            }
-        } else if (texto) {
-            const sent = await client.sendMessage(chatId, texto);
-            await registrarMensagemEnviada(numLimpo, texto, nome, sent.id?._serialized);
-            sucesso = true;
-        }
-    } catch (e) {
-        console.error(`Erro ao enviar etapa de automação #${automacao.id} pra ${numLimpo}:`, e.message);
-    }
-    }
-
-    if (!sucesso) {
-        // Envio falhou (WhatsApp instável, número inválido, arquivo ausente etc.) —
-        // NÃO avança de etapa nem conta como enviado; tenta de novo em breve, em
-        // vez de silenciosamente pular a mensagem e já contar os dias da próxima.
-        await db.run(
-            `INSERT INTO contato_automacao_estado (telefone, automacao_id, etapa_atual, entrou_em, proxima_execucao_em)
-             VALUES (?, ?, ?, CURRENT_TIMESTAMP, ?)
-             ON CONFLICT(telefone, automacao_id) DO UPDATE SET proxima_execucao_em = excluded.proxima_execucao_em`,
-            [numLimpo, automacao.id, etapa.ordem - 1, moment().add(15, 'minutes').toISOString()]
-        );
-        io.emit('automacoes_atualizadas');
-        return;
-    }
-
-    const proximaEtapa = await db.get('SELECT * FROM automacao_etapas WHERE automacao_id = ? AND ordem = ?', [automacao.id, etapa.ordem + 1]);
-    if (proximaEtapa) {
-        const unidade = etapa.unidade_tempo === 'horas' ? 'hours' : 'days';
-        const proximaExecucao = moment().add(etapa.dias_proxima_etapa || 1, unidade).toISOString();
-        await db.run(
-            `INSERT INTO contato_automacao_estado (telefone, automacao_id, etapa_atual, entrou_em, proxima_execucao_em)
-             VALUES (?, ?, ?, CURRENT_TIMESTAMP, ?)
-             ON CONFLICT(telefone, automacao_id) DO UPDATE SET etapa_atual = excluded.etapa_atual, entrou_em = CURRENT_TIMESTAMP, proxima_execucao_em = excluded.proxima_execucao_em`,
-            [numLimpo, automacao.id, etapa.ordem, proximaExecucao]
-        );
-    } else {
-        // Última etapa: automação concluída — some com o estado. A etiqueta só sai
-        // do contato se remove_etiqueta_ao_concluir estiver marcado (padrão: sim).
-        await db.run('DELETE FROM contato_automacao_estado WHERE telefone = ? AND automacao_id = ?', [numLimpo, automacao.id]);
-        await db.run('UPDATE automacoes SET total_concluidos = total_concluidos + 1 WHERE id = ?', automacao.id);
-        if (automacao.remove_etiqueta_ao_concluir === undefined || automacao.remove_etiqueta_ao_concluir === null || automacao.remove_etiqueta_ao_concluir) {
-            await db.run('DELETE FROM contato_etiquetas WHERE telefone = ? AND etiqueta_id = ?', [numLimpo, automacao.etiqueta_id]);
-            io.emit('etiqueta_atualizada', { telefone: numLimpo });
-        }
-    }
+    await db.run(
+        `INSERT INTO contato_automacao_estado (telefone, automacao_id, etapa_atual, entrou_em, proxima_execucao_em)
+         VALUES (?, ?, ?, CURRENT_TIMESTAMP, NULL)
+         ON CONFLICT(telefone, automacao_id) DO UPDATE SET etapa_atual = excluded.etapa_atual, entrou_em = excluded.entrou_em`,
+        [numLimpo, automacao.id, etapa.ordem]
+    );
     io.emit('automacoes_atualizadas');
 }
 
