@@ -3068,7 +3068,7 @@ async function carregarContatosComEtiqueta() {
                     <div style="display:flex;gap:.3rem;flex-wrap:wrap">${c.etiquetas.map(e => etiquetaChipHtml(e, false)).join('')}</div>
                 </div>
                 <span style="font-size:.75rem;font-weight:600;padding:.25rem .6rem;border-radius:50px;white-space:nowrap;${c.matriculado ? 'background:rgba(37,211,102,0.12);color:var(--green)' : 'background:rgba(245,158,11,0.12);color:var(--amber)'}">
-                    ${c.matriculado ? '✅ Já matriculado' : '⏳ Aguardando'}
+                    ${c.matriculado ? '✅ Já importado' : '⏳ Aguardando importar'}
                 </span>
             </div>
         `).join('');
@@ -3087,16 +3087,19 @@ document.getElementById('modal-contatos-etiqueta-fechar-x')?.addEventListener('c
 btnAdicionarQuemFalta?.addEventListener('click', async () => {
     if (!contatosEtiquetaAutomacaoId) return;
     btnAdicionarQuemFalta.disabled = true;
-    btnAdicionarQuemFalta.textContent = '⏳ Iniciando...';
+    btnAdicionarQuemFalta.textContent = '⏳ Importando...';
     try {
-        const res = await fetch(`/api/automacoes/${contatosEtiquetaAutomacaoId}/matricular-existentes`, { method: 'POST' });
-        if (!res.ok) throw new Error('Erro ao iniciar');
-        showToast('Matriculando em segundo plano', 'O envio é espaçado (30-120s por contato) pra não arriscar bloqueio no WhatsApp — a lista abaixo atualiza sozinha conforme cada um for matriculado.', 'success', 6000);
+        const res = await fetch(`/api/automacoes/${contatosEtiquetaAutomacaoId}/importar-contatos`, { method: 'POST' });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Erro ao importar');
+        showToast('Importado!', `${data.importados} contato(s) adicionado(s) à automação. Nenhuma mensagem foi enviada.`, 'success', 4000);
+        await carregarContatosComEtiqueta();
+        loadAutomacoes();
     } catch (e) {
-        showToast('Erro', 'Não foi possível iniciar', 'error');
+        showToast('Erro', e.message, 'error');
     } finally {
         btnAdicionarQuemFalta.disabled = false;
-        btnAdicionarQuemFalta.textContent = '➕ Adicionar quem falta';
+        btnAdicionarQuemFalta.textContent = '📥 Importar Contatos';
     }
 });
 

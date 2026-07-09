@@ -1728,6 +1728,42 @@ app.post('/api/automacoes/:id/matricular-existentes', async (req, res) => {
     enrolarContatosExistentesNaAutomacao(id).catch(e => console.error('Erro ao matricular contatos existentes:', e.message));
 });
 
+// Automação aqui só organiza contatos por etiqueta — não manda mensagem
+// nenhuma (isso é papel de Disparos). "Importar" só registra o contato em
+// contato_automacao_estado (aparece em "contatos em andamento"), sem chamar
+// executarEtapaAutomacao — instantâneo, sem fila, sem envio.
+async function importarContatosParaAutomacao(automacaoId) {
+    const automacao = await db.get('SELECT * FROM automacoes WHERE id = ?', automacaoId);
+    if (!automacao) return { importados: 0 };
+    const contatos = await db.all('SELECT telefone FROM contato_etiquetas WHERE etiqueta_id = ?', automacao.etiqueta_id);
+    let importados = 0;
+    for (const c of contatos) {
+        const jaMatriculado = await db.get(
+            'SELECT 1 FROM contato_automacao_estado WHERE telefone = ? AND automacao_id = ?',
+            [c.telefone, automacaoId]
+        );
+        if (jaMatriculado) continue;
+        await db.run(
+            `INSERT INTO contato_automacao_estado (telefone, automacao_id, etapa_atual, entrou_em, proxima_execucao_em)
+             VALUES (?, ?, 0, CURRENT_TIMESTAMP, NULL)`,
+            [c.telefone, automacaoId]
+        );
+        importados++;
+    }
+    return { importados };
+}
+
+app.post('/api/automacoes/:id/importar-contatos', async (req, res) => {
+    const { id } = req.params;
+    try {
+        const resultado = await importarContatosParaAutomacao(id);
+        io.emit('automacoes_atualizadas');
+        res.json({ success: true, ...resultado });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
 // Lista quem já tem a etiqueta que dispara essa automação, com as etiquetas
 // de cada um e se já está matriculado ou não — pra revisar antes de mandar
 // matricular quem falta.
