@@ -2899,34 +2899,24 @@ function renderAutomacoesLista() {
         const etiquetaChip = a.etiqueta_nome
             ? etiquetaChipHtml({ id: a.etiqueta_id, nome: a.etiqueta_nome, cor: a.etiqueta_cor || '#25D366' }, false)
             : '<span style="color:var(--text-3);font-size:.75rem">Etiqueta removida</span>';
-        const extras = a.etiquetas_extras || [];
-        const extrasChips = extras.map(e => `
-            <span class="etiqueta-chip" style="background:${e.cor}22;color:${e.cor};border:1px solid ${e.cor}55">${e.nome}<button type="button" class="automacao-remover-etiqueta-extra" data-id="${a.id}" data-etiqueta-id="${e.id}">×</button></span>
-        `).join('');
-        const idsJaVinculados = new Set([a.etiqueta_id, ...extras.map(e => e.id)]);
-        const opcoesDisponiveis = todasEtiquetas.filter(e => !idsJaVinculados.has(e.id));
         return `
             <div class="card glass" style="padding:1.1rem 1.3rem;display:flex;align-items:center;gap:1rem;flex-wrap:wrap" data-automacao-id="${a.id}">
                 <div style="flex:1;min-width:200px">
                     <div style="font-weight:600;color:var(--text-1);font-size:.95rem;margin-bottom:.3rem">${a.nome}</div>
-                    <div style="display:flex;align-items:center;gap:.5rem;flex-wrap:wrap;margin-bottom:.4rem">
+                    <div style="display:flex;align-items:center;gap:.5rem;flex-wrap:wrap">
                         ${etiquetaChip}
-                        ${extrasChips}
                         <span style="font-size:.75rem;color:var(--text-3)">${a.total_etapas} etapa${a.total_etapas !== 1 ? 's' : ''}</span>
                         <span style="font-size:.75rem;color:var(--text-3)">•</span>
                         <span style="font-size:.75rem;color:var(--text-3)">${a.total_ativos} contato${a.total_ativos !== 1 ? 's' : ''} em andamento</span>
                         ${a.horario_inicio && a.horario_fim ? `<span style="font-size:.75rem;color:var(--text-3)">• 🕐 ${a.horario_inicio}–${a.horario_fim}</span>` : ''}
                     </div>
-                    <select class="automacao-add-etiqueta-extra" data-id="${a.id}" style="background:var(--input-bg);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:.3rem .5rem;color:var(--text-1);font-size:.75rem;font-family:'Inter',sans-serif" title="Toda etiqueta adicionada aqui também dispara essa automação sozinha, igual a principal">
-                        <option value="">+ Adicionar Etiqueta...</option>
-                        ${opcoesDisponiveis.map(e => `<option value="${e.id}">${e.nome}</option>`).join('')}
-                    </select>
                 </div>
                 <label style="display:flex;align-items:center;gap:.4rem;font-size:.78rem;color:var(--text-3);cursor:pointer">
                     <input type="checkbox" class="automacao-toggle-ativo" data-id="${a.id}" ${a.ativo ? 'checked' : ''} style="accent-color:var(--green);width:16px;height:16px">
                     Ativa
                 </label>
                 <button type="button" class="btn-secondary btn-config-etapas" data-id="${a.id}" data-nome="${a.nome}" style="padding:.5rem .8rem;font-size:.82rem">⚙️ Configurar Etapas</button>
+                <button type="button" class="btn-secondary btn-ver-contatos-etiqueta" data-id="${a.id}" data-nome="${a.nome}" style="padding:.5rem .7rem;font-size:.82rem">👥 Contatos com a Etiqueta</button>
                 <button type="button" class="btn-danger btn-excluir-automacao" data-id="${a.id}" style="padding:.5rem .7rem;font-size:.82rem">🗑️</button>
             </div>
         `;
@@ -2935,35 +2925,16 @@ function renderAutomacoesLista() {
 
 automacoesLista?.addEventListener('change', async (e) => {
     const toggle = e.target.closest('.automacao-toggle-ativo');
-    if (toggle) {
-        try {
-            await fetch(`/api/automacoes/${toggle.dataset.id}`, {
-                method: 'PUT',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ ativo: toggle.checked })
-            });
-            showToast(toggle.checked ? 'Automação ativada' : 'Automação pausada', '', 'success', 2000);
-        } catch (e) {
-            showToast('Erro', 'Não foi possível atualizar a automação', 'error');
-        }
-        return;
-    }
-
-    const addExtra = e.target.closest('.automacao-add-etiqueta-extra');
-    if (addExtra && addExtra.value) {
-        try {
-            const res = await fetch(`/api/automacoes/${addExtra.dataset.id}/etiquetas-extras`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ etiqueta_id: Number(addExtra.value) })
-            });
-            const data = await res.json();
-            if (!res.ok) throw new Error(data.error || 'Erro ao adicionar etiqueta');
-            showToast('Etiqueta adicionada', 'Quem já tem essa etiqueta foi matriculado automaticamente.', 'success', 3000);
-            loadAutomacoes();
-        } catch (e) {
-            showToast('Erro', e.message, 'error');
-        }
+    if (!toggle) return;
+    try {
+        await fetch(`/api/automacoes/${toggle.dataset.id}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ativo: toggle.checked })
+        });
+        showToast(toggle.checked ? 'Automação ativada' : 'Automação pausada', '', 'success', 2000);
+    } catch (e) {
+        showToast('Erro', 'Não foi possível atualizar a automação', 'error');
     }
 });
 
@@ -2971,17 +2942,8 @@ automacoesLista?.addEventListener('click', async (e) => {
     const btnConfig = e.target.closest('.btn-config-etapas');
     if (btnConfig) { abrirConfigurarEtapas(btnConfig.dataset.id, btnConfig.dataset.nome); return; }
 
-    const btnRemoverExtra = e.target.closest('.automacao-remover-etiqueta-extra');
-    if (btnRemoverExtra) {
-        try {
-            await fetch(`/api/automacoes/${btnRemoverExtra.dataset.id}/etiquetas-extras/${btnRemoverExtra.dataset.etiquetaId}`, { method: 'DELETE' });
-            showToast('Etiqueta removida da automação', '', 'success', 2000);
-            loadAutomacoes();
-        } catch (e) {
-            showToast('Erro', 'Não foi possível remover a etiqueta', 'error');
-        }
-        return;
-    }
+    const btnVerContatos = e.target.closest('.btn-ver-contatos-etiqueta');
+    if (btnVerContatos) { abrirContatosComEtiqueta(btnVerContatos.dataset.id, btnVerContatos.dataset.nome); return; }
 
     const btnExcluir = e.target.closest('.btn-excluir-automacao');
     if (btnExcluir) {
@@ -3072,6 +3034,72 @@ function fecharConfigurarEtapas() {
 }
 document.getElementById('modal-etapas-fechar')?.addEventListener('click', fecharConfigurarEtapas);
 document.getElementById('modal-etapas-fechar-x')?.addEventListener('click', fecharConfigurarEtapas);
+
+// ---- Modal: Contatos com a Etiqueta ----
+const modalContatosEtiqueta = document.getElementById('modal-contatos-etiqueta');
+const modalContatosEtiquetaTitulo = document.getElementById('modal-contatos-etiqueta-titulo');
+const modalContatosEtiquetaLista = document.getElementById('modal-contatos-etiqueta-lista');
+const btnAdicionarQuemFalta = document.getElementById('btn-adicionar-quem-falta');
+let contatosEtiquetaAutomacaoId = null;
+
+async function abrirContatosComEtiqueta(automacaoId, nomeAutomacao) {
+    contatosEtiquetaAutomacaoId = automacaoId;
+    if (modalContatosEtiquetaTitulo) modalContatosEtiquetaTitulo.textContent = `👥 Contatos com a Etiqueta — ${nomeAutomacao || ''}`;
+    modalContatosEtiquetaLista.innerHTML = '<div style="padding:1.5rem;text-align:center;color:var(--text-3)">Carregando...</div>';
+    modalContatosEtiqueta?.classList.add('open');
+    await carregarContatosComEtiqueta();
+}
+
+async function carregarContatosComEtiqueta() {
+    if (!contatosEtiquetaAutomacaoId) return;
+    try {
+        const res = await fetch(`/api/automacoes/${contatosEtiquetaAutomacaoId}/contatos-com-etiqueta`);
+        const contatos = await res.json();
+        if (!res.ok) throw new Error(contatos.error || 'Erro ao carregar');
+        if (contatos.length === 0) {
+            modalContatosEtiquetaLista.innerHTML = '<div style="padding:1.5rem;text-align:center;color:var(--text-3)">Ninguém com essa etiqueta ainda.</div>';
+            return;
+        }
+        modalContatosEtiquetaLista.innerHTML = contatos.map(c => `
+            <div class="card glass" style="padding:.7rem .9rem;display:flex;align-items:center;gap:.8rem;flex-wrap:wrap">
+                <div style="flex:1;min-width:160px">
+                    <div style="font-weight:500;color:var(--text-1);font-size:.88rem">${c.nome}</div>
+                    <div style="font-size:.75rem;color:var(--text-3);margin-bottom:.3rem">${c.telefone}</div>
+                    <div style="display:flex;gap:.3rem;flex-wrap:wrap">${c.etiquetas.map(e => etiquetaChipHtml(e, false)).join('')}</div>
+                </div>
+                <span style="font-size:.75rem;font-weight:600;padding:.25rem .6rem;border-radius:50px;white-space:nowrap;${c.matriculado ? 'background:rgba(37,211,102,0.12);color:var(--green)' : 'background:rgba(245,158,11,0.12);color:var(--amber)'}">
+                    ${c.matriculado ? '✅ Já matriculado' : '⏳ Aguardando'}
+                </span>
+            </div>
+        `).join('');
+    } catch (e) {
+        modalContatosEtiquetaLista.innerHTML = '<div style="padding:1.5rem;text-align:center;color:var(--red)">Erro ao carregar contatos.</div>';
+    }
+}
+
+function fecharContatosComEtiqueta() {
+    contatosEtiquetaAutomacaoId = null;
+    modalContatosEtiqueta?.classList.remove('open');
+}
+document.getElementById('modal-contatos-etiqueta-fechar')?.addEventListener('click', fecharContatosComEtiqueta);
+document.getElementById('modal-contatos-etiqueta-fechar-x')?.addEventListener('click', fecharContatosComEtiqueta);
+
+btnAdicionarQuemFalta?.addEventListener('click', async () => {
+    if (!contatosEtiquetaAutomacaoId) return;
+    btnAdicionarQuemFalta.disabled = true;
+    btnAdicionarQuemFalta.textContent = '⏳ Adicionando...';
+    try {
+        await fetch(`/api/automacoes/${contatosEtiquetaAutomacaoId}/matricular-existentes`, { method: 'POST' });
+        showToast('Feito!', 'Quem estava aguardando foi matriculado.', 'success', 3000);
+        await carregarContatosComEtiqueta();
+        loadAutomacoes();
+    } catch (e) {
+        showToast('Erro', 'Não foi possível adicionar os contatos', 'error');
+    } finally {
+        btnAdicionarQuemFalta.disabled = false;
+        btnAdicionarQuemFalta.textContent = '➕ Adicionar quem falta';
+    }
+});
 
 function etapaMediaPreviewHtml(etapa) {
     if (!etapa.media_path) return '<span style="color:var(--text-3);font-size:.78rem">Nenhum arquivo anexado</span>';

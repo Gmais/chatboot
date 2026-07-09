@@ -245,11 +245,6 @@ async function initDB() {
             ativo INTEGER DEFAULT 1,
             criado_em DATETIME DEFAULT CURRENT_TIMESTAMP
         );
-        CREATE TABLE IF NOT EXISTS automacao_etiquetas_extras (
-            automacao_id INTEGER NOT NULL,
-            etiqueta_id INTEGER NOT NULL,
-            PRIMARY KEY (automacao_id, etiqueta_id)
-        );
         CREATE TABLE IF NOT EXISTS automacao_etapas (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             automacao_id INTEGER NOT NULL,
@@ -1416,15 +1411,7 @@ async function executarEtapaAutomacao(telefone, automacao, etapa) {
 // (se ainda não estiver matriculado) e dispara a etapa 1 na hora.
 async function iniciarAutomacoesParaEtiqueta(telefone, etiquetaId) {
     const numLimpo = telefone.replace('@c.us','').replace('@lid','');
-    // Etiqueta bate como gatilho se for a principal (automacoes.etiqueta_id) OU
-    // uma das extras (automacao_etiquetas_extras) — cada etiqueta vinculada
-    // dispara a automação de forma independente.
-    const automacoes = await db.all(
-        `SELECT DISTINCT a.* FROM automacoes a
-         LEFT JOIN automacao_etiquetas_extras e ON e.automacao_id = a.id
-         WHERE (a.etiqueta_id = ? OR e.etiqueta_id = ?) AND a.ativo = 1`,
-        [etiquetaId, etiquetaId]
-    );
+    const automacoes = await db.all('SELECT * FROM automacoes WHERE etiqueta_id = ? AND ativo = 1', etiquetaId);
     for (const automacao of automacoes) {
         const jaMatriculado = await db.get(
             'SELECT 1 FROM contato_automacao_estado WHERE telefone = ? AND automacao_id = ?',
@@ -1441,23 +1428,12 @@ async function iniciarAutomacoesParaEtiqueta(telefone, etiquetaId) {
 // aplicada — quem já tinha a etiqueta antes da automação existir (ou antes
 // dela ganhar etapas) nunca é matriculado sozinho. Chamada depois de salvar
 // etapas ou reativar uma automação, pra pegar esses contatos "atrasados".
-// Todas as etiquetas que disparam essa automação: a principal
-// (automacoes.etiqueta_id) mais as extras vinculadas depois.
-async function etiquetasGatilhoDaAutomacao(automacaoId, etiquetaPrimaria) {
-    const extras = await db.all('SELECT etiqueta_id FROM automacao_etiquetas_extras WHERE automacao_id = ?', automacaoId);
-    return [etiquetaPrimaria, ...extras.map(e => e.etiqueta_id)];
-}
-
 async function enrolarContatosExistentesNaAutomacao(automacaoId) {
     const automacao = await db.get('SELECT * FROM automacoes WHERE id = ?', automacaoId);
     if (!automacao || !automacao.ativo) return;
     const etapa1 = await db.get('SELECT * FROM automacao_etapas WHERE automacao_id = ? ORDER BY ordem ASC LIMIT 1', automacaoId);
     if (!etapa1) return;
-    const etiquetasGatilho = await etiquetasGatilhoDaAutomacao(automacaoId, automacao.etiqueta_id);
-    const contatos = await db.all(
-        `SELECT DISTINCT telefone FROM contato_etiquetas WHERE etiqueta_id IN (${etiquetasGatilho.map(() => '?').join(',')})`,
-        etiquetasGatilho
-    );
+    const contatos = await db.all('SELECT telefone FROM contato_etiquetas WHERE etiqueta_id = ?', automacao.etiqueta_id);
     let primeiro = true;
     for (const c of contatos) {
         const jaMatriculado = await db.get(
@@ -1499,11 +1475,9 @@ async function processarAutomacoesPendentes() {
                 continue;
             }
             // Etiqueta removida manualmente no meio do caminho — cancela a automação.
-            // Vale qualquer uma das etiquetas-gatilho (principal ou extra).
-            const etiquetasGatilho = await etiquetasGatilhoDaAutomacao(automacao.id, automacao.etiqueta_id);
             const aindaTemEtiqueta = await db.get(
-                `SELECT 1 FROM contato_etiquetas WHERE telefone = ? AND etiqueta_id IN (${etiquetasGatilho.map(() => '?').join(',')})`,
-                [estado.telefone, ...etiquetasGatilho]
+                'SELECT 1 FROM contato_etiquetas WHERE telefone = ? AND etiqueta_id = ?',
+                [estado.telefone, automacao.etiqueta_id]
             );
             if (!aindaTemEtiqueta) {
                 await db.run('DELETE FROM contato_automacao_estado WHERE telefone = ? AND automacao_id = ?', [estado.telefone, estado.automacao_id]);
@@ -1552,42 +1526,7 @@ app.get('/api/automacoes', async (req, res) => {
         LEFT JOIN etiquetas e ON e.id = a.etiqueta_id
         ORDER BY a.criado_em DESC
     `);
-    for (const a of automacoes) {
-        a.etiquetas_extras = await db.all(
-            `SELECT e.id, e.nome, e.cor FROM automacao_etiquetas_extras ex
-             INNER JOIN etiquetas e ON e.id = ex.etiqueta_id
-             WHERE ex.automacao_id = ?`,
-            a.id
-        );
-    }
     res.json(automacoes);
-});
-
-// Etiquetas extras de gatilho: cada uma, ao ser aplicada num contato, dispara
-// essa automação de forma independente — igual à etiqueta principal.
-app.post('/api/automacoes/:id/etiquetas-extras', async (req, res) => {
-    const { id } = req.params;
-    const { etiqueta_id } = req.body;
-    if (!etiqueta_id) return res.status(400).json({ error: 'Informe "etiqueta_id".' });
-    try {
-        await db.run('INSERT OR IGNORE INTO automacao_etiquetas_extras (automacao_id, etiqueta_id) VALUES (?, ?)', [id, etiqueta_id]);
-        io.emit('automacoes_atualizadas');
-        res.json({ success: true });
-        enrolarContatosExistentesNaAutomacao(id).catch(e => console.error('Erro ao matricular contatos existentes:', e.message));
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
-});
-
-app.delete('/api/automacoes/:id/etiquetas-extras/:etiquetaId', async (req, res) => {
-    const { id, etiquetaId } = req.params;
-    try {
-        await db.run('DELETE FROM automacao_etiquetas_extras WHERE automacao_id = ? AND etiqueta_id = ?', [id, etiquetaId]);
-        io.emit('automacoes_atualizadas');
-        res.json({ success: true });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
 });
 
 // =====================================
@@ -1783,6 +1722,31 @@ app.post('/api/automacoes/:id/matricular-existentes', async (req, res) => {
     try {
         await enrolarContatosExistentesNaAutomacao(id);
         res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Lista quem já tem a etiqueta que dispara essa automação, com as etiquetas
+// de cada um e se já está matriculado ou não — pra revisar antes de mandar
+// matricular quem falta.
+app.get('/api/automacoes/:id/contatos-com-etiqueta', async (req, res) => {
+    const { id } = req.params;
+    try {
+        const automacao = await db.get('SELECT * FROM automacoes WHERE id = ?', id);
+        if (!automacao) return res.status(404).json({ error: 'Automação não encontrada.' });
+        const contatos = await db.all('SELECT telefone FROM contato_etiquetas WHERE etiqueta_id = ?', automacao.etiqueta_id);
+        const resultado = [];
+        for (const c of contatos) {
+            const nome = await resolverNomeContato(c.telefone);
+            const matriculado = await db.get('SELECT 1 FROM contato_automacao_estado WHERE telefone = ? AND automacao_id = ?', [c.telefone, id]);
+            const etiquetas = await db.all(
+                `SELECT e.id, e.nome, e.cor FROM contato_etiquetas ce INNER JOIN etiquetas e ON e.id = ce.etiqueta_id WHERE ce.telefone = ?`,
+                c.telefone
+            );
+            resultado.push({ telefone: c.telefone, nome: nome || c.telefone, matriculado: !!matriculado, etiquetas });
+        }
+        res.json(resultado);
     } catch (err) {
         res.status(500).json({ error: err.message });
     }

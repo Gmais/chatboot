@@ -348,6 +348,25 @@
             </div>
         </div>
 
+        <!-- MODAL: CONTATOS COM A ETIQUETA DA AUTOMAÇÃO -->
+        <div class="modal-overlay" id="modal-contatos-etiqueta">
+            <div class="modal-content" style="max-width:640px;width:95%;max-height:82vh;display:flex;flex-direction:column;background:var(--bg-color)">
+                <div class="modal-header" style="background:var(--card-bg);display:flex;align-items:center;gap:1rem;padding:1.2rem 1.5rem;border-bottom:1px solid rgba(255,255,255,0.06)">
+                    <h3 id="modal-contatos-etiqueta-titulo" style="flex:1;margin:0">👥 Contatos com a Etiqueta</h3>
+                    <button class="modal-close" id="modal-contatos-etiqueta-fechar-x" style="background:none;border:none;color:var(--text-3);font-size:1.1rem;cursor:pointer">✖</button>
+                </div>
+                <div class="modal-body" style="flex:1;overflow-y:auto;padding:1.5rem">
+                    <div id="modal-contatos-etiqueta-lista" style="display:flex;flex-direction:column;gap:.6rem">
+                        <div style="padding:1.5rem;text-align:center;color:var(--text-3)">Carregando...</div>
+                    </div>
+                </div>
+                <div class="modal-footer" style="background:var(--card-bg);padding:1rem 1.5rem;margin-top:0;border-top:1px solid rgba(255,255,255,0.06)">
+                    <button class="btn-secondary" id="modal-contatos-etiqueta-fechar">Fechar</button>
+                    <button class="btn-primary" id="btn-adicionar-quem-falta">➕ Adicionar quem falta</button>
+                </div>
+            </div>
+        </div>
+
         <!-- ===================== MENSAGENS PERSONALIZADAS (ANIVERSÁRIO) ===================== -->
         <div id="mensagens-personalizadas-section" class="page-section hidden">
             <div class="card glass">
