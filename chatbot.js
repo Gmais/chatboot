@@ -2855,6 +2855,19 @@ async function garantirEtiquetaInadimplente() {
     return result.lastID;
 }
 
+// "Parcela Atrasada" — mesma varredura de inadimplência, mas pra quem está
+// com atraso mais recente (até 30 dias). Duas etiquetas separadas pra dar
+// pra montar duas Automações de cobrança diferentes (tom mais brando pra
+// quem venceu há pouco, mais firme pra quem já passou de 30 dias).
+const NOME_ETIQUETA_PARCELA_ATRASADA = 'Parcela Atrasada';
+const LIMITE_DIAS_ATRASO_LONGO = 30;
+async function garantirEtiquetaParcelaAtrasada() {
+    const existente = await db.get('SELECT id FROM etiquetas WHERE LOWER(nome) = LOWER(?)', NOME_ETIQUETA_PARCELA_ATRASADA);
+    if (existente) return existente.id;
+    const result = await db.run('INSERT INTO etiquetas (nome, cor) VALUES (?, ?)', [NOME_ETIQUETA_PARCELA_ATRASADA, '#f59e0b']);
+    return result.lastID;
+}
+
 let pactoInadimplentesRunning = false;
 let pactoInadimplentesProgress = { total: 0, verificados: 0, inadimplentes: 0, running: false };
 
@@ -2865,14 +2878,17 @@ app.get('/api/pacto/inadimplentes', async (req, res) => {
     res.json(lista);
 });
 
-// Remoção manual: some da lista e desvincula a etiqueta "Inadimplente" na
-// hora. Se ele ainda estiver mesmo em atraso, volta a aparecer na próxima
-// verificação (Integração → Atualizar Lista) — isso aqui só limpa a leitura atual.
+// Remoção manual: some da lista e desvincula a etiqueta (seja "Inadimplente"
+// ou "Parcela Atrasada" — remove as duas, sem custo remover a que ele não
+// tinha) na hora. Se ele ainda estiver mesmo em atraso, volta a aparecer na
+// próxima verificação (Integração → Atualizar Lista) — isso aqui só limpa a leitura atual.
 app.delete('/api/pacto/inadimplentes/:telefone', async (req, res) => {
     const { telefone } = req.params;
     try {
-        const etiquetaId = await garantirEtiquetaInadimplente();
-        await removerEtiquetaContato(telefone, etiquetaId);
+        const etiquetaLongaId = await garantirEtiquetaInadimplente();
+        const etiquetaRecenteId = await garantirEtiquetaParcelaAtrasada();
+        await removerEtiquetaContato(telefone, etiquetaLongaId);
+        await removerEtiquetaContato(telefone, etiquetaRecenteId);
         await db.run('DELETE FROM pacto_inadimplentes WHERE telefone = ?', telefone);
         res.json({ success: true });
     } catch (err) {
@@ -2890,7 +2906,8 @@ app.delete('/api/pacto/inadimplentes/:telefone', async (req, res) => {
 // foi etiquetado manualmente por outro motivo.
 async function processarInadimplentesPacto() {
     const contatos = await db.all("SELECT telefone, matricula FROM leads WHERE matricula IS NOT NULL AND matricula != ''");
-    const etiquetaId = await garantirEtiquetaInadimplente();
+    const etiquetaLongaId = await garantirEtiquetaInadimplente();
+    const etiquetaRecenteId = await garantirEtiquetaParcelaAtrasada();
 
     pactoInadimplentesRunning = true;
     pactoInadimplentesProgress = { total: contatos.length, verificados: 0, inadimplentes: 0, running: true };
@@ -2924,13 +2941,25 @@ async function processarInadimplentesPacto() {
                         dias_atraso_mais_antiga = excluded.dias_atraso_mais_antiga, atualizado_em = CURRENT_TIMESTAMP`,
                     [numLimpo, aluno.pessoa?.nome || null, aluno.matricula || contato.matricula, parcelasVencidas.length, valorTotal, diasAtraso]
                 );
-                await aplicarEtiquetaContato(numLimpo, etiquetaId);
+                // Etiqueta certa pelo tempo de atraso — e sempre remove a OUTRA,
+                // pro caso de ter mudado de faixa desde a última varredura (pagou
+                // a parcela mais antiga e a próxima com menos dias virou a mais
+                // velha, por exemplo). Remover uma etiqueta que o contato não tem
+                // é um DELETE de 0 linhas, sem custo real.
+                if (diasAtraso > LIMITE_DIAS_ATRASO_LONGO) {
+                    await aplicarEtiquetaContato(numLimpo, etiquetaLongaId);
+                    await removerEtiquetaContato(numLimpo, etiquetaRecenteId);
+                } else {
+                    await aplicarEtiquetaContato(numLimpo, etiquetaRecenteId);
+                    await removerEtiquetaContato(numLimpo, etiquetaLongaId);
+                }
                 pactoInadimplentesProgress.inadimplentes++;
             } else if (jaEstavaNoCache) {
-                // Não é mais ativo ou já quitou as parcelas — some do cache e da
-                // etiqueta (só porque sabemos que fomos nós que aplicamos).
+                // Não é mais ativo ou já quitou as parcelas — some do cache e das
+                // duas etiquetas (só porque sabemos que fomos nós que aplicamos).
                 await db.run('DELETE FROM pacto_inadimplentes WHERE telefone = ?', numLimpo);
-                await removerEtiquetaContato(numLimpo, etiquetaId);
+                await removerEtiquetaContato(numLimpo, etiquetaLongaId);
+                await removerEtiquetaContato(numLimpo, etiquetaRecenteId);
             }
         } catch (err) {
             console.error(`❌ Erro ao checar inadimplência da matrícula ${contato.matricula}:`, err.message);
@@ -2966,16 +2995,20 @@ const INADIMPLENTE_EXPIRACAO_HORAS = 20;
 async function expirarInadimplentesAntigos() {
     if (!db) return;
     try {
-        const etiquetaId = await garantirEtiquetaInadimplente();
+        const etiquetaLongaId = await garantirEtiquetaInadimplente();
+        const etiquetaRecenteId = await garantirEtiquetaParcelaAtrasada();
         const expirados = await db.all(
             `SELECT telefone FROM pacto_inadimplentes WHERE atualizado_em <= datetime('now', ?)`,
             `-${INADIMPLENTE_EXPIRACAO_HORAS} hours`
         );
         for (const c of expirados) {
-            await removerEtiquetaContato(c.telefone, etiquetaId);
+            // Remove as duas — não sabemos aqui qual das duas o contato tinha
+            // sem reconsultar, e remover a que ele não tem não custa nada.
+            await removerEtiquetaContato(c.telefone, etiquetaLongaId);
+            await removerEtiquetaContato(c.telefone, etiquetaRecenteId);
             await db.run('DELETE FROM pacto_inadimplentes WHERE telefone = ?', c.telefone);
         }
-        if (expirados.length > 0) console.log(`⏳ ${expirados.length} etiqueta(s) "Inadimplente" expirada(s) após ${INADIMPLENTE_EXPIRACAO_HORAS}h.`);
+        if (expirados.length > 0) console.log(`⏳ ${expirados.length} etiqueta(s) de inadimplência expirada(s) após ${INADIMPLENTE_EXPIRACAO_HORAS}h.`);
     } catch (e) {
         console.error('Erro ao expirar inadimplentes antigos:', e.message);
     }
