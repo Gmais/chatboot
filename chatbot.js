@@ -1913,7 +1913,25 @@ app.get('/api/mensagens/enviadas', async (req, res) => {
 // status Aberta/Fechada e etiquetas) — usado tanto pela rota REST quanto
 // pela carga inicial via Socket.IO, pra não duplicar a query em dois lugares.
 async function listarConversasComEtiquetas() {
+    // A "última mensagem" ideal pra prévia da lista é a última com conteúdo de
+    // verdade — não um ruído de protocolo (tipo='text' com texto placeholder)
+    // que às vezes fica registrado por cima do histórico real de um contato
+    // (ver fix de causa raiz em client.on('message')). latest_real pega a mais
+    // recente IGNORANDO esses placeholders; latest_any é o fallback pro raro
+    // caso de um telefone cujo histórico inteiro seja placeholder (não deveria
+    // sobrar depois da limpeza, mas evita o contato simplesmente sumir da lista).
     const conversas = await db.all(`
+        WITH latest_real AS (
+            SELECT telefone, MAX(ts) AS max_ts
+            FROM conversas
+            WHERE NOT (tipo = 'text' AND texto IN ('[text]', '[mensagem sem texto]'))
+            GROUP BY telefone
+        ),
+        latest_any AS (
+            SELECT telefone, MAX(ts) AS max_ts
+            FROM conversas
+            GROUP BY telefone
+        )
         SELECT
             c.telefone,
             c.nome,
@@ -1926,9 +1944,9 @@ async function listarConversasComEtiquetas() {
             COALESCE(cs.status, 'aberta') AS status
         FROM conversas c
         INNER JOIN (
-            SELECT telefone, MAX(ts) AS max_ts
-            FROM conversas
-            GROUP BY telefone
+            SELECT la.telefone, COALESCE(lr.max_ts, la.max_ts) AS max_ts
+            FROM latest_any la
+            LEFT JOIN latest_real lr ON lr.telefone = la.telefone
         ) latest ON c.telefone = latest.telefone AND c.ts = latest.max_ts
         LEFT JOIN conversas_humano ch ON ch.telefone = c.telefone
         LEFT JOIN conversas_status cs ON cs.telefone = c.telefone
