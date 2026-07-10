@@ -3595,7 +3595,7 @@ function renderAcompanhamentoAutomacoes(automacoes) {
                     </button>
                     <button type="button" class="btn-primary btn-disparar-automacao" data-id="${a.id}" data-nome="${a.nome}" style="padding:.4rem .8rem;font-size:.78rem" title="Manda a mensagem sorteada pra cada contato em andamento">🚀 Disparar Mensagens</button>
                     ${a.etiqueta_nome === 'Inadimplente' ? `
-                        <button type="button" class="btn-secondary btn-atualizar-inadimplentes" style="padding:.4rem .8rem;font-size:.78rem" title="Roda a varredura no Pacto de novo pra atualizar quem está inadimplente antes de disparar">🔄 Atualizar Lista de Inadimplentes</button>
+                        <button type="button" class="btn-secondary btn-importar-inadimplentes" data-id="${a.id}" style="padding:.4rem .8rem;font-size:.78rem" title="Traz pra fila quem já está com a etiqueta Inadimplente agora (a varredura em si roda na aba Integração)">📥 Importar Lista de Inadimplentes</button>
                     ` : ''}
                 </div>
                 <div class="acompanhamento-detalhe" data-id="${a.id}" style="margin-top:1rem;${aberto ? '' : 'display:none'}">
@@ -3705,19 +3705,20 @@ acompanhamentoAutomacoesLista?.addEventListener('change', async (e) => {
 });
 
 acompanhamentoAutomacoesLista?.addEventListener('click', async (e) => {
-    const btnAtualizarInadimplentes = e.target.closest('.btn-atualizar-inadimplentes');
-    if (btnAtualizarInadimplentes) {
-        btnAtualizarInadimplentes.disabled = true;
-        btnAtualizarInadimplentes.textContent = '⏳ Atualizando...';
+    const btnImportarInadimplentes = e.target.closest('.btn-importar-inadimplentes');
+    if (btnImportarInadimplentes) {
+        btnImportarInadimplentes.disabled = true;
+        btnImportarInadimplentes.textContent = '⏳ Importando...';
         try {
-            const res = await fetch('/api/pacto/inadimplentes/atualizar', { method: 'POST' });
+            const res = await fetch(`/api/automacoes/${btnImportarInadimplentes.dataset.id}/importar-contatos`, { method: 'POST' });
             const data = await res.json();
-            if (!res.ok) throw new Error(data.error || 'Erro ao iniciar atualização');
-            showToast('Atualização iniciada!', 'Pode levar alguns minutos — quem quitou sai da etiqueta e quem venceu entra, sozinho, conforme a varredura avança.', 'success', 6000);
+            if (!res.ok) throw new Error(data.error || 'Erro ao importar');
+            showToast('Importado!', `${data.importados} contato(s) novo(s) trazido(s) pra fila.`, 'success', 4000);
         } catch (err) {
             showToast('Erro', err.message, 'error');
-            btnAtualizarInadimplentes.disabled = false;
-            btnAtualizarInadimplentes.textContent = '🔄 Atualizar Lista de Inadimplentes';
+        } finally {
+            btnImportarInadimplentes.disabled = false;
+            btnImportarInadimplentes.textContent = '📥 Importar Lista de Inadimplentes';
         }
         return;
     }
