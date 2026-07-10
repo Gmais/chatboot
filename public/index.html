@@ -7,33 +7,6 @@
     <meta name="description" content="Painel profissional de automação para WhatsApp. Gerencie respostas, leads e disparos em massa.">
     <link rel="stylesheet" href="style.css">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-    
-    <!-- Drawflow CSS & JS -->
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/jerosoler/Drawflow/dist/drawflow.min.css">
-    <script src="https://cdn.jsdelivr.net/gh/jerosoler/Drawflow/dist/drawflow.min.js"></script>
-    <style>
-        /* Dark mode overrides para o Drawflow */
-        .drawflow { background: var(--bg-color); }
-        .drawflow .drawflow-node { background: var(--card-bg); border: 1px solid rgba(255,255,255,0.1); color: var(--text-1); border-radius: 8px; box-shadow: 0 4px 15px rgba(0,0,0,0.2); width: 260px; }
-        .drawflow .drawflow-node.selected { border: 2px solid var(--green); background: rgba(37,211,102,0.05); }
-        .drawflow .drawflow-node .inputs .input { background: #fff; border: 2px solid #555; }
-        .drawflow .drawflow-node .outputs .output { background: var(--green); border: 2px solid #fff; }
-        .drawflow .connection .main-path { stroke: var(--text-3); stroke-width: 3px; }
-        .drawflow .connection .main-path:hover { stroke: var(--green); }
-        /* Confirmação visual: o ponto de entrada fica verde quando há uma conexão
-           chegando nele — o Drawflow não faz isso por padrão. */
-        .drawflow .drawflow-node .inputs .input.input-conectado { background: var(--green) !important; border-color: #fff !important; }
-        .drawflow-node .title-box { display: flex; align-items: center; gap: 8px; padding: 10px; background: rgba(255,255,255,0.02); border-bottom: 1px solid rgba(255,255,255,0.05); font-weight: 600; font-size: 0.9rem; border-radius: 8px 8px 0 0; }
-        .drawflow-node .box { padding: 15px; display: flex; flex-direction: column; gap: 8px; }
-        
-        .df-input { width: 100%; padding: 8px; border-radius: 6px; background: var(--input-bg); border: 1px solid rgba(255,255,255,0.1); color: var(--text-1); font-size: 0.85rem; font-family: 'Inter', sans-serif; resize: vertical; }
-        .df-btn { background: var(--green); color: #000; border: none; padding: 5px 10px; border-radius: 4px; cursor: pointer; font-size: 0.8rem; font-weight: 600; }
-        
-        .df-toolbar { display: flex; flex-direction: column; gap: 10px; padding: 15px; background: var(--card-bg); border-right: 1px solid rgba(255,255,255,0.05); width: 220px; }
-        .drag-drawflow { padding: 12px 15px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.1); border-radius: 8px; cursor: grab; font-weight: 500; font-size: 0.9rem; color: var(--text-1); transition: all 0.2s; display: flex; align-items: center; gap: 8px; }
-        .drag-drawflow:hover { background: rgba(255,255,255,0.08); transform: translateY(-2px); }
-        .drag-drawflow:active { cursor: grabbing; }
-    </style>
 </head>
 <body>
 
@@ -77,10 +50,6 @@
             <a href="#" class="nav-btn" data-target="mensagens-section">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
                 Mensagem Rápida
-            </a>
-            <a href="#" class="nav-btn" data-target="fluxos-section">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
-                Fluxos
             </a>
             <a href="#" class="nav-btn" data-target="integracoes-section">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18.37 5.63 5.63 18.37M9 6H6a3 3 0 0 0-3 3v0a3 3 0 0 0 3 3h1"/><path d="M15 18h3a3 3 0 0 0 3-3v0a3 3 0 0 0-3-3h-1"/><path d="m14 7 3 3-3 3M10 17l-3-3 3-3"/></svg>
@@ -208,77 +177,6 @@
                 </div>
                 <div id="regras-lista">
                     <p style="color:var(--text-3);text-align:center;padding:2rem">Carregando regras...</p>
-                </div>
-            </div>
-        </div>
-
-        <!-- ===================== FLUXOS (FLOW BUILDER) ===================== -->
-        <div id="fluxos-section" class="page-section hidden">
-            <div class="card glass">
-                <div class="section-header">
-                    <h3>🌊 Fluxos de Atendimento</h3>
-                    <button class="btn-primary" id="btn-novo-fluxo">➕ Novo Fluxo</button>
-                </div>
-                <div id="fluxos-lista" style="display:flex;flex-direction:column;gap:.8rem">
-                    <div style="padding:2rem;text-align:center;color:var(--text-3)">Carregando fluxos...</div>
-                </div>
-            </div>
-        </div>
-
-        <!-- MODAL CONSTRUTOR DE FLUXOS -->
-        <div id="modal-fluxo" class="modal-overlay">
-            <div class="modal-content" style="max-width:900px;width:95%;height:90vh;display:flex;flex-direction:column;background:var(--bg-color)">
-                <div class="modal-header" style="background:var(--card-bg);display:flex;align-items:center;gap:1rem">
-                    <h3 id="modal-fluxo-title" style="flex:1">Criar Fluxo</h3>
-                    <span id="fluxo-status" style="font-size:.78rem;color:var(--text-3);white-space:nowrap">●&nbsp;Novo fluxo</span>
-                    <button class="modal-close" onclick="fecharModalFluxo()">✖</button>
-                </div>
-                <div class="modal-body" style="flex:1;display:flex;flex-direction:column;padding:0;overflow:hidden">
-                    
-                    <div style="padding:15px;background:var(--bg-color);border-bottom:1px solid rgba(255,255,255,0.05);display:flex;gap:1rem;flex-wrap:wrap">
-                        <div style="flex:1;min-width:250px">
-                            <label style="display:block;margin-bottom:.5rem;color:var(--text-2);font-size:.85rem">Nome do Fluxo</label>
-                            <input type="text" id="fluxo-nome" placeholder="Ex: Boas Vindas, Suporte Técnico..." style="width:100%;font-size:1.1rem;padding:.7rem;border-radius:8px;background:var(--input-bg);border:1px solid rgba(255,255,255,0.1);color:var(--text-1)">
-                        </div>
-                        <div style="flex:1;min-width:250px">
-                            <label style="display:block;margin-bottom:.5rem;color:var(--text-2);font-size:.85rem">Palavras-chave (Gatilhos)</label>
-                            <input type="text" id="fluxo-gatilho" placeholder="Ex: oi, olá, suporte (separado por vírgula)" style="width:100%;font-size:1rem;padding:.7rem;border-radius:8px;background:var(--input-bg);border:1px solid rgba(255,255,255,0.1);color:var(--text-1)">
-                        </div>
-                    </div>
-
-                    <div style="flex:1;display:flex;overflow:hidden">
-                        <!-- Sidebar de Ferramentas -->
-                        <div class="df-toolbar">
-                            <div style="font-size:0.8rem;color:var(--text-3);text-transform:uppercase;letter-spacing:1px;margin-bottom:10px;font-weight:600">Blocos (Arraste)</div>
-                            <div class="drag-drawflow" draggable="true" ondragstart="drag(event)" data-node="message">📝 Enviar Texto</div>
-                            <div class="drag-drawflow" draggable="true" ondragstart="drag(event)" data-node="media">🖼️ Enviar Mídia</div>
-                            <div class="drag-drawflow" draggable="true" ondragstart="drag(event)" data-node="delay">⏳ Atraso</div>
-                            <div class="drag-drawflow" draggable="true" ondragstart="drag(event)" data-node="question">❓ Fazer Pergunta</div>
-                            <div class="drag-drawflow" draggable="true" ondragstart="drag(event)" data-node="action">⚙️ Ação (Etiqueta)</div>
-                            <div class="drag-drawflow" draggable="true" ondragstart="drag(event)" data-node="condition">🔀 Condição (Etiqueta)</div>
-
-                            <div style="margin-top:auto;padding-top:1rem;border-top:1px dashed rgba(255,255,255,0.1);font-size:0.75rem;color:var(--text-3);line-height:1.4">
-                                💡 Arraste os blocos para o quadro.<br>
-                                🔗 Puxe a linha do ponto <strong style="color:var(--green)">verde</strong> até o ponto branco para ligar.<br>
-                                <span style="color:var(--red)">Dica:</span> Selecione um nó ou linha e aperte <strong>Delete</strong> no teclado para excluir.
-                            </div>
-                        </div>
-                        
-                        <!-- Canvas Drawflow -->
-                        <div id="drawflow" ondrop="drop(event)" ondragover="allowDrop(event)" style="flex:1;position:relative;background-image:radial-gradient(rgba(255,255,255,0.05) 1px, transparent 1px);background-size:20px 20px;">
-                            <!-- Botões flutuantes de Zoom do Canvas -->
-                            <div style="position:absolute;bottom:15px;right:15px;z-index:10;display:flex;gap:5px;background:var(--card-bg);padding:5px;border-radius:8px;border:1px solid rgba(255,255,255,0.1)">
-                                <button class="btn-secondary" onclick="editor.zoom_in()" style="padding:5px 10px;font-size:1.2rem;background:transparent;border:none">+</button>
-                                <button class="btn-secondary" onclick="editor.zoom_reset()" style="padding:5px 10px;background:transparent;border:none;font-size:0.8rem">100%</button>
-                                <button class="btn-secondary" onclick="editor.zoom_out()" style="padding:5px 10px;font-size:1.2rem;background:transparent;border:none">-</button>
-                            </div>
-                        </div>
-                    </div>
-
-                </div>
-                <div class="modal-footer" style="background:var(--card-bg)">
-                    <button class="btn-secondary" onclick="fecharModalFluxo()">Cancelar</button>
-                    <button class="btn-primary" id="btn-salvar-fluxo" style="padding:.6rem 1.5rem">💾 Salvar Fluxo</button>
                 </div>
             </div>
         </div>
@@ -1148,7 +1046,7 @@ Sempre tente agendar uma aula experimental."></textarea>
             <h3>📥 Importar Contatos</h3>
             <p style="color:var(--text-3);font-size:.85rem;margin:.5rem 0 1rem">
                 Envie uma planilha CSV com as colunas <strong>Nome</strong>, <strong>Telefone</strong> e <strong>Etiqueta</strong> (opcional).
-                Depois de importados, os contatos ficam disponíveis pra Disparos e Fluxos.
+                Depois de importados, os contatos ficam disponíveis pra Disparos.
             </p>
             <a href="/api/contatos/modelo-planilha" download style="display:inline-block;margin-bottom:1rem;font-size:.85rem;color:var(--green)">⬇️ Baixar modelo de planilha (.csv)</a>
             <input type="file" id="importar-contatos-arquivo" accept=".csv,text/csv" style="display:block;width:100%;background:var(--input-bg);border:1px solid rgba(255,255,255,0.1);border-radius:var(--radius-sm);padding:.6rem;color:var(--text-1);font-size:.85rem">

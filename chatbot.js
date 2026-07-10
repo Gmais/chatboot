@@ -123,7 +123,7 @@ let stats = { received: 0, sent: 0, leads: 0 };
 const leadsSet = new Set();
 
 // IDs de mensagens que o próprio sistema já enviou e registrou em "conversas"
-// (bot, dashboard, fluxos). Usado pelo listener message_create pra distinguir
+// (bot, dashboard). Usado pelo listener message_create pra distinguir
 // isso de mensagens mandadas direto pelo celular/WhatsApp Web vinculado, que
 // também precisam aparecer no Bate Papo ao Vivo mas ainda não foram salvas.
 const idsMensagensDoSistema = new Set();
@@ -141,7 +141,7 @@ const DB_PATH = path.join(DATA_DIR, 'database.sqlite');
 
 // public/uploads fica DENTRO da imagem do container — em todo deploy novo ele
 // volta a ser só o .gitkeep do repositório, apagando qualquer mídia enviada
-// (Regras, Fluxos, Automação). Guarda os arquivos de verdade no volume
+// (Regras, Automação). Guarda os arquivos de verdade no volume
 // persistente e troca public/uploads por um link simbólico pra lá — assim todo
 // o resto do código (que já espera path.join(__dirname,'public','uploads',...)
 // e URLs /uploads/...) continua funcionando sem precisar mudar nada.
@@ -238,21 +238,6 @@ async function initDB() {
         CREATE TABLE IF NOT EXISTS conversas_humano (
             telefone TEXT PRIMARY KEY,
             assumida_em DATETIME DEFAULT CURRENT_TIMESTAMP
-        );
-        CREATE TABLE IF NOT EXISTS fluxos (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            nome TEXT NOT NULL,
-            gatilho TEXT,
-            flow_data TEXT NOT NULL,
-            ativo INTEGER DEFAULT 1,
-            criado_em DATETIME DEFAULT CURRENT_TIMESTAMP
-        );
-        CREATE TABLE IF NOT EXISTS contato_estado_fluxo (
-            telefone TEXT PRIMARY KEY,
-            fluxo_id INTEGER NOT NULL,
-            current_node_id TEXT,
-            variaveis TEXT DEFAULT '{}',
-            atualizado_em DATETIME DEFAULT CURRENT_TIMESTAMP
         );
         CREATE TABLE IF NOT EXISTS conversas_status (
             telefone TEXT PRIMARY KEY,
@@ -380,7 +365,7 @@ async function initDB() {
     try { await db.exec(`ALTER TABLE automacoes ADD COLUMN total_concluidos INTEGER DEFAULT 0`); } catch(e) {}
     // Unidade do "Aguardar X" de cada etapa — 'dias' (produção) ou 'horas' (testar rápido)
     try { await db.exec(`ALTER TABLE automacao_etapas ADD COLUMN unidade_tempo TEXT DEFAULT 'dias'`); } catch(e) {}
-    // Distingue mensagem enviada pelo robô (regra/IA/automação/fluxo) de mensagem
+    // Distingue mensagem enviada pelo robô (regra/IA/automação) de mensagem
     // digitada por um atendente humano (dashboard ou direto no celular vinculado)
     // — mostra o rótulo certo ("🤖 Bot" vs "👤 Atendente") no Bate Papo ao Vivo.
     try { await db.exec(`ALTER TABLE conversas ADD COLUMN manual INTEGER DEFAULT 0`); } catch(e) {}
@@ -405,6 +390,10 @@ async function initDB() {
         await db.run(`UPDATE mensagens_personalizadas SET categoria = 'inadimplentes' WHERE categoria IS NULL AND nome LIKE 'Cobrança%'`);
         await db.run(`UPDATE mensagens_personalizadas SET categoria = 'ex-alunos' WHERE categoria IS NULL AND (nome LIKE 'Ex Aluno%' OR nome LIKE 'Ex-Aluno%')`);
     } catch(e) {}
+    // Feature "Fluxos" (Flow Builder visual) removida a pedido — limpeza única
+    // das tabelas que sobraram de quando ela existia.
+    try { await db.exec(`DROP TABLE IF EXISTS fluxos`); } catch(e) {}
+    try { await db.exec(`DROP TABLE IF EXISTS contato_estado_fluxo`); } catch(e) {}
     // Garante tabela conversas em instalações antigas
     try { await db.exec(`CREATE TABLE IF NOT EXISTS conversas (id INTEGER PRIMARY KEY AUTOINCREMENT, telefone TEXT NOT NULL, nome TEXT, direcao TEXT NOT NULL, texto TEXT, tipo TEXT DEFAULT 'text', ts DATETIME DEFAULT CURRENT_TIMESTAMP, lida INTEGER DEFAULT 0)`); } catch(e) {}
     try { await db.exec(`CREATE INDEX IF NOT EXISTS idx_conversas_tel ON conversas(telefone, ts)`); } catch(e) {}
@@ -456,7 +445,7 @@ async function resolverNomeContato(telefone) {
     return num;
 }
 
-// Matrícula do aluno, pro placeholder {matricula} em Regras/Fluxos/Automação —
+// Matrícula do aluno, pro placeholder {matricula} em Regras/Automação —
 // vem do mesmo vínculo com o CRM Pacto usado na coluna Matrícula de Contatos.
 // Sem vínculo (contato que nunca se matriculou/nunca conversou sobre isso),
 // devolve string vazia — o placeholder some da mensagem em vez de mostrar "null".
@@ -536,7 +525,7 @@ async function salvarNaConversa(telefone, nome, direcao, texto, tipo = 'text', t
     const naoLidas = await db.get('SELECT COUNT(*) as c FROM conversas WHERE telefone=? AND lida=0 AND direcao="in"', num);
     io.emit('nova_mensagem', { telefone: num, nome: nome || num, texto, direcao, tipo, ts, nao_lidas: naoLidas.c, manual });
 
-    // Qualquer mensagem nova (do cliente OU pro cliente — bot, automação, fluxo,
+    // Qualquer mensagem nova (do cliente OU pro cliente — bot, automação,
     // envio manual) reabre a conversa se ela tinha sido finalizada. "Finalizada"
     // significa "não precisa mais de atenção agora"; uma interação nova, em
     // qualquer direção, contraria isso.
@@ -646,86 +635,6 @@ async function obterModoAtual() {
     }
     return { modo: modo || modoPadrao, mensagemHumano, timezone };
 }
-
-// Upload de Mídia para Fluxos
-app.post('/api/upload_fluxo', upload.single('media'), (req, res) => {
-    if (!req.file) return res.status(400).json({ error: 'Nenhum arquivo enviado.' });
-    // Retorna a URL que será salva no JSON do fluxo
-    res.json({ url: '/uploads/' + req.file.filename });
-});
-
-// =====================================
-// API REST — FLUXOS DE ATENDIMENTO
-// =====================================
-app.get('/api/fluxos', async (req, res) => {
-    try {
-        const fluxos = await db.all("SELECT * FROM fluxos ORDER BY id DESC");
-        // Converte JSON de volta para objeto
-        const formatados = fluxos.map(f => ({
-            ...f,
-            flow_data: JSON.parse(f.flow_data || '[]')
-        }));
-        res.json(formatados);
-    } catch(err) {
-        res.status(500).json({error: err.message});
-    }
-});
-
-app.post('/api/fluxos', async (req, res) => {
-    try {
-        const { nome, gatilho, flow_data, ativo } = req.body;
-        const result = await db.run(
-            'INSERT INTO fluxos (nome, gatilho, flow_data, ativo) VALUES (?, ?, ?, ?)',
-            [nome, gatilho || null, JSON.stringify(flow_data || []), ativo !== undefined ? ativo : 1]
-        );
-        const novo = await db.get('SELECT * FROM fluxos WHERE id = ?', result.lastID);
-        if (novo) novo.flow_data = JSON.parse(novo.flow_data || '[]');
-        io.emit('fluxos_updated');
-        res.json(novo);
-    } catch(err) {
-        res.status(500).json({error: err.message});
-    }
-});
-
-app.put('/api/fluxos/:id', async (req, res) => {
-    try {
-        const { id } = req.params;
-        const { nome, gatilho, flow_data, ativo } = req.body;
-        await db.run(
-            'UPDATE fluxos SET nome = ?, gatilho = ?, flow_data = ?, ativo = ? WHERE id = ?',
-            [nome, gatilho || null, JSON.stringify(flow_data || []), ativo !== undefined ? ativo : 1, id]
-        );
-        io.emit('fluxos_updated');
-        res.json({ success: true });
-    } catch(err) {
-        res.status(500).json({error: err.message});
-    }
-});
-
-app.delete('/api/fluxos/:id', async (req, res) => {
-    try {
-        const { id } = req.params;
-        await db.run('DELETE FROM fluxos WHERE id = ?', id);
-        io.emit('fluxos_updated');
-        res.json({ success: true });
-    } catch(err) {
-        res.status(500).json({error: err.message});
-    }
-});
-
-app.post('/api/fluxos/:id/toggle', async (req, res) => {
-    try {
-        const { id } = req.params;
-        const fluxo = await db.get('SELECT ativo FROM fluxos WHERE id = ?', id);
-        if (!fluxo) return res.status(404).json({error: 'Fluxo não encontrado'});
-        const novoStatus = fluxo.ativo ? 0 : 1;
-        await db.run('UPDATE fluxos SET ativo = ? WHERE id = ?', [novoStatus, id]);
-        io.emit('fluxos_updated');
-        res.json({ success: true, ativo: novoStatus });
-    } catch(err) {
-        res.status(500).json({error: err.message});
-    }
-});
 
 // =====================================
 // API REST — CRM COLABORADORES
@@ -1003,7 +912,7 @@ app.delete('/api/contatos/:telefone', async (req, res) => {
 
 // Cria um contato manualmente (botão "+ Novo Contato" na tela de Contatos) —
 // mesmo caminho de dados de quem chega pelo WhatsApp: fica disponível na hora
-// pra Disparos, Fluxos e Automação.
+// pra Disparos e Automação.
 app.post('/api/contatos', async (req, res) => {
     const { nome, telefone, data_nascimento, etiqueta_id } = req.body;
     if (!nome || !nome.trim()) return res.status(400).json({ error: 'Nome é obrigatório.' });
@@ -1123,7 +1032,6 @@ async function mesclarGrupoDeTelefones(canonico, leadsGrupo) {
         await moverLinhaSimples('automacao_envios_log', de, canonico);
         await moverLinhaPkTelefone('vinculo_pacto', de, canonico);
         await moverLinhaPkTelefone('conversas_humano', de, canonico);
-        await moverLinhaPkTelefone('contato_estado_fluxo', de, canonico);
         await moverLinhaPkTelefone('conversas_status', de, canonico);
         await moverLinhaPkTelefone('pacto_inadimplentes', de, canonico);
         await moverLinhasChaveComposta('contato_etiquetas', 'etiqueta_id', de, canonico);
@@ -1432,8 +1340,8 @@ app.delete('/api/etiquetas/:id', async (req, res) => {
 // Aplica uma etiqueta a um contato (idempotente). NÃO matricula em nenhuma
 // automação sozinho — matrícula só acontece quando alguém clica "Importar
 // Lista" no card da automação. Ponto único usado por toda aplicação de
-// etiqueta no sistema (regras automáticas, fluxos, import de planilha e
-// aplicação manual).
+// etiqueta no sistema (regras automáticas, import de planilha e aplicação
+// manual).
 async function aplicarEtiquetaContato(telefone, etiquetaId) {
     const numLimpo = telefone.replace('@c.us','').replace('@lid','');
     const etiqueta = await db.get('SELECT duracao_dias FROM etiquetas WHERE id = ?', etiquetaId);
@@ -3639,190 +3547,7 @@ client.on('message_create', async (msg) => {
     } catch (e) {
         console.error('Erro ao registrar mensagem enviada pelo celular:', e.message);
     }
-});// =====================================
-// ENGINE DE FLUXOS (Flow Builder - Drawflow)
-// =====================================
-
-function getNextNodeId(node, outputKey = 'output_1') {
-    if (!node || !node.outputs || !node.outputs[outputKey]) return null;
-    const conns = node.outputs[outputKey].connections;
-    if (!conns || conns.length === 0) return null;
-    return conns[0].node; // ID do próximo nó
-}
-
-async function engineExecutarFluxo(telefoneReal, numLimpo, nomeContato, fluxoId, startNodeId) {
-    const fluxo = await db.get('SELECT * FROM fluxos WHERE id = ?', fluxoId);
-    if (!fluxo) return;
-    
-    let drawflow = {};
-    try { drawflow = JSON.parse(fluxo.flow_data); } catch(e) { return; }
-    
-    const nodes = drawflow?.drawflow?.Home?.data;
-    if (!nodes) return;
-
-    const matriculaContato = await resolverMatriculaContato(numLimpo);
-    const aplicarPlaceholders = (txt) => txt
-        .replace(/\{nome\}|\[nome\]/gi, nomeContato)
-        .replace(/\{nome_completo\}|\[nome_completo\]/gi, nomeContato)
-        .replace(/\{matricula\}|\[matricula\]/gi, matriculaContato);
-
-    let currentNodeId = startNodeId;
-    if (!currentNodeId) {
-        // Prioriza o bloco "start" explícito (o robô pula direto pro que vem
-        // depois dele, já que o start em si não faz nada). Fluxos antigos sem
-        // esse bloco caem no heurístico anterior: primeiro nó sem conexão de entrada.
-        const startNode = Object.values(nodes).find(n => n.name === 'start');
-        if (startNode) {
-            currentNodeId = getNextNodeId(startNode, 'output_1');
-        } else {
-            for (const key in nodes) {
-                const n = nodes[key];
-                const in1 = n.inputs?.input_1?.connections;
-                if (!in1 || in1.length === 0) {
-                    currentNodeId = n.id;
-                    break;
-                }
-            }
-        }
-    }
-    
-    while (currentNodeId) {
-        const node = nodes[currentNodeId];
-        if (!node) {
-            await db.run('DELETE FROM contato_estado_fluxo WHERE telefone = ?', telefoneReal);
-            break;
-        }
-        
-        await db.run(
-            'INSERT OR REPLACE INTO contato_estado_fluxo (telefone, fluxo_id, current_node_id) VALUES (?, ?, ?)', 
-            [telefoneReal, fluxoId, currentNodeId]
-        );
-
-        if (node.name === 'message') {
-            if (node.data.text) {
-                const txt = aplicarPlaceholders(node.data.text);
-                await simularDigitando(client.getChatById(telefoneReal));
-                await delay(calcularDelayDigitacao(txt));
-                const sentFluxo = await client.sendMessage(telefoneReal, txt);
-                await registrarMensagemEnviada(telefoneReal, txt, nomeContato, sentFluxo.id?._serialized);
-            }
-            currentNodeId = getNextNodeId(node, 'output_1');
-        }
-        else if (node.name === 'delay') {
-            const segs = parseInt(node.data.delaySeconds) || 1;
-            await delay(segs * 1000);
-            currentNodeId = getNextNodeId(node, 'output_1');
-        }
-        else if (node.name === 'media') {
-            if (node.data.mediaUrl) {
-                const mediaPath = path.join(__dirname, 'public', node.data.mediaUrl);
-                if (fs.existsSync(mediaPath)) {
-                    const MessageMedia = require('whatsapp-web.js').MessageMedia;
-                    const media = MessageMedia.fromFilePath(mediaPath);
-                    const cap = node.data.text ? aplicarPlaceholders(node.data.text) : '';
-                    const sentFluxoMedia = await client.sendMessage(telefoneReal, media, { caption: cap });
-                    await registrarMensagemEnviada(telefoneReal, cap || '[Mídia]', nomeContato, sentFluxoMedia.id?._serialized);
-                }
-            }
-            currentNodeId = getNextNodeId(node, 'output_1');
-        }
-        else if (node.name === 'question') {
-            let txt = aplicarPlaceholders(node.data.text || '') + '\n';
-            const opts = [];
-            if (node.data.opt1) opts.push({ lbl: node.data.opt1, out: 'output_1' });
-            if (node.data.opt2) opts.push({ lbl: node.data.opt2, out: 'output_2' });
-            if (node.data.opt3) opts.push({ lbl: node.data.opt3, out: 'output_3' });
-            
-            if (opts.length > 0) {
-                txt += '\n' + opts.map((o, i) => `${i+1} - ${o.lbl}`).join('\n');
-            }
-            await simularDigitando(client.getChatById(telefoneReal));
-            await delay(calcularDelayDigitacao(txt));
-            const sentFluxoPergunta = await client.sendMessage(telefoneReal, txt);
-            await registrarMensagemEnviada(telefoneReal, txt, nomeContato, sentFluxoPergunta.id?._serialized);
-            break; // PARA E ESPERA O USUÁRIO RESPONDER
-        }
-        else if (node.name === 'action') {
-            if (node.data.actionType === 'add_tag') {
-                await aplicarEtiquetaContato(numLimpo, node.data.tagId);
-            } else if (node.data.actionType === 'remove_tag') {
-                await removerEtiquetaContato(numLimpo, node.data.tagId);
-            }
-            currentNodeId = getNextNodeId(node, 'output_1');
-        }
-        else if (node.name === 'condition') {
-            let possui = false;
-            if (node.data.etiquetaId) {
-                const row = await db.get(
-                    'SELECT 1 FROM contato_etiquetas WHERE telefone = ? AND etiqueta_id = ?',
-                    [numLimpo, node.data.etiquetaId]
-                );
-                possui = !!row;
-            }
-            currentNodeId = getNextNodeId(node, possui ? 'output_1' : 'output_2');
-        }
-        else {
-            // Cobre o bloco "start" (não faz nada, só passa adiante) e
-            // qualquer tipo de nó desconhecido — segue pela primeira saída.
-            currentNodeId = getNextNodeId(node, 'output_1');
-        }
-        
-        if (!currentNodeId) {
-            await db.run('DELETE FROM contato_estado_fluxo WHERE telefone = ?', telefoneReal);
-        }
-    }
-}
-
-async function engineContinuarFluxo(telefoneReal, numLimpo, nomeContato, textoMensagem) {
-    const estado = await db.get('SELECT * FROM contato_estado_fluxo WHERE telefone = ?', telefoneReal);
-    if (!estado) return false;
-    
-    const fluxo = await db.get('SELECT * FROM fluxos WHERE id = ?', estado.fluxo_id);
-    if (!fluxo) {
-        await db.run('DELETE FROM contato_estado_fluxo WHERE telefone = ?', telefoneReal);
-        return false;
-    }
-    
-    let drawflow = {};
-    try { drawflow = JSON.parse(fluxo.flow_data); } catch(e) { return false; }
-    
-    const nodes = drawflow?.drawflow?.Home?.data;
-    if (!nodes) return false;
-    
-    const node = nodes[estado.current_node_id];
-    if (!node || node.name !== 'question') {
-        await engineExecutarFluxo(telefoneReal, numLimpo, nomeContato, estado.fluxo_id, getNextNodeId(node, 'output_1'));
-        return true; 
-    }
-    
-    const msg = textoMensagem.trim().toLowerCase();
-    
-    const opts = [];
-    if (node.data.opt1) opts.push({ lbl: node.data.opt1, out: 'output_1' });
-    if (node.data.opt2) opts.push({ lbl: node.data.opt2, out: 'output_2' });
-    if (node.data.opt3) opts.push({ lbl: node.data.opt3, out: 'output_3' });
-    
-    let targetOutput = null;
-    
-    for (let i = 0; i < opts.length; i++) {
-        if (msg === (i+1).toString() || msg === opts[i].lbl.toLowerCase().trim()) {
-            targetOutput = opts[i].out;
-            break;
-        }
-    }
-    
-    if (targetOutput) {
-        const nextNodeId = getNextNodeId(node, targetOutput);
-        await engineExecutarFluxo(telefoneReal, numLimpo, nomeContato, estado.fluxo_id, nextNodeId);
-    } else {
-        const txtInvalida = 'Opção inválida, por favor digite o número correto da opção.';
-        const sentInvalida = await client.sendMessage(telefoneReal, txtInvalida);
-        await registrarMensagemEnviada(telefoneReal, txtInvalida, nomeContato, sentInvalida.id?._serialized);
-        await engineExecutarFluxo(telefoneReal, numLimpo, nomeContato, estado.fluxo_id, estado.current_node_id);
-    }
-    
-    return true;
-}
+});
 
 // Wrapper de envio: tenta msg.reply(), se timeout reinicia o processo
 async function enviarResposta(msg, conteudo, opcoes = {}) {
@@ -3962,8 +3687,8 @@ client.on('message', async (msg) => {
         if (assumidaPorHumano) return;
 
         // Modo Humano: a mensagem já foi salva em "conversas" (o operador pode
-        // responder manualmente pelo painel), mas o robô não dispara fluxos
-        // automáticos nem a IA.
+        // responder manualmente pelo painel), mas o robô não dispara regras
+        // automáticas nem a IA.
         const { modo, mensagemHumano, timezone } = await obterModoAtual();
         if (modo === 'humano') {
             const hoje = moment.tz(timezone || 'America/Sao_Paulo').format('YYYY-MM-DD');
@@ -3979,31 +3704,6 @@ client.on('message', async (msg) => {
 
         // Sinaliza que o bot está processando ("digitando...")
         io.emit('bot_digitando', { telefone: numLimpo, ativo: true });
-
-        // Tenta continuar um fluxo ativo (se o usuário estava preso em uma Pergunta)
-        if (await engineContinuarFluxo(telefoneReal, numLimpo, nomeContato, texto)) {
-            io.emit('bot_digitando', { telefone: numLimpo, ativo: false });
-            return;
-        }
-
-        // Tenta iniciar um NOVO fluxo se bater com alguma palavra-chave (gatilho)
-        if (texto) {
-            const fluxosAtivos = await db.all('SELECT * FROM fluxos WHERE ativo = 1');
-            let fluxoIniciado = false;
-            for (const fluxo of fluxosAtivos) {
-                if (!fluxo.gatilho) continue;
-                const gatilhos = fluxo.gatilho.split(',').map(g => g.trim().toLowerCase());
-                if (gatilhos.some(g => texto === g || texto.includes(g))) {
-                    await engineExecutarFluxo(telefoneReal, numLimpo, nomeContato, fluxo.id, null);
-                    fluxoIniciado = true;
-                    break;
-                }
-            }
-            if (fluxoIniciado) {
-                io.emit('bot_digitando', { telefone: numLimpo, ativo: false });
-                return;
-            }
-        }
 
         if (await handleCadastroFlow(replyTo, texto, msg.body || '')) { io.emit('bot_digitando', { telefone: numLimpo, ativo: false }); return; }
 
