@@ -2966,11 +2966,7 @@ function renderAutomacoesLista() {
                     Ativa
                 </label>
                 <button type="button" class="btn-secondary btn-config-etapas" data-id="${a.id}" data-nome="${a.nome}" style="padding:.5rem .8rem;font-size:.82rem">⚙️ Configurar Etapas</button>
-                ${a.etiqueta_nome === 'Inadimplente' ? `
-                    <button type="button" class="btn-secondary btn-importar-inadimplentes-pacto" data-id="${a.id}" style="padding:.5rem .7rem;font-size:.82rem" title="Traz pra fila quem está na lista 'Ativos com Parcelas Atrasadas' da aba Integração">📥 Importar Lista</button>
-                ` : `
-                    <button type="button" class="btn-secondary btn-ver-contatos-etiqueta" data-id="${a.id}" data-nome="${a.nome}" style="padding:.5rem .7rem;font-size:.82rem">👥 Contatos com a Etiqueta</button>
-                `}
+                <button type="button" class="btn-secondary btn-importar-lista-automacao" data-id="${a.id}" data-nome="${a.nome}" style="padding:.5rem .7rem;font-size:.82rem" title="Sincroniza a fila com quem tem a etiqueta agora — quem perdeu a etiqueta sai, quem ganhou entra">📥 Importar Lista</button>
                 <button type="button" class="btn-danger btn-excluir-automacao" data-id="${a.id}" style="padding:.5rem .7rem;font-size:.82rem">🗑️</button>
             </div>
         `;
@@ -2992,33 +2988,31 @@ automacoesLista?.addEventListener('change', async (e) => {
     }
 });
 
+async function sincronizarListaAutomacao(btn) {
+    btn.disabled = true;
+    btn.textContent = '⏳ Importando...';
+    try {
+        const res = await fetch(`/api/automacoes/${btn.dataset.id}/importar-contatos`, { method: 'POST' });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Erro ao importar');
+        const partes = [];
+        if (data.importados > 0) partes.push(`${data.importados} novo(s)`);
+        if (data.removidos > 0) partes.push(`${data.removidos} removido(s) (não tem mais a etiqueta)`);
+        showToast('Lista sincronizada!', partes.length ? partes.join(' · ') : 'Nenhuma mudança — fila já batia com a etiqueta.', 'success', 4000);
+    } catch (err) {
+        showToast('Erro', err.message, 'error');
+    } finally {
+        btn.disabled = false;
+        btn.textContent = '📥 Importar Lista';
+    }
+}
+
 automacoesLista?.addEventListener('click', async (e) => {
     const btnConfig = e.target.closest('.btn-config-etapas');
     if (btnConfig) { abrirConfigurarEtapas(btnConfig.dataset.id, btnConfig.dataset.nome); return; }
 
-    const btnVerContatos = e.target.closest('.btn-ver-contatos-etiqueta');
-    if (btnVerContatos) { abrirContatosComEtiqueta(btnVerContatos.dataset.id, btnVerContatos.dataset.nome); return; }
-
-    const btnImportarInadimplentesPacto = e.target.closest('.btn-importar-inadimplentes-pacto');
-    if (btnImportarInadimplentesPacto) {
-        btnImportarInadimplentesPacto.disabled = true;
-        btnImportarInadimplentesPacto.textContent = '⏳ Importando...';
-        try {
-            const res = await fetch(`/api/automacoes/${btnImportarInadimplentesPacto.dataset.id}/importar-inadimplentes-pacto`, { method: 'POST' });
-            const data = await res.json();
-            if (!res.ok) throw new Error(data.error || 'Erro ao importar');
-            const partes = [];
-            if (data.importados > 0) partes.push(`${data.importados} novo(s)`);
-            if (data.removidos > 0) partes.push(`${data.removidos} removido(s) (já quitaram)`);
-            showToast('Lista sincronizada!', partes.length ? partes.join(' · ') : 'Nenhuma mudança — fila já batia com a lista de inadimplentes.', 'success', 4000);
-        } catch (err) {
-            showToast('Erro', err.message, 'error');
-        } finally {
-            btnImportarInadimplentesPacto.disabled = false;
-            btnImportarInadimplentesPacto.textContent = '📥 Importar Lista';
-        }
-        return;
-    }
+    const btnImportarLista = e.target.closest('.btn-importar-lista-automacao');
+    if (btnImportarLista) { await sincronizarListaAutomacao(btnImportarLista); return; }
 
     const btnExcluir = e.target.closest('.btn-excluir-automacao');
     if (btnExcluir) {
@@ -3710,9 +3704,7 @@ function renderAcompanhamentoAutomacoes(automacoes) {
                         ${aberto ? '▲ Esconder' : '▼ Ver contatos'}
                     </button>
                     <button type="button" class="btn-primary btn-disparar-automacao" data-id="${a.id}" data-nome="${a.nome}" style="padding:.4rem .8rem;font-size:.78rem" title="Manda a mensagem sorteada pra cada contato em andamento">🚀 Disparar Mensagens</button>
-                    ${a.etiqueta_nome === 'Inadimplente' ? `
-                        <button type="button" class="btn-secondary btn-importar-inadimplentes" data-id="${a.id}" style="padding:.4rem .8rem;font-size:.78rem" title="Traz pra fila quem já está com a etiqueta Inadimplente agora (a varredura em si roda na aba Integração)">📥 Importar Lista de Inadimplentes</button>
-                    ` : ''}
+                    <button type="button" class="btn-secondary btn-importar-lista-automacao" data-id="${a.id}" data-nome="${a.nome}" style="padding:.4rem .8rem;font-size:.78rem" title="Sincroniza a fila com quem tem a etiqueta agora — quem perdeu a etiqueta sai, quem ganhou entra">📥 Importar Lista</button>
                 </div>
                 <div class="acompanhamento-detalhe" data-id="${a.id}" style="margin-top:1rem;${aberto ? '' : 'display:none'}">
                     <div style="padding:1rem;text-align:center;color:var(--text-3);font-size:.82rem">Carregando...</div>
@@ -3821,29 +3813,8 @@ acompanhamentoAutomacoesLista?.addEventListener('change', async (e) => {
 });
 
 acompanhamentoAutomacoesLista?.addEventListener('click', async (e) => {
-    const btnImportarInadimplentes = e.target.closest('.btn-importar-inadimplentes');
-    if (btnImportarInadimplentes) {
-        btnImportarInadimplentes.disabled = true;
-        btnImportarInadimplentes.textContent = '⏳ Importando...';
-        try {
-            // Mesmo endpoint usado na aba Automação: sincroniza de verdade
-            // (remove quem já quitou, não só soma) em vez do importar-contatos
-            // genérico, que só adiciona e nunca tira ninguém da fila.
-            const res = await fetch(`/api/automacoes/${btnImportarInadimplentes.dataset.id}/importar-inadimplentes-pacto`, { method: 'POST' });
-            const data = await res.json();
-            if (!res.ok) throw new Error(data.error || 'Erro ao importar');
-            const partes = [];
-            if (data.importados > 0) partes.push(`${data.importados} novo(s)`);
-            if (data.removidos > 0) partes.push(`${data.removidos} removido(s) (já quitaram)`);
-            showToast('Lista sincronizada!', partes.length ? partes.join(' · ') : 'Nenhuma mudança — fila já batia com a lista de inadimplentes.', 'success', 4000);
-        } catch (err) {
-            showToast('Erro', err.message, 'error');
-        } finally {
-            btnImportarInadimplentes.disabled = false;
-            btnImportarInadimplentes.textContent = '📥 Importar Lista de Inadimplentes';
-        }
-        return;
-    }
+    const btnImportarLista = e.target.closest('.btn-importar-lista-automacao');
+    if (btnImportarLista) { await sincronizarListaAutomacao(btnImportarLista); return; }
 
     const btnDisparar = e.target.closest('.btn-disparar-automacao');
     if (btnDisparar) {
