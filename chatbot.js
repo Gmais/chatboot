@@ -447,9 +447,13 @@ const TIPO_LABEL_FALLBACK = {
 };
 
 // Salva mensagem na tabela de conversas (in ou out) e emite evento Socket.IO
-async function salvarNaConversa(telefone, nome, direcao, texto, tipo = 'text') {
+// tsReal (opcional): timestamp de verdade do WhatsApp (msg.timestamp, em
+// segundos) — quando informado, usa esse em vez de "agora". Sem isso, uma
+// mensagem sincronizada em lote (ex: reconexão trazendo histórico) fica com
+// o horário de quando o robô processou, não o horário real da mensagem.
+async function salvarNaConversa(telefone, nome, direcao, texto, tipo = 'text', tsReal = null) {
     const num = telefone.replace('@c.us','').replace('@lid','');
-    const ts = new Date().toISOString();
+    const ts = tsReal ? new Date(tsReal * 1000).toISOString() : new Date().toISOString();
     const lida = direcao === 'out' ? 1 : 0;
     await db.run(
         'INSERT INTO conversas (telefone, nome, direcao, texto, tipo, ts, lida) VALUES (?, ?, ?, ?, ?, ?, ?)',
@@ -1962,19 +1966,17 @@ app.get('/api/conversas', async (req, res) => {
 // mensagem existir (ruído de protocolo do WhatsApp: sincronização entre
 // aparelhos, notificação de criptografia, etc). Critério bem conservador —
 // só remove telefone que NUNCA teve nome real resolvido (nome sempre igual
-// ao telefone) E NUNCA teve nenhuma mensagem com conteúdo de verdade (sempre
-// "[mensagem sem texto]"). Contato com nome resolvido ou qualquer mensagem
-// com conteúdo real fica de fora, mesmo que o telefone pareça estranho —
-// evita apagar conversa de gente real que usa @lid.
+// ao telefone) OU telefone = '0'. Baseado no estado da mensagem MAIS RECENTE
+// de cada contato (mesma coisa que aparece na tela) — não exige pureza no
+// histórico inteiro, então gente real cujas primeiras mensagens vieram sem
+// nome resolvido (comum) continua de fora, desde que a mais recente já tenha
+// nome de verdade.
 app.get('/api/conversas/fantasmas', async (req, res) => {
     try {
         const candidatos = await db.all(`
-            SELECT telefone, COUNT(*) as total_mensagens
-            FROM conversas
-            GROUP BY telefone
-            HAVING telefone = '0'
-                OR (SUM(CASE WHEN nome != telefone THEN 1 ELSE 0 END) = 0
-                    AND SUM(CASE WHEN texto != '[mensagem sem texto]' THEN 1 ELSE 0 END) = 0)
+            SELECT telefone, nome, texto FROM conversas c1
+            WHERE id = (SELECT MAX(id) FROM conversas c2 WHERE c2.telefone = c1.telefone)
+              AND (telefone = '0' OR nome = telefone)
         `);
         res.json(candidatos);
     } catch (err) {
@@ -1985,12 +1987,9 @@ app.get('/api/conversas/fantasmas', async (req, res) => {
 app.delete('/api/conversas/fantasmas', async (req, res) => {
     try {
         const candidatos = await db.all(`
-            SELECT telefone
-            FROM conversas
-            GROUP BY telefone
-            HAVING telefone = '0'
-                OR (SUM(CASE WHEN nome != telefone THEN 1 ELSE 0 END) = 0
-                    AND SUM(CASE WHEN texto != '[mensagem sem texto]' THEN 1 ELSE 0 END) = 0)
+            SELECT telefone FROM conversas c1
+            WHERE id = (SELECT MAX(id) FROM conversas c2 WHERE c2.telefone = c1.telefone)
+              AND (telefone = '0' OR nome = telefone)
         `);
         const telefones = candidatos.map(c => c.telefone);
         let mensagensRemovidas = 0;
@@ -3106,7 +3105,7 @@ client.on('message_create', async (msg) => {
         const tipoMsg = detectarTipoMsg(msg);
         const textoExibir = msg.body || TIPO_LABEL_FALLBACK[tipoMsg] || '[mensagem sem texto]';
         const nome = await resolverNomeContato(numLimpo);
-        await salvarNaConversa(numLimpo, nome, 'out', textoExibir, tipoMsg);
+        await salvarNaConversa(numLimpo, nome, 'out', textoExibir, tipoMsg, msg.timestamp);
     } catch (e) {
         console.error('Erro ao registrar mensagem enviada pelo celular:', e.message);
     }
@@ -3361,7 +3360,7 @@ client.on('message', async (msg) => {
         // Salva na tabela de conversas (mensagens recebidas) — salvarNaConversa já
         // reabre a conversa automaticamente se ela tinha sido finalizada.
         const textoExibir = transcricaoAudio ? `🎤 ${transcricaoAudio}` : (msg.body || TIPO_LABEL_FALLBACK[tipoMsg] || '[mensagem sem texto]');
-        await salvarNaConversa(numLimpo, nomeContato, 'in', textoExibir, tipoMsg);
+        await salvarNaConversa(numLimpo, nomeContato, 'in', textoExibir, tipoMsg, msg.timestamp);
 
         // Ignora mensagens sem texto (stickers, imagens sem legenda, áudio sem transcrição)
         if (!texto && !msg.body) return;
