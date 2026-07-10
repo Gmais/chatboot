@@ -3848,7 +3848,14 @@ client.on('message', async (msg) => {
             nomeContatos.set(numLimpo, nomeContato);
         } catch(_) {}
 
-        await registerLead(telefoneReal);
+        // BUG DE VERDADE encontrado: usava telefoneReal (ainda com @c.us/@lid
+        // grudado) em vez de numLimpo — registerLead("5542984014994@c.us") e
+        // registerLead("5542984014994") são DUAS chaves diferentes pro
+        // leadsSet/tabela leads, mesmo sendo o mesmo contato. Cada mensagem
+        // nova recriava um lead "fantasma" (sem matrícula/nascimento) por
+        // cima do cadastro certo — foi o que aconteceu com o Henrique DEPOIS
+        // de já mesclado: voltou a duplicar sozinho a cada mensagem.
+        await registerLead(numLimpo);
         let texto = msg.body ? msg.body.trim().toLowerCase() : '';
 
         // Determina tipo da mensagem
