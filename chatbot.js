@@ -3692,6 +3692,28 @@ client.on('message', async (msg) => {
     }
 });
 
+// Reação a uma mensagem (❤️, 👍 etc) é um evento SEPARADO no WhatsApp — não
+// passa por 'message'/'message_create'. Sem esse handler, uma conversa cuja
+// última interação real foi uma reação (comum: cliente reage em vez de
+// responder por texto) ficava "parada" no painel na última mensagem de texto
+// enviada, enquanto no WhatsApp de verdade a conversa continuou depois disso —
+// o painel parecia defasado mesmo com o horário das mensagens de texto certo.
+client.on('message_reaction', async (reaction) => {
+    try {
+        if (!reaction.reaction) return; // reação removida (undo) — nada de novo pra mostrar
+        const remoteChat = reaction.id?.remote;
+        if (!remoteChat || remoteChat.endsWith('@g.us') || remoteChat.endsWith('@broadcast')) return;
+
+        const telefoneResolvido = await resolveJid(remoteChat);
+        const numLimpo = telefoneResolvido.replace('@c.us', '').replace('@lid', '');
+        const nome = await resolverNomeContato(numLimpo);
+        const direcao = reaction.id?.fromMe ? 'out' : 'in';
+        await salvarNaConversa(numLimpo, nome, direcao, `Reagiu com ${reaction.reaction}`, 'reaction', reaction.timestamp);
+    } catch (e) {
+        console.error('Erro ao registrar reação:', e.message);
+    }
+});
+
 // =====================================
 // INICIALIZAÇÃO
 // =====================================
