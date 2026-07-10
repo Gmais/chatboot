@@ -2406,7 +2406,13 @@ app.get('/api/conversas/:telefone', async (req, res) => {
 
 // Envia mensagem manual pelo dashboard para um contato
 app.post('/api/conversas/:telefone/enviar', async (req, res) => {
-    const { telefone } = req.params;
+    // Normaliza ANTES de gravar (mesmo se o painel do atendente ainda tiver
+    // uma aba antiga aberta com o telefone sem o 9) — sem isso, uma resposta
+    // manual reabre/recria a conversa no formato errado mesmo depois de já
+    // ter sido mesclada, porque o envio de verdade (resolverChatId) faz sua
+    // própria busca ao vivo no WhatsApp e funciona de qualquer jeito, mas o
+    // registro em "conversas" usava o telefone cru da URL, não o normalizado.
+    const telefone = normalizarTelefoneBR(req.params.telefone);
     const { texto } = req.body;
     if (!texto || !texto.trim()) return res.status(400).json({ error: 'Texto obrigatório.' });
     if (!isConnected) return res.status(400).json({ error: 'WhatsApp não está conectado.' });
@@ -2470,7 +2476,7 @@ app.delete('/api/conversas/:telefone', async (req, res) => {
 
 // Envia um arquivo (imagem, documento, etc.) pelo dashboard para um contato
 app.post('/api/conversas/:telefone/enviar-arquivo', upload.single('arquivo'), async (req, res) => {
-    const { telefone } = req.params;
+    const telefone = normalizarTelefoneBR(req.params.telefone); // ver comentário na rota /enviar
     if (!req.file) return res.status(400).json({ error: 'Nenhum arquivo enviado.' });
     if (!isConnected) return res.status(400).json({ error: 'WhatsApp não está conectado.' });
     try {
