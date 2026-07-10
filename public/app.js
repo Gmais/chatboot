@@ -2084,10 +2084,21 @@ const CM = (() => {
         // tipo — mostra o selo do tipo E o texto, não só o selo (senão a
         // transcrição do áudio nunca aparece na bolha).
         const temTextoReal = m.texto && !/^\[.*\]$/.test(m.texto.trim());
+        const legendaHtml = temTextoReal ? `<div class="bubble-text">${escapeHtml(m.texto.replace(/^🎤\s*/, ''))}</div>` : '';
+
         let bodyHtml;
-        if (icon && temTextoReal) {
-            const textoLimpo = m.texto.replace(/^🎤\s*/, '');
-            bodyHtml = `<span class="bubble-type-badge">${icon}</span><div class="bubble-text">${escapeHtml(textoLimpo)}</div>`;
+        if (m.media_path && m.tipo === 'image') {
+            // Clica na miniatura e abre a imagem em tamanho real numa aba nova.
+            bodyHtml = `<a href="${m.media_path}" target="_blank" rel="noopener" class="bubble-media-link" title="Abrir imagem"><img src="${m.media_path}" class="bubble-image" alt="Imagem" loading="lazy"></a>${legendaHtml}`;
+        } else if (m.media_path && m.tipo === 'video') {
+            bodyHtml = `<video src="${m.media_path}" class="bubble-video" controls preload="metadata"></video>${legendaHtml}`;
+        } else if (m.media_path) {
+            // Documento, figurinha etc. — abre/baixa numa aba nova.
+            const rotulo = m.tipo === 'document' ? 'Abrir documento' : 'Abrir anexo';
+            const emojiLink = m.tipo === 'sticker' ? '🎭' : m.tipo === 'document' ? '📄' : '📎';
+            bodyHtml = `<a href="${m.media_path}" target="_blank" rel="noopener" class="bubble-doc-link">${emojiLink} ${rotulo}</a>${legendaHtml}`;
+        } else if (icon && temTextoReal) {
+            bodyHtml = `<span class="bubble-type-badge">${icon}</span>${legendaHtml}`;
         } else if (icon) {
             bodyHtml = `<span class="bubble-type-badge">${icon}</span>`;
         } else {

@@ -959,6 +959,38 @@ header h1 {
     font-style: italic;
 }
 
+/* Mídia clicável (imagem/vídeo/documento) recebida ou enviada na conversa */
+.bubble-media-link { display: block; line-height: 0; }
+.bubble-image {
+    max-width: 260px;
+    max-height: 260px;
+    border-radius: 8px;
+    cursor: pointer;
+    display: block;
+    transition: opacity 0.15s;
+}
+.bubble-image:hover { opacity: 0.88; }
+.bubble-video {
+    max-width: 280px;
+    max-height: 320px;
+    border-radius: 8px;
+    display: block;
+}
+.bubble-doc-link {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    background: rgba(255,255,255,0.07);
+    border: 1px solid rgba(255,255,255,0.1);
+    border-radius: 8px;
+    padding: 0.5rem 0.8rem;
+    font-size: 0.82rem;
+    color: var(--text-1);
+    text-decoration: none;
+    transition: background 0.15s;
+}
+.bubble-doc-link:hover { background: rgba(255,255,255,0.12); }
+
 /* Indicador "digitando" */
 .typing-indicator {
     display: flex;

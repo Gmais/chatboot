@@ -369,6 +369,10 @@ async function initDB() {
     // digitada por um atendente humano (dashboard ou direto no celular vinculado)
     // — mostra o rótulo certo ("🤖 Bot" vs "👤 Atendente") no Bate Papo ao Vivo.
     try { await db.exec(`ALTER TABLE conversas ADD COLUMN manual INTEGER DEFAULT 0`); } catch(e) {}
+    // Caminho do arquivo (imagem/documento/vídeo/figurinha) salvo em
+    // public/uploads pra poder ser aberto clicando na bolha do Bate Papo ao
+    // Vivo — antes a mídia recebida nunca era baixada, só o rótulo do tipo.
+    try { await db.exec(`ALTER TABLE conversas ADD COLUMN media_path TEXT DEFAULT NULL`); } catch(e) {}
     // Etiqueta temporária (ex: "Desafio 30 dias"): duracao_dias define quanto
     // tempo ela dura DESDE QUE APLICADA em CADA contato — a etiqueta em si
     // nunca "acaba" (continua existindo pra aplicar em gente nova), só a
@@ -513,17 +517,17 @@ const TIPO_LABEL_FALLBACK = {
 // segundos) — quando informado, usa esse em vez de "agora". Sem isso, uma
 // mensagem sincronizada em lote (ex: reconexão trazendo histórico) fica com
 // o horário de quando o robô processou, não o horário real da mensagem.
-async function salvarNaConversa(telefone, nome, direcao, texto, tipo = 'text', tsReal = null, manual = false) {
+async function salvarNaConversa(telefone, nome, direcao, texto, tipo = 'text', tsReal = null, manual = false, mediaPath = null) {
     const num = telefone.replace('@c.us','').replace('@lid','');
     const ts = tsReal ? new Date(tsReal * 1000).toISOString() : new Date().toISOString();
     const lida = direcao === 'out' ? 1 : 0;
     await db.run(
-        'INSERT INTO conversas (telefone, nome, direcao, texto, tipo, ts, lida, manual) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-        [num, nome || num, direcao, texto, tipo, ts, lida, manual ? 1 : 0]
+        'INSERT INTO conversas (telefone, nome, direcao, texto, tipo, ts, lida, manual, media_path) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        [num, nome || num, direcao, texto, tipo, ts, lida, manual ? 1 : 0, mediaPath]
     );
     // Conta não lidas deste telefone
     const naoLidas = await db.get('SELECT COUNT(*) as c FROM conversas WHERE telefone=? AND lida=0 AND direcao="in"', num);
-    io.emit('nova_mensagem', { telefone: num, nome: nome || num, texto, direcao, tipo, ts, nao_lidas: naoLidas.c, manual });
+    io.emit('nova_mensagem', { telefone: num, nome: nome || num, texto, direcao, tipo, ts, nao_lidas: naoLidas.c, manual, media_path: mediaPath });
 
     // Qualquer mensagem nova (do cliente OU pro cliente — bot, automação,
     // envio manual) reabre a conversa se ela tinha sido finalizada. "Finalizada"
@@ -541,12 +545,12 @@ async function salvarNaConversa(telefone, nome, direcao, texto, tipo = 'text', t
 
 // Registra no histórico permanente cada mensagem realmente enviada pelo robô.
 // É a única fonte da contagem "Mensagens Enviadas" — se está no contador, está nesta tabela.
-async function registrarMensagemEnviada(telefone, texto, nome, msgId = null, manual = false) {
+async function registrarMensagemEnviada(telefone, texto, nome, msgId = null, manual = false, tipo = 'text', mediaPath = null) {
     const numeroLimpo = telefone.replace('@c.us', '').replace('@lid', '');
     marcarMensagemComoDoSistema(msgId);
     await db.run('INSERT INTO mensagens_enviadas (telefone, texto) VALUES (?, ?)', [numeroLimpo, texto]);
     stats.sent++;
-    await salvarNaConversa(numeroLimpo, nome, 'out', texto, 'text', null, manual);
+    await salvarNaConversa(numeroLimpo, nome, 'out', texto, tipo, null, manual, mediaPath);
     io.emit('message_out', { to: numeroLimpo, text: texto, ts: Date.now() });
     io.emit('stats', stats);
 }
@@ -1578,7 +1582,8 @@ async function dispararMensagensDaAutomacao(automacaoId) {
                         if (fs.existsSync(mediaFullPath)) {
                             const media = MessageMedia.fromFilePath(mediaFullPath);
                             const sent = await client.sendMessage(chatId, media, texto ? { caption: texto } : undefined);
-                            await registrarMensagemEnviada(numLimpo, texto || '[mídia]', nome, sent.id?._serialized);
+                            const tipoMedia = msg.media_tipo === 'file' ? 'document' : (msg.media_tipo || 'document');
+                            await registrarMensagemEnviada(numLimpo, texto || '[mídia]', nome, sent.id?._serialized, false, tipoMedia, msg.media_path);
                             sucesso = true;
                         } else {
                             console.error(`Disparo automação #${automacaoId}: mídia não encontrada (${msg.media_path}) pra ${numLimpo}`);
@@ -2388,7 +2393,9 @@ app.post('/api/conversas/:telefone/enviar-arquivo', upload.single('arquivo'), as
         const media = MessageMedia.fromFilePath(req.file.path);
         const legenda = (req.body.legenda || '').trim();
         const sentMsg = await client.sendMessage(chatId, media, legenda ? { caption: legenda } : undefined);
-        if (fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
+        // Mantém o arquivo em public/uploads (não apaga mais) — é o que permite
+        // reabrir a imagem/documento clicando na bolha depois.
+        const mediaUrl = '/uploads/' + req.file.filename;
 
         const tipo = req.file.mimetype.startsWith('image/') ? 'image'
             : req.file.mimetype.startsWith('video/') ? 'video'
@@ -2397,7 +2404,7 @@ app.post('/api/conversas/:telefone/enviar-arquivo', upload.single('arquivo'), as
         const nome = await resolverNomeContato(telefone);
         const numeroLimpo = telefone.replace('@c.us', '').replace('@lid', '');
         marcarMensagemComoDoSistema(sentMsg.id?._serialized);
-        await salvarNaConversa(numeroLimpo, nome, 'out', legenda || req.file.originalname, tipo, null, true);
+        await salvarNaConversa(numeroLimpo, nome, 'out', legenda || req.file.originalname, tipo, null, true, mediaUrl);
         io.emit('stats', stats);
         res.json({ success: true });
     } catch(err) {
@@ -3454,6 +3461,47 @@ async function transcreverAudio(msg) {
     }
 }
 
+const EXTENSAO_POR_MIME_GERAL = {
+    'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp', 'image/gif': 'gif',
+    'video/mp4': 'mp4', 'video/3gpp': '3gp', 'video/quicktime': 'mov',
+    'audio/ogg': 'ogg', 'audio/mp4': 'm4a', 'audio/mpeg': 'mp3', 'audio/wav': 'wav', 'audio/webm': 'webm',
+    'application/pdf': 'pdf', 'text/plain': 'txt', 'text/csv': 'csv', 'application/zip': 'zip',
+    'application/msword': 'doc', 'application/vnd.ms-excel': 'xls', 'application/vnd.ms-powerpoint': 'ppt',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'docx',
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'xlsx',
+    'application/vnd.openxmlformats-officedocument.presentationml.presentation': 'pptx'
+};
+function extensaoPorMimetype(mimetype) {
+    const tipo = (mimetype || '').split(';')[0].trim();
+    if (EXTENSAO_POR_MIME_GERAL[tipo]) return EXTENSAO_POR_MIME_GERAL[tipo];
+    const sub = tipo.split('/')[1];
+    return sub ? sub.split('+')[0] : 'bin';
+}
+
+// Baixa a mídia (imagem/documento/vídeo/figurinha) de uma mensagem recebida e
+// salva em public/uploads (volume persistente) — devolve a URL pública pra
+// gravar em conversas.media_path, pra dar pra abrir a mídia clicando na bolha
+// do Bate Papo ao Vivo. Antes disso a mídia recebida nunca era baixada, só
+// classificada por tipo. Timeout curto: se travar, a mensagem salva do mesmo
+// jeito, só sem anexo clicável (mesmo padrão de transcreverAudio acima).
+async function baixarMidiaRecebida(msg) {
+    try {
+        const media = await Promise.race([
+            msg.downloadMedia(),
+            new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 15000))
+        ]);
+        if (!media || !media.data) return null;
+        const ext = extensaoPorMimetype(media.mimetype);
+        const nomeArquivo = `recebido_${Date.now()}_${Math.round(Math.random() * 1e9)}.${ext}`;
+        const destino = path.join(__dirname, 'public', 'uploads', nomeArquivo);
+        fs.writeFileSync(destino, Buffer.from(media.data, 'base64'));
+        return '/uploads/' + nomeArquivo;
+    } catch (e) {
+        console.error('Erro ao baixar mídia recebida:', e.message);
+        return null;
+    }
+}
+
 // Quando o WhatsApp usa @lid (privacidade), resolve o número de telefone real.
 // contact.number NÃO serve aqui: para contatos @lid ele devolve o próprio lid,
 // não o telefone. getContactLidAndPhone() consulta o mapeamento real do WhatsApp.
@@ -3547,9 +3595,13 @@ client.on('message_create', async (msg) => {
         if (tipoMsg === 'text' && !msg.body) return;
         const textoExibir = msg.body || TIPO_LABEL_FALLBACK[tipoMsg] || '[mensagem sem texto]';
         const nome = await resolverNomeContato(numLimpo);
+        let mediaPath = null;
+        if (msg.hasMedia && ['image', 'video', 'document', 'sticker'].includes(tipoMsg)) {
+            mediaPath = await baixarMidiaRecebida(msg);
+        }
         // Chegou aqui = mandada direto do celular vinculado, não pelo robô nem
         // pelo painel — é sempre um atendente humano respondendo por fora.
-        await salvarNaConversa(numLimpo, nome, 'out', textoExibir, tipoMsg, msg.timestamp, true);
+        await salvarNaConversa(numLimpo, nome, 'out', textoExibir, tipoMsg, msg.timestamp, true, mediaPath);
     } catch (e) {
         console.error('Erro ao registrar mensagem enviada pelo celular:', e.message);
     }
@@ -3643,7 +3695,14 @@ client.on('message', async (msg) => {
         // Salva na tabela de conversas (mensagens recebidas) — salvarNaConversa já
         // reabre a conversa automaticamente se ela tinha sido finalizada.
         const textoExibir = transcricaoAudio ? `🎤 ${transcricaoAudio}` : (msg.body || TIPO_LABEL_FALLBACK[tipoMsg] || '[mensagem sem texto]');
-        await salvarNaConversa(numLimpo, nomeContato, 'in', textoExibir, tipoMsg, msg.timestamp);
+        // Baixa a mídia (menos áudio — já foi baixado à parte pra transcrição
+        // acima, baixar de novo aqui seria redundante) pra dar pra abrir a
+        // imagem/documento/vídeo/figurinha clicando na bolha do painel.
+        let mediaPath = null;
+        if (msg.hasMedia && ['image', 'video', 'document', 'sticker'].includes(tipoMsg)) {
+            mediaPath = await baixarMidiaRecebida(msg);
+        }
+        await salvarNaConversa(numLimpo, nomeContato, 'in', textoExibir, tipoMsg, msg.timestamp, false, mediaPath);
 
         // Ignora mensagens sem texto (stickers, imagens sem legenda, áudio sem transcrição)
         if (!texto && !msg.body) return;
@@ -3866,7 +3925,10 @@ client.on('message', async (msg) => {
                 await delay(500);
                 const media = MessageMedia.fromFilePath(mediaFullPath);
                 const sentMedia = await enviarResposta(msg, media);
-                if (sentMedia) await registrarMensagemEnviada(telefoneReal, '[mídia enviada]', nomeContato, sentMedia.id?._serialized);
+                if (sentMedia) {
+                    const tipoMedia = regraAtiva.media_tipo === 'file' ? 'document' : (regraAtiva.media_tipo || 'document');
+                    await registrarMensagemEnviada(telefoneReal, '[mídia enviada]', nomeContato, sentMedia.id?._serialized, false, tipoMedia, regraAtiva.media_path);
+                }
             }
         }
     } catch (error) {
