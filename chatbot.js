@@ -1937,6 +1937,12 @@ app.post('/api/automacoes/:id/disparar', async (req, res) => {
     const { id } = req.params;
     if (automacaoDisparoRodando[id]) return res.status(400).json({ error: 'Já tem um disparo rodando pra essa automação.' });
     if (!isConnected) return res.status(400).json({ error: 'WhatsApp não está conectado.' });
+    const automacao = await db.get('SELECT * FROM automacoes WHERE id = ?', id);
+    if (!automacao) return res.status(404).json({ error: 'Automação não encontrada.' });
+    if (!automacao.ativo) return res.status(400).json({ error: 'Essa automação está pausada — ative-a antes de disparar.' });
+    if (!dentroDoHorarioAutomacao(automacao)) {
+        return res.status(400).json({ error: `Fora do horário configurado pra essa automação (${automacao.horario_inicio}–${automacao.horario_fim}).` });
+    }
     automacaoDisparoRodando[id] = true;
     res.json({ success: true });
     dispararMensagensDaAutomacao(id)

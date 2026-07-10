@@ -1143,6 +1143,29 @@ document.querySelectorAll('.btn-campanha-rapida').forEach(btn => {
             return;
         }
 
+        if (secaoId === 'disparos-section') {
+            if (btn.disabled) return;
+            if (automacoesGlobais.length === 0) await loadAutomacoes();
+            const automacao = encontrarAutomacaoDaCampanha(campanha);
+            if (!automacao) {
+                const label = CAMPANHAS_INFO[campanha]?.label || campanha;
+                showToast('Nenhuma automação encontrada', `Crie (ou renomeie) uma automação com um nome parecido com "${label}" pra esse botão disparar as mensagens dela.`, 'error', 5500);
+                return;
+            }
+            btn.disabled = true;
+            try {
+                const res = await fetch(`/api/automacoes/${automacao.id}/disparar`, { method: 'POST' });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.error || 'Erro ao iniciar disparo');
+                showToast(`Disparo iniciado — "${automacao.nome}"`, 'Rodando em segundo plano — espaçado pra não arriscar bloqueio no WhatsApp, pode levar minutos.', 'success', 6000);
+            } catch (err) {
+                showToast('Erro ao disparar', err.message, 'error');
+            } finally {
+                btn.disabled = false;
+            }
+            return;
+        }
+
         showToast('Em breve', `Ação da campanha "${campanha}" nessa tela ainda não foi configurada.`, 'info', 2500);
     });
 });
