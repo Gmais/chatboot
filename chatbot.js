@@ -2955,6 +2955,52 @@ async function expirarEtiquetasTemporarias() {
 setInterval(expirarEtiquetasTemporarias, 30 * 60 * 1000);
 setTimeout(expirarEtiquetasTemporarias, 100 * 1000);
 
+// Apaga do volume a mídia recebida/enviada manualmente há mais de 10 dias
+// (conversas.media_path) — sem isso, toda imagem/documento que passa pelo
+// Bate Papo ao Vivo fica salva pra sempre e o volume persistente (limitado)
+// enche sozinho com o tempo. NUNCA apaga um arquivo que ainda está configurado
+// como mídia de uma regra/etapa de automação/mensagem personalizada — nesse
+// caso só solta o vínculo daquela mensagem específica (media_path = NULL),
+// sem tocar no arquivo de verdade, que continua sendo usado pelos próximos envios.
+const RETENCAO_MIDIA_CONVERSA_DIAS = 10;
+async function limparMidiaAntigaConversas() {
+    if (!db) return;
+    try {
+        const antigas = await db.all(
+            `SELECT id, media_path FROM conversas WHERE media_path IS NOT NULL AND ts <= datetime('now', ?)`,
+            `-${RETENCAO_MIDIA_CONVERSA_DIAS} days`
+        );
+        let apagados = 0;
+        for (const c of antigas) {
+            const emUso = await db.get(
+                `SELECT 1 AS x
+                 FROM respostas WHERE media_path = ?
+                 UNION SELECT 1 FROM automacao_etapas WHERE media_path = ?
+                 UNION SELECT 1 FROM mensagens_personalizadas WHERE media_path = ?`,
+                [c.media_path, c.media_path, c.media_path]
+            );
+            if (!emUso) {
+                const fullPath = path.join(__dirname, 'public', c.media_path.replace(/^\//, ''));
+                try {
+                    if (fs.existsSync(fullPath)) fs.unlinkSync(fullPath);
+                    apagados++;
+                } catch (e) {
+                    console.error(`Erro ao apagar mídia antiga (${c.media_path}):`, e.message);
+                }
+            }
+            // Solta o vínculo mesmo se o arquivo era compartilhado com uma
+            // config ativa (emUso) — essa mensagem específica não precisa
+            // mais apontar pra ele, só o registro de "o que foi enviado".
+            await db.run('UPDATE conversas SET media_path = NULL WHERE id = ?', c.id);
+        }
+        if (apagados > 0) console.log(`🧹 Limpeza de mídia: ${apagados} arquivo(s) com mais de ${RETENCAO_MIDIA_CONVERSA_DIAS} dias removido(s) do volume.`);
+    } catch (e) {
+        console.error('Erro na limpeza de mídia antiga:', e.message);
+    }
+}
+setInterval(limparMidiaAntigaConversas, 6 * 60 * 60 * 1000); // a cada 6h
+setTimeout(limparMidiaAntigaConversas, 3 * 60 * 1000);
+
 app.post('/api/disconnect', async (req, res) => {
     // Responde imediatamente para não travar o frontend
     res.json({ success: true });
