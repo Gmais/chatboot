@@ -3594,6 +3594,9 @@ function renderAcompanhamentoAutomacoes(automacoes) {
                         ${aberto ? '▲ Esconder' : '▼ Ver contatos'}
                     </button>
                     <button type="button" class="btn-primary btn-disparar-automacao" data-id="${a.id}" data-nome="${a.nome}" style="padding:.4rem .8rem;font-size:.78rem" title="Manda a mensagem sorteada pra cada contato em andamento">🚀 Disparar Mensagens</button>
+                    ${a.etiqueta_nome === 'Inadimplente' ? `
+                        <button type="button" class="btn-secondary btn-atualizar-inadimplentes" style="padding:.4rem .8rem;font-size:.78rem" title="Roda a varredura no Pacto de novo pra atualizar quem está inadimplente antes de disparar">🔄 Atualizar Lista de Inadimplentes</button>
+                    ` : ''}
                 </div>
                 <div class="acompanhamento-detalhe" data-id="${a.id}" style="margin-top:1rem;${aberto ? '' : 'display:none'}">
                     <div style="padding:1rem;text-align:center;color:var(--text-3);font-size:.82rem">Carregando...</div>
@@ -3700,6 +3703,23 @@ acompanhamentoAutomacoesLista?.addEventListener('change', async (e) => {
 });
 
 acompanhamentoAutomacoesLista?.addEventListener('click', async (e) => {
+    const btnAtualizarInadimplentes = e.target.closest('.btn-atualizar-inadimplentes');
+    if (btnAtualizarInadimplentes) {
+        btnAtualizarInadimplentes.disabled = true;
+        btnAtualizarInadimplentes.textContent = '⏳ Atualizando...';
+        try {
+            const res = await fetch('/api/pacto/inadimplentes/atualizar', { method: 'POST' });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || 'Erro ao iniciar atualização');
+            showToast('Atualização iniciada!', 'Pode levar alguns minutos — quem quitou sai da etiqueta e quem venceu entra, sozinho, conforme a varredura avança.', 'success', 6000);
+        } catch (err) {
+            showToast('Erro', err.message, 'error');
+            btnAtualizarInadimplentes.disabled = false;
+            btnAtualizarInadimplentes.textContent = '🔄 Atualizar Lista de Inadimplentes';
+        }
+        return;
+    }
+
     const btnDisparar = e.target.closest('.btn-disparar-automacao');
     if (btnDisparar) {
         if (!confirm(`Disparar as mensagens da automação "${btnDisparar.dataset.nome}"? Cada contato em andamento recebe a mensagem que foi sorteada pra ele. O envio é espaçado (30-120s por contato) pra não arriscar bloqueio no WhatsApp — pode levar minutos.`)) return;
