@@ -1995,19 +1995,24 @@ app.get('/api/conversas', async (req, res) => {
 const TELEFONE_BR_GLOB_12 = `55${'[0-9]'.repeat(10)}`;
 const TELEFONE_BR_GLOB_13 = `55${'[0-9]'.repeat(11)}`;
 // Segundo critério (além do formato de telefone inválido): telefone com
-// formato válido mas "nome" puramente numérico e diferente do telefone — sinal
-// de contato.number devolvendo o ID interno do @lid em vez do telefone (ver
-// fix no handler 'message') — só entra se TODO o histórico daquele telefone
-// for placeholder (nunca teve conteúdo real), pra nunca arriscar apagar
-// conversa de gente real que só teve UMA mensagem vazia no meio do histórico.
+// formato válido cujo histórico INTEIRO é placeholder (nunca teve conteúdo
+// real, nem imagem/áudio/etc — só ruído tipo=text com texto vazio). Cobre
+// tanto o caso do nome vindo de ID de @lid (contato.number, já corrigido no
+// handler 'message') quanto o caso do pushname ter resolvido normal mas a
+// "conversa" em si nunca ter sido real (ex: Daize Gusso, Cleonice — só têm 1
+// mensagem no banco, um ping de sincronização, nunca uma mensagem de
+// verdade). Exigir que TODO o histórico seja placeholder (não só a última
+// mensagem) é o que garante nunca apagar conversa de gente real que teve
+// UMA mensagem vazia no meio de um histórico real (ex: Fulano com "[text]"
+// seguido de "Oi bom dia" continua de fora).
 const QUERY_FANTASMAS = `
     SELECT telefone, nome, texto FROM conversas c1
     WHERE id = (SELECT MAX(id) FROM conversas c2 WHERE c2.telefone = c1.telefone)
       AND (
         (telefone NOT GLOB ? AND telefone NOT GLOB ?)
-        OR (
-          nome NOT GLOB '*[^0-9]*' AND nome != telefone
-          AND NOT EXISTS (SELECT 1 FROM conversas c3 WHERE c3.telefone = c1.telefone AND c3.texto NOT IN ('[text]', '[mensagem sem texto]'))
+        OR NOT EXISTS (
+          SELECT 1 FROM conversas c3 WHERE c3.telefone = c1.telefone
+            AND NOT (c3.tipo = 'text' AND c3.texto IN ('[text]', '[mensagem sem texto]'))
         )
       )
 `;
