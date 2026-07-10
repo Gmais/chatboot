@@ -376,6 +376,13 @@ async function initDB() {
     // digitada por um atendente humano (dashboard ou direto no celular vinculado)
     // — mostra o rótulo certo ("🤖 Bot" vs "👤 Atendente") no Bate Papo ao Vivo.
     try { await db.exec(`ALTER TABLE conversas ADD COLUMN manual INTEGER DEFAULT 0`); } catch(e) {}
+    // Etiqueta temporária (ex: "Desafio 30 dias"): duracao_dias define quanto
+    // tempo ela dura DESDE QUE APLICADA em CADA contato — a etiqueta em si
+    // nunca "acaba" (continua existindo pra aplicar em gente nova), só a
+    // vinculação com aquele contato específico expira sozinha. NULL = etiqueta
+    // permanente (comportamento de sempre, sem mudança pra etiquetas atuais).
+    try { await db.exec(`ALTER TABLE etiquetas ADD COLUMN duracao_dias INTEGER DEFAULT NULL`); } catch(e) {}
+    try { await db.exec(`ALTER TABLE contato_etiquetas ADD COLUMN expira_em DATETIME DEFAULT NULL`); } catch(e) {}
     // Garante tabela conversas em instalações antigas
     try { await db.exec(`CREATE TABLE IF NOT EXISTS conversas (id INTEGER PRIMARY KEY AUTOINCREMENT, telefone TEXT NOT NULL, nome TEXT, direcao TEXT NOT NULL, texto TEXT, tipo TEXT DEFAULT 'text', ts DATETIME DEFAULT CURRENT_TIMESTAMP, lida INTEGER DEFAULT 0)`); } catch(e) {}
     try { await db.exec(`CREATE INDEX IF NOT EXISTS idx_conversas_tel ON conversas(telefone, ts)`); } catch(e) {}
@@ -1350,10 +1357,11 @@ app.get('/api/etiquetas', async (req, res) => {
 });
 
 app.post('/api/etiquetas', async (req, res) => {
-    const { nome, cor } = req.body;
+    const { nome, cor, duracao_dias } = req.body;
     if (!nome || !nome.trim()) return res.status(400).json({ error: 'Nome da etiqueta é obrigatório.' });
+    const duracaoNum = duracao_dias ? parseInt(duracao_dias) : null;
     try {
-        const result = await db.run('INSERT INTO etiquetas (nome, cor) VALUES (?, ?)', [nome.trim(), cor || '#25D366']);
+        const result = await db.run('INSERT INTO etiquetas (nome, cor, duracao_dias) VALUES (?, ?, ?)', [nome.trim(), cor || '#25D366', duracaoNum || null]);
         const nova = await db.get('SELECT *, 0 AS total_contatos FROM etiquetas WHERE id = ?', result.lastID);
         io.emit('etiquetas_atualizadas');
         res.json(nova);
@@ -1364,10 +1372,11 @@ app.post('/api/etiquetas', async (req, res) => {
 
 app.put('/api/etiquetas/:id', async (req, res) => {
     const { id } = req.params;
-    const { nome, cor } = req.body;
+    const { nome, cor, duracao_dias } = req.body;
     if (!nome || !nome.trim()) return res.status(400).json({ error: 'Nome da etiqueta é obrigatório.' });
+    const duracaoNum = duracao_dias ? parseInt(duracao_dias) : null;
     try {
-        await db.run('UPDATE etiquetas SET nome = ?, cor = ? WHERE id = ?', [nome.trim(), cor || '#25D366', id]);
+        await db.run('UPDATE etiquetas SET nome = ?, cor = ?, duracao_dias = ? WHERE id = ?', [nome.trim(), cor || '#25D366', duracaoNum || null, id]);
         const atualizada = await db.get(`
             SELECT e.*, COUNT(ce.telefone) AS total_contatos
             FROM etiquetas e LEFT JOIN contato_etiquetas ce ON ce.etiqueta_id = e.id
@@ -1405,12 +1414,24 @@ app.delete('/api/etiquetas/:id', async (req, res) => {
 // automação sempre dispara, não importa de onde a etiqueta veio.
 async function aplicarEtiquetaContato(telefone, etiquetaId) {
     const numLimpo = telefone.replace('@c.us','').replace('@lid','');
-    const result = await db.run('INSERT OR IGNORE INTO contato_etiquetas (telefone, etiqueta_id) VALUES (?, ?)', [numLimpo, etiquetaId]);
+    const etiqueta = await db.get('SELECT duracao_dias FROM etiquetas WHERE id = ?', etiquetaId);
+    const expiraEm = etiqueta?.duracao_dias
+        ? new Date(Date.now() + etiqueta.duracao_dias * 86400000).toISOString()
+        : null;
+    // Se já tinha a etiqueta e ela é temporária, reaplicar REINICIA a contagem
+    // (ex: aluno começou outra rodada do desafio) — por isso é upsert, não
+    // "ignora se já existe" como antes.
+    const jaTinha = await db.get('SELECT 1 FROM contato_etiquetas WHERE telefone = ? AND etiqueta_id = ?', [numLimpo, etiquetaId]);
+    await db.run(
+        `INSERT INTO contato_etiquetas (telefone, etiqueta_id, expira_em) VALUES (?, ?, ?)
+         ON CONFLICT(telefone, etiqueta_id) DO UPDATE SET expira_em = excluded.expira_em`,
+        [numLimpo, etiquetaId, expiraEm]
+    );
     io.emit('etiqueta_atualizada', { telefone: numLimpo });
-    if (result.changes > 0) {
+    if (!jaTinha) {
         await iniciarAutomacoesParaEtiqueta(numLimpo, etiquetaId);
     }
-    return result;
+    return { changes: jaTinha ? 0 : 1 };
 }
 
 // Remove uma etiqueta de um contato e cancela qualquer automação em andamento
@@ -2894,6 +2915,28 @@ async function expirarInadimplentesAntigos() {
 }
 setInterval(expirarInadimplentesAntigos, 30 * 60 * 1000);
 setTimeout(expirarInadimplentesAntigos, 90 * 1000);
+
+// Expira etiquetas temporárias (contato_etiquetas.expira_em) de QUALQUER
+// etiqueta configurada com duracao_dias — genérico, não é só pro "Desafio":
+// cada contato tem seu próprio relógio, contado a partir de quando a
+// etiqueta foi aplicada NELE (ver aplicarEtiquetaContato). removerEtiquetaContato
+// já cancela automação em andamento vinculada, então reaproveita a mesma rotina.
+async function expirarEtiquetasTemporarias() {
+    if (!db) return;
+    try {
+        const expirados = await db.all(
+            `SELECT telefone, etiqueta_id FROM contato_etiquetas WHERE expira_em IS NOT NULL AND expira_em <= datetime('now')`
+        );
+        for (const c of expirados) {
+            await removerEtiquetaContato(c.telefone, c.etiqueta_id);
+        }
+        if (expirados.length > 0) console.log(`⏳ ${expirados.length} etiqueta(s) temporária(s) expirada(s).`);
+    } catch (e) {
+        console.error('Erro ao expirar etiquetas temporárias:', e.message);
+    }
+}
+setInterval(expirarEtiquetasTemporarias, 30 * 60 * 1000);
+setTimeout(expirarEtiquetasTemporarias, 100 * 1000);
 
 app.post('/api/disconnect', async (req, res) => {
     // Responde imediatamente para não travar o frontend

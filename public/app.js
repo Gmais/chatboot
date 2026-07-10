@@ -807,9 +807,14 @@ function renderGerenciarEtiquetasLista() {
         return;
     }
     etiquetasGerenciarLista.innerHTML = todasEtiquetas.map(e => `
-        <div class="etiqueta-gerenciar-row" data-id="${e.id}" style="display:flex;align-items:center;gap:.6rem;padding:.6rem;background:rgba(255,255,255,0.03);border-radius:8px">
+        <div class="etiqueta-gerenciar-row" data-id="${e.id}" style="display:flex;align-items:center;gap:.6rem;padding:.6rem;background:rgba(255,255,255,0.03);border-radius:8px;flex-wrap:wrap">
             <input type="color" class="etiqueta-cor-input" value="${e.cor}" style="width:34px;height:34px;border:none;border-radius:6px;cursor:pointer;background:none;flex-shrink:0">
-            <input type="text" class="etiqueta-nome-input" value="${e.nome}" style="flex:1;min-width:0;background:var(--input-bg);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:.4rem .6rem;color:var(--text-1);font-family:'Inter',sans-serif">
+            <input type="text" class="etiqueta-nome-input" value="${e.nome}" style="flex:1;min-width:120px;background:var(--input-bg);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:.4rem .6rem;color:var(--text-1);font-family:'Inter',sans-serif">
+            <label style="display:flex;align-items:center;gap:.35rem;font-size:.72rem;color:var(--text-3);white-space:nowrap" title="Deixe em branco pra etiqueta permanente. Se preencher, ela some sozinha desse contato depois de N dias — cada contato tem seu próprio prazo, contado de quando a etiqueta foi aplicada nele.">
+                ⏳ dura
+                <input type="number" class="etiqueta-duracao-input" min="1" value="${e.duracao_dias || ''}" placeholder="∞" style="width:56px;background:var(--input-bg);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:.35rem .4rem;color:var(--text-1);font-family:'Inter',sans-serif">
+                dias
+            </label>
             <span style="color:var(--text-3);font-size:.72rem;white-space:nowrap">${e.total_contatos} contato${e.total_contatos !== 1 ? 's' : ''}</span>
             <button type="button" class="btn-secondary etiqueta-salvar-btn" style="padding:.4rem .6rem;font-size:.75rem" title="Salvar">💾</button>
             <button type="button" class="btn-danger etiqueta-excluir-btn" style="padding:.4rem .6rem;font-size:.75rem" title="Excluir">🗑️</button>
@@ -841,12 +846,13 @@ etiquetasGerenciarLista?.addEventListener('click', async (e) => {
     if (e.target.closest('.etiqueta-salvar-btn')) {
         const nome = row.querySelector('.etiqueta-nome-input').value.trim();
         const cor = row.querySelector('.etiqueta-cor-input').value;
+        const duracao_dias = row.querySelector('.etiqueta-duracao-input').value.trim() || null;
         if (!nome) { showToast('Erro', 'Nome não pode ficar em branco', 'error'); return; }
         try {
             const res = await fetch(`/api/etiquetas/${id}`, {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ nome, cor })
+                body: JSON.stringify({ nome, cor, duracao_dias })
             });
             const atualizada = await res.json();
             if (!res.ok) throw new Error(atualizada.error || 'Erro ao salvar');
