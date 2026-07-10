@@ -1964,20 +1964,25 @@ app.get('/api/conversas', async (req, res) => {
 
 // Limpeza pontual das "conversas fantasma" salvas antes do filtro de tipo de
 // mensagem existir (ruído de protocolo do WhatsApp: sincronização entre
-// aparelhos, notificação de criptografia, etc). Critério bem conservador —
-// só remove telefone que NUNCA teve nome real resolvido (nome sempre igual
-// ao telefone) OU telefone = '0'. Baseado no estado da mensagem MAIS RECENTE
-// de cada contato (mesma coisa que aparece na tela) — não exige pureza no
-// histórico inteiro, então gente real cujas primeiras mensagens vieram sem
-// nome resolvido (comum) continua de fora, desde que a mais recente já tenha
-// nome de verdade.
+// aparelhos, notificação de criptografia, IDs sintéticos de outras rotinas,
+// etc). O critério ANTERIOR (nome == telefone na msg mais recente) foi
+// TESTADO EM PRODUÇÃO e provou ser perigoso: nome==telefone também acontece
+// pra contato real que nunca teve pushname resolvido — pegou 34 conversas
+// reais (telefones brasileiros válidos, com cobrança/boas-vindas de verdade)
+// junto com as 10 realmente falsas. Critério novo: um telefone de WhatsApp
+// BR real é '55' + DDD(2) + número(8 ou 9) = 12 ou 13 dígitos, só números.
+// Qualquer coisa fora desse formato (IDs sintéticos de 14+ dígitos, ':xx' de
+// grupo/broadcast mal filtrado, telefone '0') não é uma conversa de verdade,
+// independente do nome ou conteúdo do texto.
+const TELEFONE_BR_GLOB_12 = `55${'[0-9]'.repeat(10)}`;
+const TELEFONE_BR_GLOB_13 = `55${'[0-9]'.repeat(11)}`;
 app.get('/api/conversas/fantasmas', async (req, res) => {
     try {
         const candidatos = await db.all(`
             SELECT telefone, nome, texto FROM conversas c1
             WHERE id = (SELECT MAX(id) FROM conversas c2 WHERE c2.telefone = c1.telefone)
-              AND (telefone = '0' OR nome = telefone)
-        `);
+              AND telefone NOT GLOB ? AND telefone NOT GLOB ?
+        `, [TELEFONE_BR_GLOB_12, TELEFONE_BR_GLOB_13]);
         res.json(candidatos);
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -1989,8 +1994,8 @@ app.delete('/api/conversas/fantasmas', async (req, res) => {
         const candidatos = await db.all(`
             SELECT telefone FROM conversas c1
             WHERE id = (SELECT MAX(id) FROM conversas c2 WHERE c2.telefone = c1.telefone)
-              AND (telefone = '0' OR nome = telefone)
-        `);
+              AND telefone NOT GLOB ? AND telefone NOT GLOB ?
+        `, [TELEFONE_BR_GLOB_12, TELEFONE_BR_GLOB_13]);
         const telefones = candidatos.map(c => c.telefone);
         let mensagensRemovidas = 0;
         if (telefones.length > 0) {
