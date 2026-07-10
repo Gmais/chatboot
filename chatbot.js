@@ -2048,6 +2048,40 @@ app.post('/api/automacoes/:id/importar-contatos', async (req, res) => {
     }
 });
 
+// Igual importarContatosParaAutomacao, mas a fonte é a lista de "Ativos com
+// Parcelas Atrasadas" (tabela pacto_inadimplentes, aba Integração) direto —
+// não passa pela etiqueta "Inadimplente". Usado pelo botão dedicado na
+// automação "Cobrança Inadimplentes": mais direto/claro pro operador do que
+// "contatos com a etiqueta", já que a etiqueta e essa lista são a mesma
+// coisa na prática (quem entra na lista recebe a etiqueta), mas este botão
+// deixa a origem do dado explícita.
+app.post('/api/automacoes/:id/importar-inadimplentes-pacto', async (req, res) => {
+    const { id } = req.params;
+    try {
+        const automacao = await db.get('SELECT id FROM automacoes WHERE id = ?', id);
+        if (!automacao) return res.status(404).json({ error: 'Automação não encontrada.' });
+        const contatos = await db.all('SELECT telefone FROM pacto_inadimplentes');
+        let importados = 0;
+        for (const c of contatos) {
+            const jaMatriculado = await db.get(
+                'SELECT 1 FROM contato_automacao_estado WHERE telefone = ? AND automacao_id = ?',
+                [c.telefone, id]
+            );
+            if (jaMatriculado) continue;
+            await db.run(
+                `INSERT INTO contato_automacao_estado (telefone, automacao_id, etapa_atual, entrou_em, proxima_execucao_em)
+                 VALUES (?, ?, 0, CURRENT_TIMESTAMP, NULL)`,
+                [c.telefone, id]
+            );
+            importados++;
+        }
+        io.emit('automacoes_atualizadas');
+        res.json({ success: true, importados });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
 // Dispara de verdade os contatos "em andamento" dessa automação — cada um
 // recebe a mensagem sorteada pra ele (ver dispararMensagensDaAutomacao).
 // Roda em background (espaçado, pode levar minutos) — front acompanha pelo

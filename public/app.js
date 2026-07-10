@@ -2922,7 +2922,11 @@ function renderAutomacoesLista() {
                     Ativa
                 </label>
                 <button type="button" class="btn-secondary btn-config-etapas" data-id="${a.id}" data-nome="${a.nome}" style="padding:.5rem .8rem;font-size:.82rem">⚙️ Configurar Etapas</button>
-                <button type="button" class="btn-secondary btn-ver-contatos-etiqueta" data-id="${a.id}" data-nome="${a.nome}" style="padding:.5rem .7rem;font-size:.82rem">👥 Contatos com a Etiqueta</button>
+                ${a.etiqueta_nome === 'Inadimplente' ? `
+                    <button type="button" class="btn-secondary btn-importar-inadimplentes-pacto" data-id="${a.id}" style="padding:.5rem .7rem;font-size:.82rem" title="Traz pra fila quem está na lista 'Ativos com Parcelas Atrasadas' da aba Integração">📥 Importar Lista</button>
+                ` : `
+                    <button type="button" class="btn-secondary btn-ver-contatos-etiqueta" data-id="${a.id}" data-nome="${a.nome}" style="padding:.5rem .7rem;font-size:.82rem">👥 Contatos com a Etiqueta</button>
+                `}
                 <button type="button" class="btn-danger btn-excluir-automacao" data-id="${a.id}" style="padding:.5rem .7rem;font-size:.82rem">🗑️</button>
             </div>
         `;
@@ -2950,6 +2954,24 @@ automacoesLista?.addEventListener('click', async (e) => {
 
     const btnVerContatos = e.target.closest('.btn-ver-contatos-etiqueta');
     if (btnVerContatos) { abrirContatosComEtiqueta(btnVerContatos.dataset.id, btnVerContatos.dataset.nome); return; }
+
+    const btnImportarInadimplentesPacto = e.target.closest('.btn-importar-inadimplentes-pacto');
+    if (btnImportarInadimplentesPacto) {
+        btnImportarInadimplentesPacto.disabled = true;
+        btnImportarInadimplentesPacto.textContent = '⏳ Importando...';
+        try {
+            const res = await fetch(`/api/automacoes/${btnImportarInadimplentesPacto.dataset.id}/importar-inadimplentes-pacto`, { method: 'POST' });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || 'Erro ao importar');
+            showToast('Importado!', `${data.importados} contato(s) novo(s) trazido(s) pra fila.`, 'success', 4000);
+        } catch (err) {
+            showToast('Erro', err.message, 'error');
+        } finally {
+            btnImportarInadimplentesPacto.disabled = false;
+            btnImportarInadimplentesPacto.textContent = '📥 Importar Lista';
+        }
+        return;
+    }
 
     const btnExcluir = e.target.closest('.btn-excluir-automacao');
     if (btnExcluir) {
