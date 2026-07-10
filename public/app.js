@@ -2873,6 +2873,17 @@ socket.on('pacto_import_done', (p) => {
 // =====================================
 const btnPactoInadimplentes = document.getElementById('btn-pacto-inadimplentes');
 const pactoInadimplentesResultado = document.getElementById('pacto-inadimplentes-resultado');
+const pactoInadimplentesUltimaAtualizacaoEl = document.getElementById('pacto-inadimplentes-ultima-atualizacao');
+
+function formatarUltimaAtualizacaoPacto(iso) {
+    if (!pactoInadimplentesUltimaAtualizacaoEl) return;
+    if (!iso) { pactoInadimplentesUltimaAtualizacaoEl.textContent = ''; return; }
+    const d = new Date(iso);
+    if (isNaN(d)) { pactoInadimplentesUltimaAtualizacaoEl.textContent = ''; return; }
+    const data = d.toLocaleDateString('pt-BR');
+    const hora = d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+    pactoInadimplentesUltimaAtualizacaoEl.textContent = `Última atualização: ${data} às ${hora}`;
+}
 // Duas tabelas alimentadas pelo MESMO dado (pacto_inadimplentes já guarda
 // dias_atraso_mais_antiga) — só separa na hora de exibir, sem precisar de
 // duas varreduras nem duas listas de verdade no banco.
@@ -2915,8 +2926,17 @@ function linhaPactoInadimplente(i) {
     `;
 }
 
+async function carregarUltimaAtualizacaoPacto() {
+    try {
+        const res = await fetch('/api/pacto/inadimplentes/status');
+        const status = await res.json();
+        if (!status.running) formatarUltimaAtualizacaoPacto(status.ultima_atualizacao);
+    } catch (e) { /* silencioso — não é crítico, só o texto informativo */ }
+}
+
 async function loadPactoInadimplentes() {
     if (!pactoInadimplentesLongoBody || !pactoInadimplentesRecenteBody) return;
+    carregarUltimaAtualizacaoPacto();
     try {
         const res = await fetch('/api/pacto/inadimplentes');
         const lista = await res.json();
@@ -2980,6 +3000,7 @@ socket.on('pacto_inadimplentes_done', (p) => {
         btnPactoInadimplentes.textContent = '🔄 Atualizar Lista';
     }
     showToast('Atualização concluída!', `${p.inadimplentes} com parcela atrasada, ${p.vencemHoje || 0} vencendo hoje.`, 'success', 6000);
+    formatarUltimaAtualizacaoPacto(p.ultima_atualizacao);
     loadPactoInadimplentes();
     loadPactoVencemHoje();
 });

@@ -2773,7 +2773,13 @@ async function garantirEtiquetaParcelaAtrasada() {
 let pactoInadimplentesRunning = false;
 let pactoInadimplentesProgress = { total: 0, verificados: 0, inadimplentes: 0, running: false };
 
-app.get('/api/pacto/inadimplentes/status', (req, res) => res.json(pactoInadimplentesProgress));
+app.get('/api/pacto/inadimplentes/status', async (req, res) => {
+    // Última varredura concluída fica salva em `configuracoes` (sobrevive a
+    // reinício/deploy) — pactoInadimplentesProgress é só o estado em memória
+    // da varredura atual/mais recente desde que o processo subiu.
+    const row = await db.get("SELECT valor FROM configuracoes WHERE chave = 'pacto_inadimplentes_ultima_atualizacao'");
+    res.json({ ...pactoInadimplentesProgress, ultima_atualizacao: row?.valor || null });
+});
 
 app.get('/api/pacto/inadimplentes', async (req, res) => {
     const lista = await db.all('SELECT * FROM pacto_inadimplentes ORDER BY dias_atraso_mais_antiga DESC');
@@ -2908,8 +2914,10 @@ async function processarInadimplentesPacto() {
 
     pactoInadimplentesProgress.running = false;
     pactoInadimplentesRunning = false;
+    const ultimaAtualizacao = new Date().toISOString();
+    await db.run('INSERT OR REPLACE INTO configuracoes (chave, valor) VALUES (?, ?)', ['pacto_inadimplentes_ultima_atualizacao', ultimaAtualizacao]);
     io.emit('pacto_inadimplentes_progress', pactoInadimplentesProgress);
-    io.emit('pacto_inadimplentes_done', pactoInadimplentesProgress);
+    io.emit('pacto_inadimplentes_done', { ...pactoInadimplentesProgress, ultima_atualizacao: ultimaAtualizacao });
     console.log(`✅ Varredura finalizada: ${pactoInadimplentesProgress.inadimplentes} inadimplente(s), ${pactoInadimplentesProgress.vencemHoje} vencendo hoje, de ${pactoInadimplentesProgress.verificados} verificados.`);
 }
 
