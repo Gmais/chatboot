@@ -336,6 +336,14 @@ async function initDB() {
             dias_atraso_mais_antiga INTEGER,
             atualizado_em DATETIME DEFAULT CURRENT_TIMESTAMP
         );
+        CREATE TABLE IF NOT EXISTS pacto_vencem_hoje (
+            telefone TEXT PRIMARY KEY,
+            nome TEXT,
+            matricula TEXT,
+            qtd_parcelas INTEGER,
+            valor_total REAL,
+            atualizado_em DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
     `);
 
     // Adiciona colunas novas se migrando de versão anterior
@@ -2979,6 +2987,136 @@ async function expirarInadimplentesAntigos() {
 }
 setInterval(expirarInadimplentesAntigos, 30 * 60 * 1000);
 setTimeout(expirarInadimplentesAntigos, 90 * 1000);
+
+// =====================================
+// INTEGRAÇÃO — CRM PACTO (PARCELA VENCE HOJE)
+// =====================================
+// Mesmo padrão da varredura de inadimplentes, mas olha pra quem tem parcela
+// com vencimento HOJE (não vencida ainda — é um aviso antecipado, não
+// cobrança de atraso). Etiqueta separada ("Vence Hoje") pra poder montar uma
+// Automação de lembrete de vencimento, com tom diferente da de cobrança.
+const NOME_ETIQUETA_VENCE_HOJE = 'Vence Hoje';
+async function garantirEtiquetaVenceHoje() {
+    const existente = await db.get('SELECT id FROM etiquetas WHERE LOWER(nome) = LOWER(?)', NOME_ETIQUETA_VENCE_HOJE);
+    if (existente) return existente.id;
+    const result = await db.run('INSERT INTO etiquetas (nome, cor) VALUES (?, ?)', [NOME_ETIQUETA_VENCE_HOJE, '#3b82f6']);
+    return result.lastID;
+}
+
+let pactoVencemHojeRunning = false;
+let pactoVencemHojeProgress = { total: 0, verificados: 0, encontrados: 0, running: false };
+
+app.get('/api/pacto/vencem-hoje/status', (req, res) => res.json(pactoVencemHojeProgress));
+
+app.get('/api/pacto/vencem-hoje', async (req, res) => {
+    const lista = await db.all('SELECT * FROM pacto_vencem_hoje ORDER BY valor_total DESC');
+    res.json(lista);
+});
+
+app.delete('/api/pacto/vencem-hoje/:telefone', async (req, res) => {
+    const { telefone } = req.params;
+    try {
+        const etiquetaId = await garantirEtiquetaVenceHoje();
+        await removerEtiquetaContato(telefone, etiquetaId);
+        await db.run('DELETE FROM pacto_vencem_hoje WHERE telefone = ?', telefone);
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+async function processarVencemHojePacto() {
+    const contatos = await db.all("SELECT telefone, matricula FROM leads WHERE matricula IS NOT NULL AND matricula != ''");
+    const etiquetaId = await garantirEtiquetaVenceHoje();
+    const hojeYMD = moment.tz('America/Sao_Paulo').format('YYYY-MM-DD');
+
+    pactoVencemHojeRunning = true;
+    pactoVencemHojeProgress = { total: contatos.length, verificados: 0, encontrados: 0, running: true };
+    io.emit('pacto_vencem_hoje_progress', pactoVencemHojeProgress);
+
+    const CONCORRENCIA = 5;
+    let indice = 0;
+
+    async function processarContato(contato) {
+        const numLimpo = contato.telefone.replace('@c.us', '').replace('@lid', '');
+        try {
+            const aluno = await buscarAlunoPorMatricula(contato.matricula);
+            const estaAtivo = aluno?.situacao?.codigo === 'AT';
+            let parcelasHoje = [];
+            if (estaAtivo) {
+                const parcelas = await obterParcelasEmAberto(aluno.pessoa.codigo);
+                parcelasHoje = (parcelas || []).filter(p =>
+                    p.dataVencimentoDt && moment.tz(p.dataVencimentoDt, 'America/Sao_Paulo').format('YYYY-MM-DD') === hojeYMD
+                );
+            }
+
+            const jaEstavaNoCache = await db.get('SELECT 1 FROM pacto_vencem_hoje WHERE telefone = ?', numLimpo);
+
+            if (estaAtivo && parcelasHoje.length > 0) {
+                const valorTotal = parcelasHoje.reduce((soma, p) => soma + (p.valor || 0), 0);
+                await db.run(
+                    `INSERT INTO pacto_vencem_hoje (telefone, nome, matricula, qtd_parcelas, valor_total, atualizado_em)
+                     VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                     ON CONFLICT(telefone) DO UPDATE SET nome = excluded.nome, matricula = excluded.matricula,
+                        qtd_parcelas = excluded.qtd_parcelas, valor_total = excluded.valor_total, atualizado_em = CURRENT_TIMESTAMP`,
+                    [numLimpo, aluno.pessoa?.nome || null, aluno.matricula || contato.matricula, parcelasHoje.length, valorTotal]
+                );
+                await aplicarEtiquetaContato(numLimpo, etiquetaId);
+                pactoVencemHojeProgress.encontrados++;
+            } else if (jaEstavaNoCache) {
+                // Não tem mais parcela vencendo hoje (pagou, ou o dia virou) — some do cache e da etiqueta.
+                await db.run('DELETE FROM pacto_vencem_hoje WHERE telefone = ?', numLimpo);
+                await removerEtiquetaContato(numLimpo, etiquetaId);
+            }
+        } catch (err) {
+            console.error(`❌ Erro ao checar vencimento de hoje da matrícula ${contato.matricula}:`, err.message);
+        }
+        pactoVencemHojeProgress.verificados++;
+    }
+
+    while (indice < contatos.length && pactoVencemHojeRunning) {
+        const lote = contatos.slice(indice, indice + CONCORRENCIA);
+        await Promise.all(lote.map(processarContato));
+        indice += lote.length;
+        io.emit('pacto_vencem_hoje_progress', pactoVencemHojeProgress);
+    }
+
+    pactoVencemHojeProgress.running = false;
+    pactoVencemHojeRunning = false;
+    io.emit('pacto_vencem_hoje_progress', pactoVencemHojeProgress);
+    io.emit('pacto_vencem_hoje_done', pactoVencemHojeProgress);
+    console.log(`✅ Varredura de "vence hoje" finalizada: ${pactoVencemHojeProgress.encontrados} encontrados de ${pactoVencemHojeProgress.verificados} verificados.`);
+}
+
+app.post('/api/pacto/vencem-hoje/atualizar', async (req, res) => {
+    if (pactoVencemHojeRunning) return res.status(400).json({ error: 'Uma varredura de "vence hoje" já está em andamento.' });
+    res.json({ success: true });
+    processarVencemHojePacto().catch(e => console.error('Erro ao processar vencem hoje:', e.message));
+});
+
+// "Vence Hoje" só faz sentido no dia — expira em 24h desde a última
+// confirmação (mais folgado que as 20h do Inadimplente, que é recorrente;
+// aqui é só pra não ficar preso caso ninguém rode a varredura de novo).
+const VENCE_HOJE_EXPIRACAO_HORAS = 24;
+async function expirarVencemHojeAntigos() {
+    if (!db) return;
+    try {
+        const etiquetaId = await garantirEtiquetaVenceHoje();
+        const expirados = await db.all(
+            `SELECT telefone FROM pacto_vencem_hoje WHERE atualizado_em <= datetime('now', ?)`,
+            `-${VENCE_HOJE_EXPIRACAO_HORAS} hours`
+        );
+        for (const c of expirados) {
+            await removerEtiquetaContato(c.telefone, etiquetaId);
+            await db.run('DELETE FROM pacto_vencem_hoje WHERE telefone = ?', c.telefone);
+        }
+        if (expirados.length > 0) console.log(`⏳ ${expirados.length} etiqueta(s) "Vence Hoje" expirada(s) após ${VENCE_HOJE_EXPIRACAO_HORAS}h.`);
+    } catch (e) {
+        console.error('Erro ao expirar vencem hoje antigos:', e.message);
+    }
+}
+setInterval(expirarVencemHojeAntigos, 30 * 60 * 1000);
+setTimeout(expirarVencemHojeAntigos, 95 * 1000);
 
 // Expira etiquetas temporárias (contato_etiquetas.expira_em) de QUALQUER
 // etiqueta configurada com duracao_dias — genérico, não é só pro "Desafio":
