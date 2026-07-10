@@ -1144,13 +1144,24 @@ app.post('/api/contatos/mesclar-duplicados', async (req, res) => {
         });
         const gruposDuplicados = [...grupos.entries()].filter(([, ls]) => ls.length > 1);
 
-        const resultado = [];
+        // Achado em produção: telefone compartilhado por FAMÍLIA (pai/mãe + filho,
+        // irmãos) é comum nessa academia — cada um com matrícula própria e data de
+        // nascimento diferente. 2+ contatos do grupo com matrícula PRÓPRIA é gente
+        // DIFERENTE de verdade, não duplicata de formato — mesclar destruiria a
+        // identidade de um dos alunos. Só mescla grupo com no máximo 1 matrícula.
+        const mesclados = [];
+        const pulados = [];
         for (const [canonico, leadsGrupo] of gruposDuplicados) {
+            const comMatricula = leadsGrupo.filter(l => l.matricula).length;
+            if (comMatricula >= 2) {
+                pulados.push({ canonico, motivo: 'multiplas matriculas proprias no grupo — provavel familia compartilhando telefone, nao duplicata', contatos: leadsGrupo.map(l => ({ telefone: l.telefone, nome: l.nome, matricula: l.matricula })) });
+                continue;
+            }
             await mesclarGrupoDeTelefones(canonico, leadsGrupo);
-            resultado.push({ canonico, telefones_mesclados: leadsGrupo.map(l => l.telefone) });
+            mesclados.push({ canonico, telefones_mesclados: leadsGrupo.map(l => l.telefone) });
         }
         io.emit('stats', stats);
-        res.json({ success: true, grupos_mesclados: resultado.length, detalhes: resultado });
+        res.json({ success: true, grupos_mesclados: mesclados.length, grupos_pulados: pulados.length, detalhes: mesclados, pulados });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
