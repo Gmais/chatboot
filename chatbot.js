@@ -1920,6 +1920,13 @@ async function listarConversasComEtiquetas() {
     // recente IGNORANDO esses placeholders; latest_any é o fallback pro raro
     // caso de um telefone cujo histórico inteiro seja placeholder (não deveria
     // sobrar depois da limpeza, mas evita o contato simplesmente sumir da lista).
+    // O "nome" a mostrar não necessariamente vem da mesma linha da última
+    // mensagem real: uma mensagem enviada pelo robô pode ter sido registrada
+    // antes do nome do contato resolver (nome = telefone cru), enquanto uma
+    // mensagem de sincronização posterior já tinha o pushname certo — sem essa
+    // separação, o contato aparece na lista com o telefone no lugar do nome
+    // (ex: Cleonice aparecia como "554299878939"). melhor_nome pega o nome
+    // mais recente entre os que têm pelo menos uma letra (nome de verdade).
     const conversas = await db.all(`
         WITH latest_real AS (
             SELECT telefone, MAX(ts) AS max_ts
@@ -1931,10 +1938,16 @@ async function listarConversasComEtiquetas() {
             SELECT telefone, MAX(ts) AS max_ts
             FROM conversas
             GROUP BY telefone
+        ),
+        melhor_nome AS (
+            SELECT telefone, MAX(ts) AS max_ts
+            FROM conversas
+            WHERE nome GLOB '*[^0-9]*'
+            GROUP BY telefone
         )
         SELECT
             c.telefone,
-            c.nome,
+            COALESCE(mn.nome, c.nome) AS nome,
             c.texto AS ultimo_texto,
             c.direcao AS ultima_direcao,
             c.tipo AS ultimo_tipo,
@@ -1948,6 +1961,12 @@ async function listarConversasComEtiquetas() {
             FROM latest_any la
             LEFT JOIN latest_real lr ON lr.telefone = la.telefone
         ) latest ON c.telefone = latest.telefone AND c.ts = latest.max_ts
+        LEFT JOIN (
+            SELECT cn.telefone, cn.nome
+            FROM conversas cn
+            INNER JOIN melhor_nome mnn ON mnn.telefone = cn.telefone AND mnn.max_ts = cn.ts
+            GROUP BY cn.telefone
+        ) mn ON mn.telefone = c.telefone
         LEFT JOIN conversas_humano ch ON ch.telefone = c.telefone
         LEFT JOIN conversas_status cs ON cs.telefone = c.telefone
         GROUP BY c.telefone
