@@ -1706,7 +1706,13 @@ const CM = (() => {
     // ---- Atualiza badge global de não lidas ----
     function updateGlobalBadge() {
         totalNaoLidas = 0;
-        contacts.forEach(c => { totalNaoLidas += (c.nao_lidas || 0); });
+        let aguardandoNaoLidas = 0;
+        contacts.forEach(c => {
+            totalNaoLidas += (c.nao_lidas || 0);
+            const status = c.status || 'aberta';
+            const aba = status === 'fechada' ? 'fechada' : (c.assumida_humano ? 'aguardando' : 'aberta');
+            if (aba === 'aguardando') aguardandoNaoLidas += (c.nao_lidas || 0);
+        });
         if (badgeNaoLidas) {
             if (totalNaoLidas > 0) {
                 badgeNaoLidas.textContent = totalNaoLidas > 99 ? '99+' : totalNaoLidas;
@@ -1715,6 +1721,9 @@ const CM = (() => {
                 badgeNaoLidas.style.display = 'none';
             }
         }
+        // Aba "Aguardando" pisca em vermelho enquanto tiver mensagem não lida
+        // ali dentro — some sozinha quando o operador abre a conversa.
+        if (tabAguardando) tabAguardando.classList.toggle('tab-piscando', aguardandoNaoLidas > 0);
     }
 
     // ---- Renderiza a lista de contatos ----

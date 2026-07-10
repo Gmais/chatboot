@@ -757,6 +757,32 @@ header h1 {
     border-color: var(--green);
     color: var(--green);
 }
+/* Pisca devagar quando chega mensagem nova numa conversa aguardando ação
+   humana — some sozinho assim que o operador abre a conversa (nao_lidas
+   zera). Ciclo longo (3.2s) e ease-in-out pra não cansar a vista. */
+.chat-status-tab.tab-piscando {
+    animation: chatTabPiscando 3.2s ease-in-out infinite;
+}
+@keyframes chatTabPiscando {
+    0%, 100% {
+        background: rgba(239,68,68,0.08);
+        border-color: rgba(239,68,68,0.3);
+        color: var(--text-3);
+    }
+    50% {
+        background: rgba(239,68,68,0.4);
+        border-color: var(--red);
+        color: #fff;
+    }
+}
+@media (prefers-reduced-motion: reduce) {
+    .chat-status-tab.tab-piscando {
+        animation: none;
+        background: rgba(239,68,68,0.25);
+        border-color: var(--red);
+        color: #fff;
+    }
+}
 
 #chat-contact-list {
     flex: 1;
