@@ -385,13 +385,17 @@ async function initDB() {
     try { await db.exec(`ALTER TABLE contato_etiquetas ADD COLUMN expira_em DATETIME DEFAULT NULL`); } catch(e) {}
     // "Mensagens Personalizadas" vira biblioteca de VÁRIAS campanhas (não só
     // aniversário) — categoria identifica qual "Campanha Rápida" (Aniversariantes,
-    // Inadimplentes, etc) a mensagem pertence. Toda mensagem que já existia até
-    // aqui SÓ podia ser de aniversário (era o único uso da tela até agora) —
-    // essa migração "importa" elas automaticamente pra categoria certa, uma vez,
-    // só nas que ainda não tinham categoria nenhuma (não mexe em nada criado depois).
+    // Inadimplentes, etc) a mensagem pertence. Migração "importa" as que já
+    // existiam pelo padrão do NOME (não joga tudo em "aniversariantes" cego —
+    // já existiam mensagens de cobrança/ex-aluno na mesma tabela, misturar
+    // categoria errada faria elas somem do filtro certo e apareçam no errado).
+    // Só mexe em quem ainda não tem categoria nenhuma; o que não reconhece
+    // pelo nome fica sem categoria (nunca chuta errado).
     try {
         await db.exec(`ALTER TABLE mensagens_personalizadas ADD COLUMN categoria TEXT DEFAULT NULL`);
-        await db.run(`UPDATE mensagens_personalizadas SET categoria = 'aniversariantes' WHERE categoria IS NULL`);
+        await db.run(`UPDATE mensagens_personalizadas SET categoria = 'aniversariantes' WHERE categoria IS NULL AND nome LIKE 'Aniversário%'`);
+        await db.run(`UPDATE mensagens_personalizadas SET categoria = 'inadimplentes' WHERE categoria IS NULL AND nome LIKE 'Cobrança%'`);
+        await db.run(`UPDATE mensagens_personalizadas SET categoria = 'ex-alunos' WHERE categoria IS NULL AND (nome LIKE 'Ex Aluno%' OR nome LIKE 'Ex-Aluno%')`);
     } catch(e) {}
     // Garante tabela conversas em instalações antigas
     try { await db.exec(`CREATE TABLE IF NOT EXISTS conversas (id INTEGER PRIMARY KEY AUTOINCREMENT, telefone TEXT NOT NULL, nome TEXT, direcao TEXT NOT NULL, texto TEXT, tipo TEXT DEFAULT 'text', ts DATETIME DEFAULT CURRENT_TIMESTAMP, lida INTEGER DEFAULT 0)`); } catch(e) {}
