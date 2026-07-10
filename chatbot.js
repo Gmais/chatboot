@@ -1976,13 +1976,26 @@ app.get('/api/conversas', async (req, res) => {
 // independente do nome ou conteúdo do texto.
 const TELEFONE_BR_GLOB_12 = `55${'[0-9]'.repeat(10)}`;
 const TELEFONE_BR_GLOB_13 = `55${'[0-9]'.repeat(11)}`;
+// Segundo critério (além do formato de telefone inválido): telefone com
+// formato válido mas "nome" puramente numérico e diferente do telefone — sinal
+// de contato.number devolvendo o ID interno do @lid em vez do telefone (ver
+// fix no handler 'message') — só entra se TODO o histórico daquele telefone
+// for placeholder (nunca teve conteúdo real), pra nunca arriscar apagar
+// conversa de gente real que só teve UMA mensagem vazia no meio do histórico.
+const QUERY_FANTASMAS = `
+    SELECT telefone, nome, texto FROM conversas c1
+    WHERE id = (SELECT MAX(id) FROM conversas c2 WHERE c2.telefone = c1.telefone)
+      AND (
+        (telefone NOT GLOB ? AND telefone NOT GLOB ?)
+        OR (
+          nome NOT GLOB '*[^0-9]*' AND nome != telefone
+          AND NOT EXISTS (SELECT 1 FROM conversas c3 WHERE c3.telefone = c1.telefone AND c3.texto NOT IN ('[text]', '[mensagem sem texto]'))
+        )
+      )
+`;
 app.get('/api/conversas/fantasmas', async (req, res) => {
     try {
-        const candidatos = await db.all(`
-            SELECT telefone, nome, texto FROM conversas c1
-            WHERE id = (SELECT MAX(id) FROM conversas c2 WHERE c2.telefone = c1.telefone)
-              AND telefone NOT GLOB ? AND telefone NOT GLOB ?
-        `, [TELEFONE_BR_GLOB_12, TELEFONE_BR_GLOB_13]);
+        const candidatos = await db.all(QUERY_FANTASMAS, [TELEFONE_BR_GLOB_12, TELEFONE_BR_GLOB_13]);
         res.json(candidatos);
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -1991,11 +2004,7 @@ app.get('/api/conversas/fantasmas', async (req, res) => {
 
 app.delete('/api/conversas/fantasmas', async (req, res) => {
     try {
-        const candidatos = await db.all(`
-            SELECT telefone FROM conversas c1
-            WHERE id = (SELECT MAX(id) FROM conversas c2 WHERE c2.telefone = c1.telefone)
-              AND telefone NOT GLOB ? AND telefone NOT GLOB ?
-        `, [TELEFONE_BR_GLOB_12, TELEFONE_BR_GLOB_13]);
+        const candidatos = await db.all(QUERY_FANTASMAS.replace('SELECT telefone, nome, texto', 'SELECT telefone'), [TELEFONE_BR_GLOB_12, TELEFONE_BR_GLOB_13]);
         const telefones = candidatos.map(c => c.telefone);
         let mensagensRemovidas = 0;
         if (telefones.length > 0) {
@@ -3108,6 +3117,11 @@ client.on('message_create', async (msg) => {
         const telefoneResolvido = await resolveJid(msg.to);
         const numLimpo = telefoneResolvido.replace('@c.us', '').replace('@lid', '');
         const tipoMsg = detectarTipoMsg(msg);
+        // Mesma reclassificação assíncrona de msg.body vista na mensagem recebida
+        // (ver comentário no handler 'message') — rechecar aqui, já com o await
+        // do resolveJid concluído, evita salvar ruído de protocolo reclassificado
+        // tarde demais pro filtro do topo do handler pegar.
+        if (tipoMsg === 'text' && !msg.body) return;
         const textoExibir = msg.body || TIPO_LABEL_FALLBACK[tipoMsg] || '[mensagem sem texto]';
         const nome = await resolverNomeContato(numLimpo);
         await salvarNaConversa(numLimpo, nome, 'out', textoExibir, tipoMsg, msg.timestamp);
@@ -3336,14 +3350,19 @@ client.on('message', async (msg) => {
         const telefoneReal = await resolvePhone(msg);  // número limpo para salvar no banco
         const numLimpo = telefoneReal.replace('@c.us','').replace('@lid','');
 
-        // Tenta obter o nome do contato (pushname ou nome da agenda)
+        // Tenta obter o nome do contato (pushname ou nome da agenda). NUNCA usa
+        // contact.number como fallback: em contatos migrados pro sistema @lid do
+        // WhatsApp, contact.number pode devolver o ID interno do lid (um número
+        // gigante sem relação com o telefone real) em vez do telefone — melhor
+        // cair no numLimpo (já resolvido via resolveJid) do que salvar esse lixo
+        // como "nome" do contato.
         let nomeContato = numLimpo;
         try {
             const contact = await Promise.race([
                 msg.getContact(),
                 new Promise((_, r) => setTimeout(() => r(new Error('timeout')), 2500))
             ]);
-            nomeContato = contact.pushname || contact.name || contact.number || numLimpo;
+            nomeContato = contact.pushname || contact.name || numLimpo;
             nomeContatos.set(numLimpo, nomeContato);
         } catch(_) {}
 
@@ -3361,6 +3380,16 @@ client.on('message', async (msg) => {
             transcricaoAudio = await transcreverAudio(msg);
             if (transcricaoAudio) texto = transcricaoAudio.trim().toLowerCase();
         }
+
+        // msg.body pode "esvaziar" de forma assíncrona: mensagem de sincronização
+        // chega com msg.type='chat' e corpo aparentemente presente, mas o Store
+        // interno do WhatsApp Web só termina de classificar como ruído de
+        // protocolo DEPOIS dos awaits acima (getChat/getContact/registerLead) —
+        // o filtro lá em cima (linha ~3330) não pega isso porque roda cedo demais.
+        // Rechecar aqui, na hora de salvar, pega o valor já estabilizado: se é
+        // tipo texto (tipoMsg default) e não tem corpo real nem transcrição,
+        // nunca foi uma mensagem de verdade — não vira conversa fantasma.
+        if (tipoMsg === 'text' && !msg.body && !transcricaoAudio) return;
 
         // Salva na tabela de conversas (mensagens recebidas) — salvarNaConversa já
         // reabre a conversa automaticamente se ela tinha sido finalizada.
