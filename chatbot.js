@@ -358,6 +358,11 @@ async function initDB() {
     // rodar em Disparos — cada contato recebe UMA, escolhida na hora do
     // disparo se ainda não tiver uma atribuída, e mantém a mesma depois.
     try { await db.exec(`ALTER TABLE contato_automacao_estado ADD COLUMN mensagem_id INTEGER DEFAULT NULL`); } catch(e) {}
+    // Guarda o motivo da última falha de envio (ex: "número não tem WhatsApp",
+    // timeout) pra mostrar na tela de acompanhamento — antes só ficava no log
+    // do servidor, staff não tinha como saber por que um contato específico
+    // nunca recebe a mensagem sem pedir pra checar o Railway.
+    try { await db.exec(`ALTER TABLE contato_automacao_estado ADD COLUMN ultimo_erro TEXT DEFAULT NULL`); } catch(e) {}
     // Janela de horário permitida pra automação mandar mensagem (HH:mm) — vazio = sem restrição
     try { await db.exec(`ALTER TABLE automacoes ADD COLUMN horario_inicio TEXT DEFAULT NULL`); } catch(e) {}
     try { await db.exec(`ALTER TABLE automacoes ADD COLUMN horario_fim TEXT DEFAULT NULL`); } catch(e) {}
@@ -1649,6 +1654,10 @@ async function dispararMensagensDaAutomacao(automacaoId) {
             ]);
         } catch (e) {
             console.error(`Erro ao disparar mensagem da automação #${automacaoId} pra ${estado.telefone}:`, e.message);
+            await db.run(
+                'UPDATE contato_automacao_estado SET ultimo_erro = ? WHERE telefone = ? AND automacao_id = ?',
+                [e.message, estado.telefone, automacaoId]
+            );
         }
         io.emit('automacoes_atualizadas');
     }
@@ -2089,7 +2098,7 @@ app.get('/api/automacoes/:id/progresso', async (req, res) => {
         // Mesma ordem FIFO usada no disparo de verdade (dispararMensagensDaAutomacao)
         // — garante que "horário previsto" abaixo reflita quem é enviado primeiro.
         const estados = await db.all(
-            'SELECT telefone, etapa_atual, entrou_em, mensagem_id FROM contato_automacao_estado WHERE automacao_id = ? ORDER BY entrou_em ASC',
+            'SELECT telefone, etapa_atual, entrou_em, mensagem_id, ultimo_erro FROM contato_automacao_estado WHERE automacao_id = ? ORDER BY entrou_em ASC',
             id
         );
 
@@ -2127,7 +2136,8 @@ app.get('/api/automacoes/:id/progresso', async (req, res) => {
                 etapa_atual: e.etapa_atual,
                 entrou_em: sqliteTsParaIso(e.entrou_em),
                 mensagem_nome: e.mensagem_id ? (nomeMensagemPorId.get(e.mensagem_id) || null) : null,
-                horario_previsto: disparoAtivo ? new Date(Date.now() + acumuladoMs).toISOString() : null
+                horario_previsto: disparoAtivo ? new Date(Date.now() + acumuladoMs).toISOString() : null,
+                ultimo_erro: e.ultimo_erro || null
             };
         });
 

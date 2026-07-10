@@ -3632,6 +3632,7 @@ async function carregarProgressoDetalhe(automacaoId) {
                         <th>Etapa</th>
                         <th>Mensagem</th>
                         <th>Horário previsto</th>
+                        <th>Erro no último envio</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -3644,6 +3645,7 @@ async function carregarProgressoDetalhe(automacaoId) {
                             <td style="color:var(--text-2);font-size:.85rem">${c.etapa_atual} de ${data.total_etapas}</td>
                             <td style="color:var(--text-2);font-size:.85rem">${c.mensagem_nome || '<span style="color:var(--text-3)">será sorteada no envio</span>'}</td>
                             <td style="color:var(--text-2);font-size:.85rem">${data.disparo_ativo ? formatDataCurta(c.horario_previsto) : '<span style="color:var(--text-3)">aguardando clicar em Disparar</span>'}</td>
+                            <td style="font-size:.8rem">${c.ultimo_erro ? `<span style="color:var(--red)" title="${c.ultimo_erro}">⚠️ ${c.ultimo_erro}</span>` : '<span style="color:var(--text-3)">-</span>'}</td>
                         </tr>
                     `).join('')}
                 </tbody>
