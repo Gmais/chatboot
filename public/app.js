@@ -2812,6 +2812,7 @@ function renderPactoInadimplentesProgress(p) {
             <div style="background:var(--red);height:100%;width:${pct}%;transition:width .3s"></div>
         </div>
         <div>🔴 Inadimplentes encontrados até agora: <strong style="color:var(--text-1)">${p.inadimplentes}</strong></div>
+        <div>🔵 Vencendo hoje encontrados até agora: <strong style="color:var(--text-1)">${p.vencemHoje || 0}</strong></div>
     `;
 }
 
@@ -2886,7 +2887,7 @@ btnPactoInadimplentes?.addEventListener('click', async () => {
         const res = await fetch('/api/pacto/inadimplentes/atualizar', { method: 'POST' });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || 'Erro ao iniciar');
-        renderPactoInadimplentesProgress({ total: 0, verificados: 0, inadimplentes: 0 });
+        renderPactoInadimplentesProgress({ total: 0, verificados: 0, inadimplentes: 0, vencemHoje: 0 });
     } catch (e) {
         showToast('Erro', e.message, 'error');
         btnPactoInadimplentes.disabled = false;
@@ -2901,28 +2902,17 @@ socket.on('pacto_inadimplentes_done', (p) => {
         btnPactoInadimplentes.disabled = false;
         btnPactoInadimplentes.textContent = '🔄 Atualizar Lista';
     }
-    showToast('Atualização concluída!', `${p.inadimplentes} alunos ativos com parcela atrasada.`, 'success', 6000);
+    showToast('Atualização concluída!', `${p.inadimplentes} com parcela atrasada, ${p.vencemHoje || 0} vencendo hoje.`, 'success', 6000);
     loadPactoInadimplentes();
+    loadPactoVencemHoje();
 });
 
 // =====================================
 // INTEGRAÇÃO — CRM PACTO (PARCELA VENCE HOJE)
+// Lista alimentada pela MESMA varredura acima (pacto_inadimplentes_done) —
+// não tem botão nem progresso próprios.
 // =====================================
-const btnPactoVencemHoje = document.getElementById('btn-pacto-vencem-hoje');
-const pactoVencemHojeResultado = document.getElementById('pacto-vencem-hoje-resultado');
 const pactoVencemHojeBody = document.getElementById('pacto-vencem-hoje-lista');
-
-function renderPactoVencemHojeProgress(p) {
-    if (!pactoVencemHojeResultado) return;
-    const pct = p.total ? Math.round((p.verificados / p.total) * 100) : 0;
-    pactoVencemHojeResultado.innerHTML = `
-        <div style="margin-bottom:.5rem">⏳ Verificando contatos... ${p.verificados}/${p.total} (${pct}%)</div>
-        <div style="background:rgba(255,255,255,0.08);border-radius:50px;height:8px;overflow:hidden;margin-bottom:.8rem">
-            <div style="background:#3b82f6;height:100%;width:${pct}%;transition:width .3s"></div>
-        </div>
-        <div>🔵 Vencendo hoje encontrados até agora: <strong style="color:var(--text-1)">${p.encontrados}</strong></div>
-    `;
-}
 
 async function loadPactoVencemHoje() {
     if (!pactoVencemHojeBody) return;
@@ -2962,32 +2952,6 @@ pactoVencemHojeBody?.addEventListener('click', async (e) => {
     } catch (err) {
         showToast('Erro', 'Não foi possível remover', 'error');
     }
-});
-
-btnPactoVencemHoje?.addEventListener('click', async () => {
-    btnPactoVencemHoje.disabled = true;
-    btnPactoVencemHoje.textContent = '⏳ Atualizando...';
-    try {
-        const res = await fetch('/api/pacto/vencem-hoje/atualizar', { method: 'POST' });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error || 'Erro ao iniciar');
-        renderPactoVencemHojeProgress({ total: 0, verificados: 0, encontrados: 0 });
-    } catch (e) {
-        showToast('Erro', e.message, 'error');
-        btnPactoVencemHoje.disabled = false;
-        btnPactoVencemHoje.textContent = '🔄 Atualizar Lista';
-    }
-});
-
-socket.on('pacto_vencem_hoje_progress', renderPactoVencemHojeProgress);
-
-socket.on('pacto_vencem_hoje_done', (p) => {
-    if (btnPactoVencemHoje) {
-        btnPactoVencemHoje.disabled = false;
-        btnPactoVencemHoje.textContent = '🔄 Atualizar Lista';
-    }
-    showToast('Atualização concluída!', `${p.encontrados} aluno(s) com parcela vencendo hoje.`, 'success', 6000);
-    loadPactoVencemHoje();
 });
 
 // =====================================

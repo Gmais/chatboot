@@ -872,8 +872,8 @@ Sempre tente agendar uma aula experimental."></textarea>
                 <div class="card glass">
                     <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:.8rem;margin-bottom:1rem">
                         <div>
-                            <h3 style="margin-bottom:.3rem">💰 CRM Pacto — Ativos com Parcelas Atrasadas</h3>
-                            <p style="color:var(--text-2);font-size:.85rem;max-width:560px">Varre os contatos com matrícula conhecida, confere quem está ativo no Pacto e com parcela vencida, e etiqueta como "Inadimplente" sozinho (some da etiqueta quando quitar ou deixar de ser ativo). Use a etiqueta pra criar uma Automação de cobrança. Leva alguns minutos. Separado em duas listas pelo tempo de atraso, pra cobrança em tons diferentes.</p>
+                            <h3 style="margin-bottom:.3rem">💰 CRM Pacto — Situação Financeira</h3>
+                            <p style="color:var(--text-2);font-size:.85rem;max-width:560px">Varre os contatos com matrícula conhecida, confere quem está ativo no Pacto e como estão as parcelas, e etiqueta sozinho: "Inadimplente" (atraso &gt; 30 dias), "Parcela Atrasada" (até 30 dias) ou "Vence Hoje" (aviso antecipado, sem atraso). As etiquetas somem quando quitar, deixar de ser ativo ou o dia virar. Use pra criar Automações de cobrança/lembrete. Leva alguns minutos — uma única varredura gera as três listas.</p>
                         </div>
                     </div>
 
@@ -920,22 +920,8 @@ Sempre tente agendar uma aula experimental."></textarea>
                             </tbody>
                         </table>
                     </div>
-                </div>
 
-                <div class="card glass">
-                    <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:.8rem;margin-bottom:1rem">
-                        <div>
-                            <h3 style="margin-bottom:.3rem">🔵 CRM Pacto — Parcela Vence Hoje</h3>
-                            <p style="color:var(--text-2);font-size:.85rem;max-width:560px">Mesma varredura, mas olha pra quem tem parcela com vencimento HOJE (aviso antecipado, ainda não é atraso). Etiqueta como "Vence Hoje" sozinho — some quando pagar ou quando o dia virar. Use pra montar uma Automação de lembrete de vencimento.</p>
-                        </div>
-                    </div>
-
-                    <button class="btn-primary" id="btn-pacto-vencem-hoje" style="padding:.6rem 1.1rem;font-size:.85rem;margin-bottom:1rem">🔄 Atualizar Lista</button>
-
-                    <div id="pacto-vencem-hoje-resultado" style="background:rgba(255,255,255,0.03);border-radius:var(--radius-sm);padding:1rem;font-size:.82rem;color:var(--text-2);line-height:1.6;margin-bottom:1rem">
-                        Clique em "Atualizar Lista" pra começar.
-                    </div>
-
+                    <h4 style="color:#3b82f6;font-size:.85rem;margin:1.6rem 0 .6rem">🔵 Vencendo hoje</h4>
                     <div style="overflow-x:auto">
                         <table class="leads-table">
                             <thead>
