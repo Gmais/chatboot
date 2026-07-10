@@ -616,27 +616,6 @@ header h1 {
 }
 
 /* ==========================================
-   DEPLOY STEPS
-   ========================================== */
-.deploy-steps { display: flex; flex-direction: column; gap: 1rem; }
-.deploy-step {
-    display: flex; align-items: flex-start; gap: 1rem;
-    padding: 1rem; background: rgba(0,0,0,0.2); border-radius: var(--radius-sm);
-    border: 1px solid rgba(255,255,255,0.04);
-}
-.step-num {
-    width: 30px; height: 30px; border-radius: 50%;
-    background: var(--green); color: #000;
-    display: flex; align-items: center; justify-content: center;
-    font-weight: 800; font-size: 0.85rem; flex-shrink: 0;
-}
-.deploy-step span { color: var(--text-2); font-size: 0.85rem; line-height: 1.5; }
-.deploy-step code {
-    background: rgba(37,211,102,0.1); color: var(--green);
-    padding: 0.1rem 0.4rem; border-radius: 3px; font-size: 0.8rem;
-}
-
-/* ==========================================
    TOAST NOTIFICATIONS
    ========================================== */
 #toast-container {
