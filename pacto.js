@@ -28,12 +28,28 @@ function pactoRequest(method, path, { params, body, headers } = {}) {
             let data = '';
             res.on('data', (chunk) => { data += chunk; });
             res.on('end', () => {
-                const responseBody = data ? JSON.parse(data) : null;
+                // Erro do gateway/Tomcat da Pacto às vezes vem como página HTML, não
+                // JSON (ex: "Required request parameter 'pessoa'..."). Fazer
+                // JSON.parse ANTES de checar o status code derrubava o processo
+                // inteiro (SyntaxError não tratado dentro do callback do 'end' não
+                // vira rejeição de Promise — é uma exceção não capturada de verdade,
+                // crashava o servidor todo no meio de uma varredura de inadimplentes).
                 if (res.statusCode < 200 || res.statusCode >= 300) {
-                    reject(new Error(responseBody?.meta?.message || data || `Erro HTTP ${res.statusCode}`));
+                    let mensagemErro = data || `Erro HTTP ${res.statusCode}`;
+                    try {
+                        const parsed = data ? JSON.parse(data) : null;
+                        mensagemErro = parsed?.meta?.message || mensagemErro;
+                    } catch (_) {
+                        // corpo de erro não é JSON — usa o texto cru mesmo
+                    }
+                    reject(new Error(mensagemErro));
                     return;
                 }
-                resolve(responseBody);
+                try {
+                    resolve(data ? JSON.parse(data) : null);
+                } catch (e) {
+                    reject(new Error(`Resposta da Pacto não é JSON válido: ${e.message}`));
+                }
             });
         });
         req.on('error', reject);

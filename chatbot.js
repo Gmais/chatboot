@@ -73,6 +73,27 @@ const moment = require('moment-timezone');
 const { buscarAlunoPorMatricula, buscarAlunoPorCodigo, obterParcelasEmAberto, criarCliente, matricularAluno, gerarLinkPagamentoPixSantander, listarColaboradoresCrm, abrirCarteiraDia, consultarCarteiraDia } = require('./pacto');
 
 // =====================================
+// REDE DE SEGURANÇA — exceção não tratada nunca derruba o servidor inteiro
+// =====================================
+// Já aconteceu de verdade: um erro de rede (Pacto devolveu HTML de erro onde
+// o código esperava JSON) virou uma exceção não capturada dentro de um
+// callback assíncrono (res.on('end', ...)) — isso não é "erro tratado" nem
+// vira rejeição de Promise, é uma exceção de verdade que sobe até o topo do
+// processo Node e mata TUDO, inclusive a sessão do WhatsApp e o servidor
+// HTTP, no meio de uma varredura de inadimplentes. Mesma filosofia do fix
+// anterior pro crash do Puppeteer (site não pode cair por causa de UM erro
+// pontual em UMA operação) — aqui é a versão genérica disso, pra qualquer
+// bug futuro parecido não derrubar o site de novo. Loga bem alto e segue
+// vivo; o correto é sempre corrigir a causa raiz (como fizemos no pacto.js),
+// isso aqui é só o último cinto de segurança.
+process.on('uncaughtException', (err) => {
+    console.error('🧨🧨🧨 [UNCAUGHT EXCEPTION] O processo quase caiu por isso:', err);
+});
+process.on('unhandledRejection', (reason) => {
+    console.error('🧨🧨🧨 [UNHANDLED REJECTION] Promise rejeitada sem tratamento:', reason);
+});
+
+// =====================================
 // CONFIGURAÇÃO DO SERVIDOR WEB E SOCKET.IO
 // =====================================
 const app = express();
