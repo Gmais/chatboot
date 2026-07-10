@@ -730,46 +730,6 @@ Sempre tente agendar uma aula experimental."></textarea>
                 <div class="card glass">
                     <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:.8rem;margin-bottom:1rem">
                         <div>
-                            <h3 style="margin-bottom:.3rem">🏋️ CRM Pacto — Carteira do Dia</h3>
-                            <p style="color:var(--text-2);font-size:.85rem;max-width:560px">Escolha um consultor pra ver o resumo da carteira do dia (Faltosos, Grupo de Risco, Leads, etc.). O disparo automático das mensagens pelo WhatsApp ainda depende de encontrar o endpoint com a lista individual de contatos.</p>
-                        </div>
-                        <span style="background:rgba(245,158,11,0.12);color:var(--amber);border:1px solid rgba(245,158,11,0.3);padding:.3rem .8rem;border-radius:50px;font-size:.75rem;font-weight:600;white-space:nowrap">🚧 Visualização (parcial)</span>
-                    </div>
-
-                    <div style="display:flex;gap:.8rem;align-items:center;flex-wrap:wrap;margin-bottom:1rem">
-                        <select id="crm-consultor" style="flex:1;min-width:220px;background:var(--input-bg);border:1px solid rgba(255,255,255,0.1);border-radius:var(--radius-sm);padding:.6rem .9rem;color:var(--text-1);font-family:'Inter',sans-serif">
-                            <option value="">Carregando consultores...</option>
-                        </select>
-                        <button class="btn-primary" id="btn-crm-abrir-carteira" style="padding:.6rem 1.1rem;font-size:.85rem">📋 Abrir Carteira do Dia</button>
-                    </div>
-
-                    <div id="crm-carteira-resultado" style="background:rgba(255,255,255,0.03);border-radius:var(--radius-sm);padding:1rem;font-size:.82rem;color:var(--text-2);line-height:1.6">
-                        Selecione um consultor e clique em "Abrir Carteira do Dia".
-                    </div>
-                </div>
-
-                <div class="card glass">
-                    <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:.8rem;margin-bottom:1rem">
-                        <div>
-                            <h3 style="margin-bottom:.3rem">🔎 CRM Pacto — Consulta Aluno</h3>
-                            <p style="color:var(--text-2);font-size:.85rem;max-width:560px">Busca o cadastro do aluno direto no Pacto. Por enquanto a API só permite busca por <strong>matrícula</strong> — busca por nome e CPF será adicionada assim que a Pacto liberar o endpoint necessário.</p>
-                        </div>
-                        <span style="background:rgba(245,158,11,0.12);color:var(--amber);border:1px solid rgba(245,158,11,0.3);padding:.3rem .8rem;border-radius:50px;font-size:.75rem;font-weight:600;white-space:nowrap">🚧 Só matrícula por enquanto</span>
-                    </div>
-
-                    <div style="display:flex;gap:.8rem;align-items:center;flex-wrap:wrap;margin-bottom:1rem">
-                        <input type="text" id="consulta-aluno-termo" placeholder="Digite a matrícula do aluno" style="flex:1;min-width:220px;background:var(--input-bg);border:1px solid rgba(255,255,255,0.1);border-radius:var(--radius-sm);padding:.6rem .9rem;color:var(--text-1);font-family:'Inter',sans-serif">
-                        <button class="btn-primary" id="btn-consulta-aluno" style="padding:.6rem 1.1rem;font-size:.85rem">🔎 Buscar</button>
-                    </div>
-
-                    <div id="consulta-aluno-resultado" style="background:rgba(255,255,255,0.03);border-radius:var(--radius-sm);padding:1rem;font-size:.82rem;color:var(--text-2);line-height:1.6">
-                        Digite a matrícula e clique em "Buscar".
-                    </div>
-                </div>
-
-                <div class="card glass">
-                    <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:.8rem;margin-bottom:1rem">
-                        <div>
                             <h3 style="margin-bottom:.3rem">📥 CRM Pacto — Importar Contatos</h3>
                             <p style="color:var(--text-2);font-size:.85rem;max-width:560px">Varre as matrículas do Pacto (ativas, inativas e desistentes) e importa pra Contatos quem tem telefone válido e ainda não está na lista. Não sobrescreve contatos já existentes. Leva alguns minutos.</p>
                         </div>

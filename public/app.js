@@ -460,7 +460,7 @@ navBtns.forEach(btn => {
         if (targetId === 'configuracoes-section') loadHorarioConfig();
         if (targetId === 'conversas-section') CM.onEnterSection();
         if (targetId === 'contatos-section' || targetId === 'disparos-section') loadContatos();
-        if (targetId === 'integracoes-section') { loadCrmColaboradores(); loadPactoInadimplentes(); loadPactoVencemHoje(); }
+        if (targetId === 'integracoes-section') { loadPactoInadimplentes(); loadPactoVencemHoje(); }
         if (targetId === 'automacoes-section') { loadEtiquetas().then(() => loadAutomacoes()); }
         if (targetId === 'mensagens-personalizadas-section') loadMensagensPersonalizadas();
         if (targetId === 'disparos-section') { loadAcompanhamentoAutomacoes(); loadAutomacaoDelayConfig(); }
@@ -2445,110 +2445,6 @@ CM.init();
 
 
 // =====================================
-// INTEGRAÇÃO — CRM PACTO (CARTEIRA DO DIA)
-// =====================================
-const crmConsultorSelect = document.getElementById('crm-consultor');
-const btnCrmAbrirCarteira = document.getElementById('btn-crm-abrir-carteira');
-const crmCarteiraResultado = document.getElementById('crm-carteira-resultado');
-
-async function loadCrmColaboradores() {
-    if (!crmConsultorSelect) return;
-    try {
-        const res = await fetch('/api/crm/colaboradores');
-        const colaboradores = await res.json();
-        if (!res.ok) throw new Error(colaboradores.error || 'Erro ao carregar consultores');
-        crmConsultorSelect.innerHTML = colaboradores
-            .map(c => `<option value="${c.codigoColaborador}">${c.nomeColaborador}</option>`)
-            .join('');
-    } catch (e) {
-        crmConsultorSelect.innerHTML = '<option value="">Erro ao carregar consultores</option>';
-        console.error('Erro ao carregar colaboradores do CRM', e);
-    }
-}
-
-function renderCrmCategoria(titulo, itens) {
-    const linhas = itens.map(m => `
-        <div style="display:flex;justify-content:space-between;padding:.35rem 0;border-bottom:1px solid rgba(255,255,255,0.05)">
-            <span>${m.identificadorMetaApresentar}</span>
-            <span style="color:var(--text-1);font-weight:600">${m.metaAtingida}</span>
-        </div>
-    `).join('');
-    return `<div style="margin-top:.8rem"><strong style="color:var(--text-1);font-size:.78rem;text-transform:uppercase;letter-spacing:.05em">${titulo}</strong>${linhas}</div>`;
-}
-
-btnCrmAbrirCarteira?.addEventListener('click', async () => {
-    const codigoColaboradorResponsavel = crmConsultorSelect?.value;
-    if (!codigoColaboradorResponsavel) {
-        showToast('Selecione um consultor', '', 'error');
-        return;
-    }
-    crmCarteiraResultado.innerHTML = '⏳ Abrindo carteira do dia...';
-    try {
-        const res = await fetch('/api/crm/carteira/abrir', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ codigoColaboradorResponsavel: Number(codigoColaboradorResponsavel) })
-        });
-        const carteira = await res.json();
-        if (!res.ok) throw new Error(carteira.error || 'Erro ao abrir carteira');
-
-        crmCarteiraResultado.innerHTML = `
-            <div style="color:var(--text-1)"><strong>${carteira.nomeColaboradorResponsavel}</strong> — ${carteira.diaApresentar}</div>
-            ${renderCrmCategoria('Retenção', carteira.metasRetencao)}
-            ${renderCrmCategoria('Leads', carteira.metasLead)}
-            ${renderCrmCategoria('Vendas', carteira.metasVenda)}
-        `;
-    } catch (e) {
-        crmCarteiraResultado.innerHTML = `<span style="color:var(--red)">❌ ${e.message}</span>`;
-    }
-});
-
-// =====================================
-// INTEGRAÇÃO — CRM PACTO (CONSULTA ALUNO)
-// =====================================
-const consultaAlunoTermo = document.getElementById('consulta-aluno-termo');
-const btnConsultaAluno = document.getElementById('btn-consulta-aluno');
-const consultaAlunoResultado = document.getElementById('consulta-aluno-resultado');
-
-function formatarDataNascimento(iso) {
-    if (!iso) return '-';
-    const d = new Date(iso);
-    if (isNaN(d.getTime())) return '-';
-    return d.toLocaleDateString('pt-BR', { timeZone: 'UTC' });
-}
-
-async function buscarConsultaAluno() {
-    const termo = (consultaAlunoTermo?.value || '').trim();
-    if (!termo) { showToast('Digite uma matrícula', '', 'error'); return; }
-    consultaAlunoResultado.innerHTML = '⏳ Buscando...';
-    try {
-        const res = await fetch(`/api/pacto/consulta-aluno?matricula=${encodeURIComponent(termo)}`);
-        const aluno = await res.json();
-        if (!res.ok) throw new Error(aluno.error || 'Erro ao buscar aluno');
-
-        const linha = (label, valor) => `
-            <div style="display:flex;justify-content:space-between;padding:.35rem 0;border-bottom:1px solid rgba(255,255,255,0.05)">
-                <span>${label}</span>
-                <span style="color:var(--text-1);font-weight:600">${valor || '-'}</span>
-            </div>`;
-
-        consultaAlunoResultado.innerHTML = `
-            ${linha('Nome Completo', aluno.nome)}
-            ${linha('Data de Nascimento', formatarDataNascimento(aluno.dataNascimento))}
-            ${linha('Telefone', aluno.telefone)}
-            ${linha('Matrícula', aluno.matricula)}
-            ${linha('Tipo de Plano', aluno.tipoPlano || 'Não disponível na integração ainda')}
-            ${linha('Duração', aluno.duracao || 'Não disponível na integração ainda')}
-        `;
-    } catch (e) {
-        consultaAlunoResultado.innerHTML = `<span style="color:var(--red)">❌ ${e.message}</span>`;
-    }
-}
-
-btnConsultaAluno?.addEventListener('click', buscarConsultaAluno);
-consultaAlunoTermo?.addEventListener('keydown', (e) => { if (e.key === 'Enter') buscarConsultaAluno(); });
-
-// =====================================
 // INTEGRAÇÃO — CRM PACTO (IMPORTAR CONTATOS EM MASSA)
 // =====================================
 const btnPactoImportar = document.getElementById('btn-pacto-importar');
@@ -2632,6 +2528,13 @@ function renderPactoInadimplentesProgress(p) {
 
 function formatarMoeda(valor) {
     return (valor || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+}
+
+function formatarDataNascimento(iso) {
+    if (!iso) return '-';
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return '-';
+    return d.toLocaleDateString('pt-BR', { timeZone: 'UTC' });
 }
 
 function linhaPactoInadimplente(i) {

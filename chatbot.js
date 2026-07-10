@@ -70,7 +70,7 @@ const multer = require('multer');
 const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
 const OpenAI = require('openai');
 const moment = require('moment-timezone');
-const { buscarAlunoPorMatricula, buscarAlunoPorCodigo, obterParcelasEmAberto, criarCliente, matricularAluno, gerarLinkPagamentoPixSantander, listarColaboradoresCrm, abrirCarteiraDia, consultarCarteiraDia } = require('./pacto');
+const { buscarAlunoPorMatricula, buscarAlunoPorCodigo, obterParcelasEmAberto, criarCliente, matricularAluno, gerarLinkPagamentoPixSantander } = require('./pacto');
 
 // =====================================
 // REDE DE SEGURANÇA — exceção não tratada nunca derruba o servidor inteiro
@@ -2518,73 +2518,10 @@ app.post('/api/pacto/teste-pix', async (req, res) => {
     }
 });
 
-// =====================================
-// API REST — CRM PACTO (CARTEIRA DO DIA)
-// =====================================
-app.get('/api/crm/colaboradores', async (req, res) => {
-    try {
-        const colaboradores = await listarColaboradoresCrm();
-        res.json(colaboradores);
-    } catch (err) {
-        console.error('❌ Erro ao listar colaboradores do CRM:', err.message);
-        res.status(500).json({ error: err.message });
-    }
-});
-
-app.post('/api/crm/carteira/abrir', async (req, res) => {
-    const { codigoColaboradorResponsavel, dia } = req.body;
-    if (!codigoColaboradorResponsavel) return res.status(400).json({ error: 'Informe "codigoColaboradorResponsavel".' });
-    try {
-        const diaFinal = dia || moment.tz('America/Sao_Paulo').format('YYYY-MM-DD');
-        await abrirCarteiraDia({ dia: diaFinal, codigoColaboradorResponsavel });
-        const carteira = await consultarCarteiraDia({ codigoColaborador: codigoColaboradorResponsavel });
-        res.json(carteira);
-    } catch (err) {
-        console.error('❌ Erro ao abrir carteira do dia:', err.message);
-        res.status(500).json({ error: err.message });
-    }
-});
-
-app.get('/api/crm/carteira', async (req, res) => {
-    const { codigoColaborador } = req.query;
-    if (!codigoColaborador) return res.status(400).json({ error: 'Informe "codigoColaborador".' });
-    try {
-        const carteira = await consultarCarteiraDia({ codigoColaborador });
-        res.json(carteira);
-    } catch (err) {
-        console.error('❌ Erro ao consultar carteira do dia:', err.message);
-        res.status(500).json({ error: err.message });
-    }
-});
-
-// Consulta Aluno — por enquanto só busca por matrícula, que é o único filtro
-// que o /v1/cliente da Pacto realmente aplica (nome e cpf são ignorados pela
-// API deles; testado direto contra o ambiente real antes de implementar).
-app.get('/api/pacto/consulta-aluno', async (req, res) => {
-    const { matricula } = req.query;
-    if (!matricula || !matricula.trim()) return res.status(400).json({ error: 'Informe a matrícula pra buscar.' });
-    try {
-        const aluno = await buscarAlunoPorMatricula(matricula.trim());
-        if (!aluno) return res.status(404).json({ error: 'Nenhum aluno encontrado com essa matrícula.' });
-        res.json({
-            nome: aluno.pessoa?.nome || null,
-            dataNascimento: aluno.pessoa?.datanasc || null,
-            telefone: aluno.pessoa?.telefones?.[0]?.numero || null,
-            matricula: aluno.matricula || null,
-            tipoPlano: null,
-            duracao: null
-        });
-    } catch (err) {
-        console.error('❌ Erro ao consultar aluno na Pacto:', err.message);
-        res.status(500).json({ error: err.message });
-    }
-});
-
 // Importação em massa Contatos ← Pacto. A API da Pacto não tem endpoint de
-// listagem (só busca por matrícula exata — testado ao vivo, confirmado nos
-// comentários da rota de Consulta Aluno acima), então varremos um intervalo
-// de matrículas numéricas em paralelo (a faixa 000001–009000 cobre com folga
-// o intervalo real de matrículas usadas, amostrado manualmente antes de
+// listagem (só busca por matrícula exata — testado ao vivo), então varremos
+// um intervalo de matrículas numéricas em paralelo (a faixa 000001–009000
+// cobre com folga o intervalo real de matrículas usadas, amostrado manualmente antes de
 // implementar isso). Roda em background — várias milhares de chamadas
 // levariam minutos demais pra segurar a requisição HTTP do dashboard aberta.
 let pactoImportRunning = false;
