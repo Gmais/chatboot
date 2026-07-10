@@ -332,6 +332,10 @@ async function initDB() {
     try { await db.exec(`ALTER TABLE automacoes ADD COLUMN total_concluidos INTEGER DEFAULT 0`); } catch(e) {}
     // Unidade do "Aguardar X" de cada etapa — 'dias' (produção) ou 'horas' (testar rápido)
     try { await db.exec(`ALTER TABLE automacao_etapas ADD COLUMN unidade_tempo TEXT DEFAULT 'dias'`); } catch(e) {}
+    // Distingue mensagem enviada pelo robô (regra/IA/automação/fluxo) de mensagem
+    // digitada por um atendente humano (dashboard ou direto no celular vinculado)
+    // — mostra o rótulo certo ("🤖 Bot" vs "👤 Atendente") no Bate Papo ao Vivo.
+    try { await db.exec(`ALTER TABLE conversas ADD COLUMN manual INTEGER DEFAULT 0`); } catch(e) {}
     // Garante tabela conversas em instalações antigas
     try { await db.exec(`CREATE TABLE IF NOT EXISTS conversas (id INTEGER PRIMARY KEY AUTOINCREMENT, telefone TEXT NOT NULL, nome TEXT, direcao TEXT NOT NULL, texto TEXT, tipo TEXT DEFAULT 'text', ts DATETIME DEFAULT CURRENT_TIMESTAMP, lida INTEGER DEFAULT 0)`); } catch(e) {}
     try { await db.exec(`CREATE INDEX IF NOT EXISTS idx_conversas_tel ON conversas(telefone, ts)`); } catch(e) {}
@@ -451,17 +455,17 @@ const TIPO_LABEL_FALLBACK = {
 // segundos) — quando informado, usa esse em vez de "agora". Sem isso, uma
 // mensagem sincronizada em lote (ex: reconexão trazendo histórico) fica com
 // o horário de quando o robô processou, não o horário real da mensagem.
-async function salvarNaConversa(telefone, nome, direcao, texto, tipo = 'text', tsReal = null) {
+async function salvarNaConversa(telefone, nome, direcao, texto, tipo = 'text', tsReal = null, manual = false) {
     const num = telefone.replace('@c.us','').replace('@lid','');
     const ts = tsReal ? new Date(tsReal * 1000).toISOString() : new Date().toISOString();
     const lida = direcao === 'out' ? 1 : 0;
     await db.run(
-        'INSERT INTO conversas (telefone, nome, direcao, texto, tipo, ts, lida) VALUES (?, ?, ?, ?, ?, ?, ?)',
-        [num, nome || num, direcao, texto, tipo, ts, lida]
+        'INSERT INTO conversas (telefone, nome, direcao, texto, tipo, ts, lida, manual) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+        [num, nome || num, direcao, texto, tipo, ts, lida, manual ? 1 : 0]
     );
     // Conta não lidas deste telefone
     const naoLidas = await db.get('SELECT COUNT(*) as c FROM conversas WHERE telefone=? AND lida=0 AND direcao="in"', num);
-    io.emit('nova_mensagem', { telefone: num, nome: nome || num, texto, direcao, tipo, ts, nao_lidas: naoLidas.c });
+    io.emit('nova_mensagem', { telefone: num, nome: nome || num, texto, direcao, tipo, ts, nao_lidas: naoLidas.c, manual });
 
     // Qualquer mensagem nova (do cliente OU pro cliente — bot, automação, fluxo,
     // envio manual) reabre a conversa se ela tinha sido finalizada. "Finalizada"
@@ -479,12 +483,12 @@ async function salvarNaConversa(telefone, nome, direcao, texto, tipo = 'text', t
 
 // Registra no histórico permanente cada mensagem realmente enviada pelo robô.
 // É a única fonte da contagem "Mensagens Enviadas" — se está no contador, está nesta tabela.
-async function registrarMensagemEnviada(telefone, texto, nome, msgId = null) {
+async function registrarMensagemEnviada(telefone, texto, nome, msgId = null, manual = false) {
     const numeroLimpo = telefone.replace('@c.us', '').replace('@lid', '');
     marcarMensagemComoDoSistema(msgId);
     await db.run('INSERT INTO mensagens_enviadas (telefone, texto) VALUES (?, ?)', [numeroLimpo, texto]);
     stats.sent++;
-    await salvarNaConversa(numeroLimpo, nome, 'out', texto, 'text');
+    await salvarNaConversa(numeroLimpo, nome, 'out', texto, 'text', null, manual);
     io.emit('message_out', { to: numeroLimpo, text: texto, ts: Date.now() });
     io.emit('stats', stats);
 }
@@ -2086,7 +2090,10 @@ app.get('/api/conversas/:telefone', async (req, res) => {
             'SELECT * FROM conversas WHERE telefone = ? ORDER BY ts ASC LIMIT ?',
             [telefone, limite]
         );
-        res.json(msgs);
+        // SQLite guarda manual como 0/1 — o front compara com "=== true", então
+        // precisa virar boolean de verdade aqui, senão a bolha nunca marca
+        // "👤 Atendente" mesmo quando manual=1 no banco.
+        res.json(msgs.map(m => ({ ...m, manual: !!m.manual })));
     } catch(err) {
         res.status(500).json({ error: err.message });
     }
@@ -2102,7 +2109,7 @@ app.post('/api/conversas/:telefone/enviar', async (req, res) => {
         const chatId = telefone.includes('@') ? telefone : await resolverChatId(telefone);
         const sentMsg = await client.sendMessage(chatId, texto.trim());
         const nome = await resolverNomeContato(telefone);
-        await registrarMensagemEnviada(telefone, texto.trim(), nome, sentMsg.id?._serialized);
+        await registrarMensagemEnviada(telefone, texto.trim(), nome, sentMsg.id?._serialized, true);
         res.json({ success: true });
     } catch(err) {
         console.error('Erro envio manual:', err.message);
@@ -2175,7 +2182,7 @@ app.post('/api/conversas/:telefone/enviar-arquivo', upload.single('arquivo'), as
         const nome = await resolverNomeContato(telefone);
         const numeroLimpo = telefone.replace('@c.us', '').replace('@lid', '');
         marcarMensagemComoDoSistema(sentMsg.id?._serialized);
-        await salvarNaConversa(numeroLimpo, nome, 'out', legenda || req.file.originalname, tipo);
+        await salvarNaConversa(numeroLimpo, nome, 'out', legenda || req.file.originalname, tipo, null, true);
         io.emit('stats', stats);
         res.json({ success: true });
     } catch(err) {
@@ -3166,7 +3173,9 @@ client.on('message_create', async (msg) => {
         if (tipoMsg === 'text' && !msg.body) return;
         const textoExibir = msg.body || TIPO_LABEL_FALLBACK[tipoMsg] || '[mensagem sem texto]';
         const nome = await resolverNomeContato(numLimpo);
-        await salvarNaConversa(numLimpo, nome, 'out', textoExibir, tipoMsg, msg.timestamp);
+        // Chegou aqui = mandada direto do celular vinculado, não pelo robô nem
+        // pelo painel — é sempre um atendente humano respondendo por fora.
+        await salvarNaConversa(numLimpo, nome, 'out', textoExibir, tipoMsg, msg.timestamp, true);
     } catch (e) {
         console.error('Erro ao registrar mensagem enviada pelo celular:', e.message);
     }
