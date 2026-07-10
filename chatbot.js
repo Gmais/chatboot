@@ -274,6 +274,20 @@ async function initDB() {
             PRIMARY KEY (telefone, automacao_id)
         );
         CREATE INDEX IF NOT EXISTS idx_contato_automacao_proxima ON contato_automacao_estado(proxima_execucao_em);
+        -- Histórico de envios já efetivados por uma automação. contato_automacao_estado
+        -- é a FILA (quem ainda vai receber) e perde a linha assim que manda com sucesso
+        -- (ver dispararMensagensDaAutomacao) — esse log é só pra mostrar "quem já
+        -- recebeu, quando e qual mensagem" na tela de acompanhamento, sem mexer em
+        -- nenhuma contagem/lógica existente da fila.
+        CREATE TABLE IF NOT EXISTS automacao_envios_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            automacao_id INTEGER NOT NULL,
+            telefone TEXT NOT NULL,
+            nome TEXT,
+            mensagem_nome TEXT,
+            enviado_em DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_automacao_envios_log_automacao ON automacao_envios_log(automacao_id, enviado_em);
         CREATE TABLE IF NOT EXISTS mensagens_personalizadas (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             nome TEXT NOT NULL,
@@ -1280,6 +1294,19 @@ async function obterProximoDelayAutomacao() {
     return Math.floor(min + Math.random() * (max - min));
 }
 
+// Mesma config do delay real, mas devolve a MÉDIA da faixa em vez de um valor
+// aleatório — usada só pra estimar "horário previsto" na tela de acompanhamento
+// (o envio de verdade continua usando obterProximoDelayAutomacao, aleatório).
+async function estimarDelayMedioAutomacao() {
+    const configRows = await db.all(
+        "SELECT chave, valor FROM configuracoes WHERE chave IN ('automacao_delay_segundos', 'automacao_delay_modo', 'automacao_delay_velocidade')"
+    );
+    const configMap = Object.fromEntries(configRows.map(r => [r.chave, r.valor]));
+    if (configMap.automacao_delay_modo !== 'aleatorio') return (parseInt(configMap.automacao_delay_segundos) || 5) * 1000;
+    const [min, max] = FAIXAS_VELOCIDADE[configMap.automacao_delay_velocidade] || FAIXAS_VELOCIDADE.medio;
+    return (min + max) / 2;
+}
+
 // Envia o conteúdo de uma etapa e decide o que vem a seguir: agenda a próxima
 // etapa pra daqui a N dias, ou — se essa era a última — conclui a automação e
 // remove a etiqueta que a disparou. Usada tanto pra matricular (etapa 1) quanto
@@ -1330,7 +1357,9 @@ async function dispararMensagensDaAutomacao(automacaoId) {
     const automacao = await db.get('SELECT * FROM automacoes WHERE id = ?', automacaoId);
     if (!automacao) return;
     const pool = await poolMensagensDaAutomacao(automacaoId);
-    const pendentes = await db.all('SELECT * FROM contato_automacao_estado WHERE automacao_id = ?', automacaoId);
+    // ORDER BY entrou_em: fila FIFO, determinística — a tela de acompanhamento
+    // usa a mesma ordem pra prever "quem é o próximo" e "horário previsto".
+    const pendentes = await db.all('SELECT * FROM contato_automacao_estado WHERE automacao_id = ? ORDER BY entrou_em ASC', automacaoId);
 
     let primeiro = true;
     for (const estado of pendentes) {
@@ -1388,6 +1417,10 @@ async function dispararMensagensDaAutomacao(automacaoId) {
             if (sucesso) {
                 await db.run('DELETE FROM contato_automacao_estado WHERE telefone = ? AND automacao_id = ?', [numLimpo, automacaoId]);
                 await db.run('UPDATE automacoes SET total_concluidos = total_concluidos + 1 WHERE id = ?', automacaoId);
+                await db.run(
+                    'INSERT INTO automacao_envios_log (automacao_id, telefone, nome, mensagem_nome) VALUES (?, ?, ?, ?)',
+                    [automacaoId, numLimpo, nome, msg.nome]
+                );
             }
         } catch (e) {
             console.error(`Erro ao disparar mensagem da automação #${automacaoId} pra ${estado.telefone}:`, e.message);
@@ -1821,8 +1854,10 @@ app.get('/api/automacoes/:id/progresso', async (req, res) => {
         if (!automacao) return res.status(404).json({ error: 'Automação não encontrada.' });
 
         const totalEtapas = (await db.get('SELECT COUNT(*) AS c FROM automacao_etapas WHERE automacao_id = ?', id)).c;
+        // Mesma ordem FIFO usada no disparo de verdade (dispararMensagensDaAutomacao)
+        // — garante que "horário previsto" abaixo reflita quem é enviado primeiro.
         const estados = await db.all(
-            'SELECT telefone, etapa_atual, entrou_em, proxima_execucao_em FROM contato_automacao_estado WHERE automacao_id = ? ORDER BY proxima_execucao_em ASC',
+            'SELECT telefone, etapa_atual, entrou_em, mensagem_id FROM contato_automacao_estado WHERE automacao_id = ? ORDER BY entrou_em ASC',
             id
         );
 
@@ -1836,19 +1871,44 @@ app.get('/api/automacoes/:id/progresso', async (req, res) => {
         const leadsComNome = await db.all('SELECT telefone, nome FROM leads WHERE nome IS NOT NULL');
         leadsComNome.forEach(l => nomePorTelefone.set(l.telefone.replace('@c.us','').replace('@lid',''), l.nome));
 
-        const contatos = estados.map(e => ({
-            telefone: e.telefone,
-            nome: nomePorTelefone.get(e.telefone) || e.telefone,
-            etapa_atual: e.etapa_atual,
-            entrou_em: sqliteTsParaIso(e.entrou_em),
-            proxima_execucao_em: e.proxima_execucao_em || null
-        }));
+        // Nome da mensagem já sorteada pra cada contato (sorteio é lento — só
+        // acontece quando o disparo passa por ele, ver dispararMensagensDaAutomacao)
+        // — quem ainda não chegou nesse ponto mostra null (front exibe "será sorteada").
+        const pool = await poolMensagensDaAutomacao(id);
+        const nomeMensagemPorId = new Map(pool.map(m => [m.id, m.nome]));
+
+        // "Horário previsto" só faz sentido enquanto o disparo está rodando de
+        // verdade — sem isso, a fila pode ficar parada por dias esperando alguém
+        // clicar em "Disparar Mensagens", e prever um horário seria enganoso.
+        const disparoAtivo = !!automacaoDisparoRodando[id];
+        const delayMedioMs = disparoAtivo ? await estimarDelayMedioAutomacao() : 0;
+        let acumuladoMs = 0;
+
+        const contatos = estados.map(e => {
+            acumuladoMs += delayMedioMs;
+            return {
+                telefone: e.telefone,
+                nome: nomePorTelefone.get(e.telefone) || e.telefone,
+                etapa_atual: e.etapa_atual,
+                entrou_em: sqliteTsParaIso(e.entrou_em),
+                mensagem_nome: e.mensagem_id ? (nomeMensagemPorId.get(e.mensagem_id) || null) : null,
+                horario_previsto: disparoAtivo ? new Date(Date.now() + acumuladoMs).toISOString() : null
+            };
+        });
+
+        const enviadasRaw = await db.all(
+            'SELECT telefone, nome, mensagem_nome, enviado_em FROM automacao_envios_log WHERE automacao_id = ? ORDER BY enviado_em DESC LIMIT 50',
+            id
+        );
+        const enviadas = enviadasRaw.map(e => ({ ...e, enviado_em: sqliteTsParaIso(e.enviado_em) }));
 
         res.json({
             total_etapas: totalEtapas,
             total_ativos: estados.length,
             total_concluidos: automacao.total_concluidos || 0,
-            contatos
+            disparo_ativo: disparoAtivo,
+            contatos,
+            enviadas
         });
     } catch (err) {
         res.status(500).json({ error: err.message });

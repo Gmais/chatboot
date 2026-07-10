@@ -3618,17 +3618,17 @@ async function carregarProgressoDetalhe(automacaoId) {
         const res = await fetch(`/api/automacoes/${automacaoId}/progresso`);
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || 'Erro ao carregar progresso');
-        if (data.contatos.length === 0) {
-            container.innerHTML = '<div style="padding:1rem;text-align:center;color:var(--text-3);font-size:.82rem">Ninguém em andamento nessa automação agora.</div>';
-            return;
-        }
-        container.innerHTML = `
+
+        const filaHtml = data.contatos.length === 0
+            ? '<div style="padding:1rem;text-align:center;color:var(--text-3);font-size:.82rem">Ninguém em andamento nessa automação agora.</div>'
+            : `
             <table class="leads-table">
                 <thead>
                     <tr>
                         <th>Contato</th>
                         <th>Etapa</th>
-                        <th>Próxima mensagem</th>
+                        <th>Mensagem</th>
+                        <th>Horário previsto</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -3639,11 +3639,45 @@ async function carregarProgressoDetalhe(automacaoId) {
                                 <div style="font-size:.72rem;color:var(--text-3)">${c.telefone}</div>
                             </td>
                             <td style="color:var(--text-2);font-size:.85rem">${c.etapa_atual} de ${data.total_etapas}</td>
-                            <td style="color:var(--text-2);font-size:.85rem">${formatDataCurta(c.proxima_execucao_em)}</td>
+                            <td style="color:var(--text-2);font-size:.85rem">${c.mensagem_nome || '<span style="color:var(--text-3)">será sorteada no envio</span>'}</td>
+                            <td style="color:var(--text-2);font-size:.85rem">${data.disparo_ativo ? formatDataCurta(c.horario_previsto) : '<span style="color:var(--text-3)">aguardando clicar em Disparar</span>'}</td>
                         </tr>
                     `).join('')}
                 </tbody>
             </table>
+        `;
+
+        const enviadasHtml = (data.enviadas || []).length === 0
+            ? '<div style="padding:1rem;text-align:center;color:var(--text-3);font-size:.82rem">Ninguém recebeu mensagem ainda.</div>'
+            : `
+            <table class="leads-table">
+                <thead>
+                    <tr>
+                        <th>Contato</th>
+                        <th>Mensagem</th>
+                        <th>Enviado em</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${data.enviadas.map(e => `
+                        <tr>
+                            <td>
+                                <div style="font-weight:500;color:var(--text-1);font-size:.85rem">${e.nome || e.telefone}</div>
+                                <div style="font-size:.72rem;color:var(--text-3)">${e.telefone}</div>
+                            </td>
+                            <td style="color:var(--text-2);font-size:.85rem">${e.mensagem_nome || '-'}</td>
+                            <td style="color:var(--text-2);font-size:.85rem">${formatDataCurta(e.enviado_em)}</td>
+                        </tr>
+                    `).join('')}
+                </tbody>
+            </table>
+        `;
+
+        container.innerHTML = `
+            <div style="font-weight:600;color:var(--text-1);font-size:.82rem;margin-bottom:.5rem">📋 Em andamento (${data.contatos.length})</div>
+            ${filaHtml}
+            <div style="font-weight:600;color:var(--text-1);font-size:.82rem;margin:1rem 0 .5rem">✅ Já enviadas (últimas ${(data.enviadas || []).length})</div>
+            ${enviadasHtml}
         `;
     } catch (e) {
         container.innerHTML = `<div style="padding:1rem;text-align:center;color:var(--red);font-size:.82rem">Erro ao carregar detalhes.</div>`;
