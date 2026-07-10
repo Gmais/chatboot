@@ -1060,20 +1060,23 @@ socket.on('respostas_updated', () => {
 
 // =====================================
 // CAMPANHAS RÁPIDAS (atalhos no topo de Disparos, Automação e Mensagens
-// Personalizadas) — cada botão aparece nas 3 telas; o clique funciona igual
-// não importa de qual tela partiu. Todos os 6 abrem Mensagens Personalizadas
-// já filtrada pela campanha correspondente (biblioteca de conteúdo de cada
-// campanha) — CAMPANHAS_INFO (mais abaixo) define os 6 slugs válidos.
+// Personalizadas) — o MESMO botão (ex: "INADIMPLENTES") faz uma coisa
+// diferente em cada tela; não é um atalho genérico único. Só a versão de
+// Mensagens Personalizadas está definida (abre a biblioteca filtrada por
+// campanha); Disparos e Automação ainda esperam suas próprias funções.
 // =====================================
 document.querySelectorAll('.btn-campanha-rapida').forEach(btn => {
     btn.addEventListener('click', () => {
         const campanha = btn.dataset.campanha;
-        // Define o filtro ANTES de navegar: o clique no nav-btn já dispara
-        // loadMensagensPersonalizadas() sozinho (ver troca de seção mais
-        // acima) — setar depois criaria uma corrida entre duas chamadas
-        // async e a sem filtro podia "vencer" e sobrescrever a filtrada.
-        filtroCategoriaMensagens = campanha;
-        document.querySelector('.nav-btn[data-target="mensagens-personalizadas-section"]')?.click();
+        const secaoId = btn.closest('.page-section')?.id;
+
+        if (secaoId === 'mensagens-personalizadas-section') {
+            filtroCategoriaMensagens = campanha;
+            loadMensagensPersonalizadas();
+            return;
+        }
+
+        showToast('Em breve', `Ação da campanha "${campanha}" nessa tela ainda não foi configurada.`, 'info', 2500);
     });
 });
 
