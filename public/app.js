@@ -3583,8 +3583,8 @@ function renderAcompanhamentoAutomacoes(automacoes) {
                         <div style="font-size:.7rem;color:var(--text-3)">em andamento</div>
                     </div>
                     <div style="text-align:center">
-                        <div style="font-size:1.2rem;font-weight:700;color:var(--text-1)">${a.total_concluidos || 0}</div>
-                        <div style="font-size:.7rem;color:var(--text-3)">concluídos</div>
+                        <div style="font-size:1.2rem;font-weight:700;color:var(--text-1)">${a.concluidos_hoje || 0}</div>
+                        <div style="font-size:.7rem;color:var(--text-3)">concluídos hoje</div>
                     </div>
                     <label style="display:flex;align-items:center;gap:.4rem;font-size:.78rem;color:var(--text-3);cursor:pointer">
                         <input type="checkbox" class="acompanhamento-toggle-ativo" data-id="${a.id}" ${a.ativo ? 'checked' : ''} style="accent-color:var(--green);width:16px;height:16px">

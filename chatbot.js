@@ -995,6 +995,167 @@ app.post('/api/contatos', async (req, res) => {
     }
 });
 
+// =====================================
+// MESCLAGEM DE CONTATOS DUPLICADOS (mesmo telefone, formatos diferentes)
+// =====================================
+// Caso real encontrado em produção: "554284014994" e "5542984014994" eram o
+// MESMO Henrique — o segundo tem o "9" que todo celular brasileiro tem desde a
+// migração pro formato de 9 dígitos, o primeiro não. Tratados como duas
+// pessoas: duas conversas, duas etiquetas, duas automações. normalizarTelefoneBR
+// (mais acima) já evita ISSO acontecer de novo dali pra frente; essas rotas
+// resolvem os duplicados que já existem na base.
+
+// Escolhe o "melhor" lead do grupo pra ser a fonte principal de dados: prioriza
+// quem tem matrícula E data de nascimento (vínculo Pacto de verdade), depois
+// quem tem mais mensagens recebidas, por último o cadastro mais antigo.
+function escolherMelhorLead(leadsGrupo) {
+    return [...leadsGrupo].sort((a, b) => {
+        const aCompleto = (a.matricula && a.data_nascimento) ? 1 : 0;
+        const bCompleto = (b.matricula && b.data_nascimento) ? 1 : 0;
+        if (aCompleto !== bCompleto) return bCompleto - aCompleto;
+        const aMsgs = a.mensagens_recebidas || 0;
+        const bMsgs = b.mensagens_recebidas || 0;
+        if (aMsgs !== bMsgs) return bMsgs - aMsgs;
+        return new Date(a.data_captura || 0) - new Date(b.data_captura || 0);
+    })[0];
+}
+
+// Tabela sem PK/UNIQUE em telefone (pode ter várias linhas por telefone) —
+// só troca o valor, sem risco de conflito.
+async function moverLinhaSimples(tabela, de, para) {
+    await db.run(`UPDATE ${tabela} SET telefone = ? WHERE telefone = ?`, [para, de]);
+}
+
+// Tabela com PK(telefone) só — se o telefone-alvo já tem linha, a linha do
+// alvo prevalece (é o "melhor" contato) e a de origem é descartada; senão,
+// só migra a linha de origem pro telefone-alvo.
+async function moverLinhaPkTelefone(tabela, de, para) {
+    const jaExiste = await db.get(`SELECT 1 FROM ${tabela} WHERE telefone = ?`, para);
+    if (jaExiste) {
+        await db.run(`DELETE FROM ${tabela} WHERE telefone = ?`, de);
+    } else {
+        await db.run(`UPDATE ${tabela} SET telefone = ? WHERE telefone = ?`, [para, de]);
+    }
+}
+
+// Tabela com PK composta (telefone, colunaExtra) — mesma lógica, mas por
+// combinação de chave: só descarta a linha de origem se o alvo já tem uma
+// linha PRA AQUELA MESMA colunaExtra (ex: mesma etiqueta_id, mesma automacao_id).
+async function moverLinhasChaveComposta(tabela, colunaExtra, de, para) {
+    const linhas = await db.all(`SELECT ${colunaExtra} AS chave FROM ${tabela} WHERE telefone = ?`, de);
+    for (const { chave } of linhas) {
+        const jaExiste = await db.get(`SELECT 1 FROM ${tabela} WHERE telefone = ? AND ${colunaExtra} = ?`, [para, chave]);
+        if (jaExiste) {
+            await db.run(`DELETE FROM ${tabela} WHERE telefone = ? AND ${colunaExtra} = ?`, [de, chave]);
+        } else {
+            await db.run(`UPDATE ${tabela} SET telefone = ? WHERE telefone = ? AND ${colunaExtra} = ?`, [para, de, chave]);
+        }
+    }
+}
+
+// mensagem_personalizada_enviada tem PK de 3 colunas (mensagem_id, telefone,
+// ano) — caso especial, não cabe no helper de chave composta genérico acima.
+async function moverMensagemPersonalizadaEnviada(de, para) {
+    const linhas = await db.all('SELECT mensagem_id, ano FROM mensagem_personalizada_enviada WHERE telefone = ?', de);
+    for (const { mensagem_id, ano } of linhas) {
+        const jaExiste = await db.get(
+            'SELECT 1 FROM mensagem_personalizada_enviada WHERE telefone = ? AND mensagem_id = ? AND ano = ?',
+            [para, mensagem_id, ano]
+        );
+        if (jaExiste) {
+            await db.run('DELETE FROM mensagem_personalizada_enviada WHERE telefone = ? AND mensagem_id = ? AND ano = ?', [de, mensagem_id, ano]);
+        } else {
+            await db.run('UPDATE mensagem_personalizada_enviada SET telefone = ? WHERE telefone = ? AND mensagem_id = ? AND ano = ?', [para, de, mensagem_id, ano]);
+        }
+    }
+}
+
+// Migra TODAS as tabelas de um grupo de telefones-duplicados pro telefone
+// canônico (normalizado), preservando o máximo de dado possível e nunca
+// duplicando linha em tabela nenhuma.
+async function mesclarGrupoDeTelefones(canonico, leadsGrupo) {
+    const melhor = escolherMelhorLead(leadsGrupo);
+    const nomeFinal = melhor.nome || leadsGrupo.find(l => l.nome)?.nome || null;
+    const origemFinal = melhor.origem || leadsGrupo.find(l => l.origem)?.origem || null;
+    const matriculaFinal = melhor.matricula || leadsGrupo.find(l => l.matricula)?.matricula || null;
+    const nascimentoFinal = melhor.data_nascimento || leadsGrupo.find(l => l.data_nascimento)?.data_nascimento || null;
+    const mensagensSoma = leadsGrupo.reduce((soma, l) => soma + (l.mensagens_recebidas || 0), 0);
+    const capturaMaisAntiga = leadsGrupo.reduce((min, l) => (!min || (l.data_captura && l.data_captura < min)) ? l.data_captura : min, null);
+
+    const outros = leadsGrupo.map(l => l.telefone).filter(t => t !== canonico);
+    for (const de of outros) {
+        await moverLinhaSimples('conversas', de, canonico);
+        await moverLinhaSimples('mensagens_enviadas', de, canonico);
+        await moverLinhaSimples('automacao_envios_log', de, canonico);
+        await moverLinhaPkTelefone('vinculo_pacto', de, canonico);
+        await moverLinhaPkTelefone('conversas_humano', de, canonico);
+        await moverLinhaPkTelefone('contato_estado_fluxo', de, canonico);
+        await moverLinhaPkTelefone('conversas_status', de, canonico);
+        await moverLinhaPkTelefone('pacto_inadimplentes', de, canonico);
+        await moverLinhasChaveComposta('contato_etiquetas', 'etiqueta_id', de, canonico);
+        await moverLinhasChaveComposta('contato_automacao_estado', 'automacao_id', de, canonico);
+        await moverMensagemPersonalizadaEnviada(de, canonico);
+        await db.run('DELETE FROM leads WHERE telefone = ?', de);
+    }
+
+    const existeCanonico = await db.get('SELECT 1 FROM leads WHERE telefone = ?', canonico);
+    if (existeCanonico) {
+        await db.run(
+            `UPDATE leads SET nome = ?, origem = ?, matricula = ?, data_nascimento = ?, mensagens_recebidas = ?, data_captura = ? WHERE telefone = ?`,
+            [nomeFinal, origemFinal, matriculaFinal, nascimentoFinal, mensagensSoma, capturaMaisAntiga, canonico]
+        );
+    } else {
+        await db.run(
+            `INSERT INTO leads (telefone, nome, origem, matricula, data_nascimento, mensagens_recebidas, data_captura) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+            [canonico, nomeFinal, origemFinal, matriculaFinal, nascimentoFinal, mensagensSoma, capturaMaisAntiga]
+        );
+    }
+}
+
+// Agrupa todos os leads cujo telefone normaliza pro mesmo canônico — sem
+// alterar nada, só pra revisar antes de mesclar de verdade.
+app.get('/api/contatos/duplicados-telefone', async (req, res) => {
+    try {
+        const leads = await db.all('SELECT * FROM leads');
+        const grupos = new Map();
+        leads.forEach(l => {
+            const canonico = normalizarTelefoneBR(l.telefone);
+            if (!grupos.has(canonico)) grupos.set(canonico, []);
+            grupos.get(canonico).push(l);
+        });
+        const duplicados = [...grupos.entries()]
+            .filter(([, ls]) => ls.length > 1)
+            .map(([canonico, contatos]) => ({ canonico, contatos }));
+        res.json(duplicados);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Executa a mesclagem de verdade pra todos os grupos de duplicados encontrados.
+app.post('/api/contatos/mesclar-duplicados', async (req, res) => {
+    try {
+        const leads = await db.all('SELECT * FROM leads');
+        const grupos = new Map();
+        leads.forEach(l => {
+            const canonico = normalizarTelefoneBR(l.telefone);
+            if (!grupos.has(canonico)) grupos.set(canonico, []);
+            grupos.get(canonico).push(l);
+        });
+        const gruposDuplicados = [...grupos.entries()].filter(([, ls]) => ls.length > 1);
+
+        const resultado = [];
+        for (const [canonico, leadsGrupo] of gruposDuplicados) {
+            await mesclarGrupoDeTelefones(canonico, leadsGrupo);
+            resultado.push({ canonico, telefones_mesclados: leadsGrupo.map(l => l.telefone) });
+        }
+        io.emit('stats', stats);
+        res.json({ success: true, grupos_mesclados: resultado.length, detalhes: resultado });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
 // Edita o nome de um contato na Audiência (usado pela modal de edição).
 // leads.telefone vem de fontes diferentes com formatos diferentes: mensagens do
 // WhatsApp gravam com sufixo (@c.us/@lid), importação por planilha grava limpo
@@ -1068,10 +1229,29 @@ function parseCsv(texto) {
     });
 }
 
-// Normaliza número para o mesmo formato usado nas outras tabelas (só dígitos, com DDI 55)
-function normalizarTelefoneImportado(raw) {
+// Normaliza um telefone BR pro formato canônico (55 + DDD + 9 dígitos, quando é
+// celular). Sem isso, o MESMO número físico vira dois contatos diferentes
+// conforme a origem manda com ou sem o "9" que faz parte do celular brasileiro
+// desde a migração pro formato de 9 dígitos — caso real visto em produção:
+// "554284014994" (sem o 9) e "5542984014994" (com o 9) eram o MESMO Henrique,
+// só que tratados como duas pessoas: duas conversas, duas etiquetas, duas
+// automações separadas. Fixo (8 dígitos locais começando 2-5) nunca teve esse
+// "9" — não mexe. Sempre retorna uma string (nunca null); qualquer coisa que
+// não pareça um BR de 10-13 dígitos volta sem alteração (LID, garbage, etc).
+function normalizarTelefoneBR(raw) {
     let digitos = String(raw || '').replace(/\D/g, '');
     if (digitos.length === 10 || digitos.length === 11) digitos = '55' + digitos;
+    if (digitos.length === 12 && digitos.startsWith('55')) {
+        const ddd = digitos.slice(2, 4);
+        const local = digitos.slice(4);
+        if (/^[6-9]/.test(local)) digitos = `55${ddd}9${local}`;
+    }
+    return digitos;
+}
+
+// Normaliza número para o mesmo formato usado nas outras tabelas (só dígitos, com DDI 55)
+function normalizarTelefoneImportado(raw) {
+    const digitos = normalizarTelefoneBR(raw);
     if (digitos.length < 12 || digitos.length > 13) return null;
     return digitos;
 }
@@ -1395,54 +1575,67 @@ async function dispararMensagensDaAutomacao(automacaoId) {
         }
 
         try {
-            const msg = await db.get('SELECT * FROM mensagens_personalizadas WHERE id = ?', mensagemId);
-            if (!msg) continue;
-            const numLimpo = estado.telefone;
-            const chatId = await resolverChatId(numLimpo);
-            const nome = await resolverNomeContato(numLimpo);
-            const primeiroNome = (nome && nome !== numLimpo) ? nome.split(' ')[0] : '';
-            const nomeCompleto = (nome && nome !== numLimpo) ? nome : '';
-            const matricula = await resolverMatriculaContato(numLimpo);
-            const inadimplente = await db.get(
-                'SELECT * FROM pacto_inadimplentes WHERE telefone = ? OR telefone = ? OR telefone = ?',
-                [numLimpo, `${numLimpo}@c.us`, `${numLimpo}@lid`]
-            );
-            const parcelasStr = inadimplente ? String(inadimplente.qtd_parcelas_atrasadas) : '';
-            const valorStr = inadimplente ? new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(inadimplente.valor_total_atrasado) : '';
-            const diasAtrasadosStr = inadimplente ? String(inadimplente.dias_atraso_mais_antiga) : '';
-            const texto = (msg.texto || '')
-                .replace(/\{nome\}/gi, primeiroNome).replace(/\[nome\]/gi, primeiroNome)
-                .replace(/\{nome_completo\}/gi, nomeCompleto).replace(/\[nome_completo\]/gi, nomeCompleto)
-                .replace(/\{matricula\}/gi, matricula).replace(/\[matricula\]/gi, matricula)
-                .replace(/\{parcelas\}/gi, parcelasStr).replace(/\[parcelas\]/gi, parcelasStr)
-                .replace(/\{valor\}/gi, valorStr).replace(/\[valor\]/gi, valorStr)
-                .replace(/\{dias_atrasados\}/gi, diasAtrasadosStr).replace(/\[dias_atrasados\]/gi, diasAtrasadosStr);
+            // client.sendMessage / resolverChatId (getNumberId) dependem do
+            // WhatsApp Web via Puppeteer — se a página ficar num estado esquisito,
+            // essas chamadas podem TRAVAR sem nunca resolver nem rejeitar (nem
+            // sucesso, nem erro). Sem esse timeout, um único contato travado
+          // parava a fila inteira pra sempre, silenciosamente, até reiniciar o
+            // servidor (foi exatamente o que aconteceu com a automação
+            // Aniversariante: 4 contatos ficaram com mensagem sorteada mas nenhum
+            // foi enviado, o "disparo_ativo" ficou true pra sempre).
+            await Promise.race([
+                (async () => {
+                    const msg = await db.get('SELECT * FROM mensagens_personalizadas WHERE id = ?', mensagemId);
+                    if (!msg) return;
+                    const numLimpo = estado.telefone;
+                    const chatId = await resolverChatId(numLimpo);
+                    const nome = await resolverNomeContato(numLimpo);
+                    const primeiroNome = (nome && nome !== numLimpo) ? nome.split(' ')[0] : '';
+                    const nomeCompleto = (nome && nome !== numLimpo) ? nome : '';
+                    const matricula = await resolverMatriculaContato(numLimpo);
+                    const inadimplente = await db.get(
+                        'SELECT * FROM pacto_inadimplentes WHERE telefone = ? OR telefone = ? OR telefone = ?',
+                        [numLimpo, `${numLimpo}@c.us`, `${numLimpo}@lid`]
+                    );
+                    const parcelasStr = inadimplente ? String(inadimplente.qtd_parcelas_atrasadas) : '';
+                    const valorStr = inadimplente ? new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(inadimplente.valor_total_atrasado) : '';
+                    const diasAtrasadosStr = inadimplente ? String(inadimplente.dias_atraso_mais_antiga) : '';
+                    const texto = (msg.texto || '')
+                        .replace(/\{nome\}/gi, primeiroNome).replace(/\[nome\]/gi, primeiroNome)
+                        .replace(/\{nome_completo\}/gi, nomeCompleto).replace(/\[nome_completo\]/gi, nomeCompleto)
+                        .replace(/\{matricula\}/gi, matricula).replace(/\[matricula\]/gi, matricula)
+                        .replace(/\{parcelas\}/gi, parcelasStr).replace(/\[parcelas\]/gi, parcelasStr)
+                        .replace(/\{valor\}/gi, valorStr).replace(/\[valor\]/gi, valorStr)
+                        .replace(/\{dias_atrasados\}/gi, diasAtrasadosStr).replace(/\[dias_atrasados\]/gi, diasAtrasadosStr);
 
-            let sucesso = false;
-            if (msg.media_path) {
-                const mediaFullPath = path.join(__dirname, 'public', msg.media_path.replace(/^\//, ''));
-                if (fs.existsSync(mediaFullPath)) {
-                    const media = MessageMedia.fromFilePath(mediaFullPath);
-                    const sent = await client.sendMessage(chatId, media, texto ? { caption: texto } : undefined);
-                    await registrarMensagemEnviada(numLimpo, texto || '[mídia]', nome, sent.id?._serialized);
-                    sucesso = true;
-                } else {
-                    console.error(`Disparo automação #${automacaoId}: mídia não encontrada (${msg.media_path}) pra ${numLimpo}`);
-                }
-            } else if (texto) {
-                const sent = await client.sendMessage(chatId, texto);
-                await registrarMensagemEnviada(numLimpo, texto, nome, sent.id?._serialized);
-                sucesso = true;
-            }
+                    let sucesso = false;
+                    if (msg.media_path) {
+                        const mediaFullPath = path.join(__dirname, 'public', msg.media_path.replace(/^\//, ''));
+                        if (fs.existsSync(mediaFullPath)) {
+                            const media = MessageMedia.fromFilePath(mediaFullPath);
+                            const sent = await client.sendMessage(chatId, media, texto ? { caption: texto } : undefined);
+                            await registrarMensagemEnviada(numLimpo, texto || '[mídia]', nome, sent.id?._serialized);
+                            sucesso = true;
+                        } else {
+                            console.error(`Disparo automação #${automacaoId}: mídia não encontrada (${msg.media_path}) pra ${numLimpo}`);
+                        }
+                    } else if (texto) {
+                        const sent = await client.sendMessage(chatId, texto);
+                        await registrarMensagemEnviada(numLimpo, texto, nome, sent.id?._serialized);
+                        sucesso = true;
+                    }
 
-            if (sucesso) {
-                await db.run('DELETE FROM contato_automacao_estado WHERE telefone = ? AND automacao_id = ?', [numLimpo, automacaoId]);
-                await db.run('UPDATE automacoes SET total_concluidos = total_concluidos + 1 WHERE id = ?', automacaoId);
-                await db.run(
-                    'INSERT INTO automacao_envios_log (automacao_id, telefone, nome, mensagem_nome) VALUES (?, ?, ?, ?)',
-                    [automacaoId, numLimpo, nome, msg.nome]
-                );
-            }
+                    if (sucesso) {
+                        await db.run('DELETE FROM contato_automacao_estado WHERE telefone = ? AND automacao_id = ?', [numLimpo, automacaoId]);
+                        await db.run('UPDATE automacoes SET total_concluidos = total_concluidos + 1 WHERE id = ?', automacaoId);
+                        await db.run(
+                            'INSERT INTO automacao_envios_log (automacao_id, telefone, nome, mensagem_nome) VALUES (?, ?, ?, ?)',
+                            [automacaoId, numLimpo, nome, msg.nome]
+                        );
+                    }
+                })(),
+                new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout de 45s — provável travamento no WhatsApp Web/Puppeteer')), 45000))
+            ]);
         } catch (e) {
             console.error(`Erro ao disparar mensagem da automação #${automacaoId} pra ${estado.telefone}:`, e.message);
         }
@@ -1561,10 +1754,17 @@ app.post('/api/automacoes/processar-agora', async (req, res) => {
 });
 
 app.get('/api/automacoes', async (req, res) => {
+    // total_concluidos é histórico (desde sempre) — "concluídos" na tela de
+    // Disparos precisa ser SÓ do dia de hoje (horário de Brasília, UTC-3), não
+    // acumulado, senão o card mostra "100" pra sempre mesmo que nada tenha sido
+    // enviado hoje. Vem de automacao_envios_log (tem timestamp por envio).
     const automacoes = await db.all(`
         SELECT a.*, e.nome AS etiqueta_nome, e.cor AS etiqueta_cor,
                (SELECT COUNT(*) FROM automacao_etapas WHERE automacao_id = a.id) AS total_etapas,
-               (SELECT COUNT(*) FROM contato_automacao_estado WHERE automacao_id = a.id) AS total_ativos
+               (SELECT COUNT(*) FROM contato_automacao_estado WHERE automacao_id = a.id) AS total_ativos,
+               (SELECT COUNT(*) FROM automacao_envios_log
+                  WHERE automacao_id = a.id
+                    AND date(enviado_em, '-3 hours') = date('now', '-3 hours')) AS concluidos_hoje
         FROM automacoes a
         LEFT JOIN etiquetas e ON e.id = a.etiqueta_id
         ORDER BY a.criado_em DESC
@@ -1905,8 +2105,11 @@ app.get('/api/automacoes/:id/progresso', async (req, res) => {
         const delayMedioMs = disparoAtivo ? await estimarDelayMedioAutomacao() : 0;
         let acumuladoMs = 0;
 
-        const contatos = estados.map(e => {
-            acumuladoMs += delayMedioMs;
+        // Primeiro da fila é enviado quase na hora (o disparo real só espera
+        // ANTES do 2º em diante — ver "if (!primeiro) await delay(...)" em
+        // dispararMensagensDaAutomacao) — daí o acúmulo começar depois do 1º.
+        const contatos = estados.map((e, i) => {
+            if (i > 0) acumuladoMs += delayMedioMs;
             return {
                 telefone: e.telefone,
                 nome: nomePorTelefone.get(e.telefone) || e.telefone,
@@ -3176,7 +3379,14 @@ async function transcreverAudio(msg) {
 // não o telefone. getContactLidAndPhone() consulta o mapeamento real do WhatsApp.
 const lidParaTelefone = new Map();
 async function resolveJid(jid) {
-    if (!jid || !jid.endsWith('@lid')) return jid;
+    if (!jid) return jid;
+    if (!jid.endsWith('@lid')) {
+        // Já é @c.us (ou outro formato) — normaliza o número (8x9 dígitos do
+        // celular BR) mantendo o sufixo, pra nunca virar um contato duplicado
+        // por causa do formato do número receber de jeito diferente.
+        if (jid.endsWith('@c.us')) return `${normalizarTelefoneBR(jid.slice(0, -'@c.us'.length))}@c.us`;
+        return jid;
+    }
     if (lidParaTelefone.has(jid)) return lidParaTelefone.get(jid);
     try {
         const [{ pn } = {}] = await Promise.race([
@@ -3184,8 +3394,11 @@ async function resolveJid(jid) {
             new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 3000))
         ]);
         if (pn) {
-            lidParaTelefone.set(jid, pn);
-            return pn;
+            const pnNormalizado = pn.endsWith('@c.us')
+                ? `${normalizarTelefoneBR(pn.slice(0, -'@c.us'.length))}@c.us`
+                : pn;
+            lidParaTelefone.set(jid, pnNormalizado);
+            return pnNormalizado;
         }
     } catch (_) {}
     return jid;
