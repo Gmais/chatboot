@@ -383,6 +383,16 @@ async function initDB() {
     // permanente (comportamento de sempre, sem mudança pra etiquetas atuais).
     try { await db.exec(`ALTER TABLE etiquetas ADD COLUMN duracao_dias INTEGER DEFAULT NULL`); } catch(e) {}
     try { await db.exec(`ALTER TABLE contato_etiquetas ADD COLUMN expira_em DATETIME DEFAULT NULL`); } catch(e) {}
+    // "Mensagens Personalizadas" vira biblioteca de VÁRIAS campanhas (não só
+    // aniversário) — categoria identifica qual "Campanha Rápida" (Aniversariantes,
+    // Inadimplentes, etc) a mensagem pertence. Toda mensagem que já existia até
+    // aqui SÓ podia ser de aniversário (era o único uso da tela até agora) —
+    // essa migração "importa" elas automaticamente pra categoria certa, uma vez,
+    // só nas que ainda não tinham categoria nenhuma (não mexe em nada criado depois).
+    try {
+        await db.exec(`ALTER TABLE mensagens_personalizadas ADD COLUMN categoria TEXT DEFAULT NULL`);
+        await db.run(`UPDATE mensagens_personalizadas SET categoria = 'aniversariantes' WHERE categoria IS NULL`);
+    } catch(e) {}
     // Garante tabela conversas em instalações antigas
     try { await db.exec(`CREATE TABLE IF NOT EXISTS conversas (id INTEGER PRIMARY KEY AUTOINCREMENT, telefone TEXT NOT NULL, nome TEXT, direcao TEXT NOT NULL, texto TEXT, tipo TEXT DEFAULT 'text', ts DATETIME DEFAULT CURRENT_TIMESTAMP, lida INTEGER DEFAULT 0)`); } catch(e) {}
     try { await db.exec(`CREATE INDEX IF NOT EXISTS idx_conversas_tel ON conversas(telefone, ts)`); } catch(e) {}
@@ -1817,18 +1827,21 @@ app.get('/api/automacoes', async (req, res) => {
 // MENSAGENS PERSONALIZADAS — aniversário automático
 // =====================================
 app.get('/api/mensagens-personalizadas', async (req, res) => {
-    const mensagens = await db.all('SELECT * FROM mensagens_personalizadas ORDER BY criado_em DESC');
+    const { categoria } = req.query;
+    const mensagens = categoria
+        ? await db.all('SELECT * FROM mensagens_personalizadas WHERE categoria = ? ORDER BY criado_em DESC', categoria)
+        : await db.all('SELECT * FROM mensagens_personalizadas ORDER BY criado_em DESC');
     res.json(mensagens);
 });
 
 app.post('/api/mensagens-personalizadas', async (req, res) => {
-    const { nome, texto, media_path, media_tipo } = req.body;
+    const { nome, texto, media_path, media_tipo, categoria } = req.body;
     if (!nome || !nome.trim()) return res.status(400).json({ error: 'Nome é obrigatório.' });
     if (!texto || !texto.trim()) return res.status(400).json({ error: 'Mensagem é obrigatória.' });
     try {
         const result = await db.run(
-            'INSERT INTO mensagens_personalizadas (nome, texto, media_path, media_tipo) VALUES (?, ?, ?, ?)',
-            [nome.trim(), texto.trim(), media_path || null, media_tipo || null]
+            'INSERT INTO mensagens_personalizadas (nome, texto, media_path, media_tipo, categoria) VALUES (?, ?, ?, ?, ?)',
+            [nome.trim(), texto.trim(), media_path || null, media_tipo || null, categoria || null]
         );
         res.json({ success: true, id: result.lastID });
     } catch (err) {
@@ -1838,13 +1851,13 @@ app.post('/api/mensagens-personalizadas', async (req, res) => {
 
 app.put('/api/mensagens-personalizadas/:id', async (req, res) => {
     const { id } = req.params;
-    const { nome, texto, media_path, media_tipo } = req.body;
+    const { nome, texto, media_path, media_tipo, categoria } = req.body;
     if (!nome || !nome.trim()) return res.status(400).json({ error: 'Nome é obrigatório.' });
     if (!texto || !texto.trim()) return res.status(400).json({ error: 'Mensagem é obrigatória.' });
     try {
         const result = await db.run(
-            'UPDATE mensagens_personalizadas SET nome = ?, texto = ?, media_path = ?, media_tipo = ? WHERE id = ?',
-            [nome.trim(), texto.trim(), media_path || null, media_tipo || null, id]
+            'UPDATE mensagens_personalizadas SET nome = ?, texto = ?, media_path = ?, media_tipo = ?, categoria = ? WHERE id = ?',
+            [nome.trim(), texto.trim(), media_path || null, media_tipo || null, categoria || null, id]
         );
         if (result.changes === 0) return res.status(404).json({ error: 'Mensagem não encontrada.' });
         res.json({ success: true });

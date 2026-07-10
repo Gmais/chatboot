@@ -1059,13 +1059,24 @@ socket.on('respostas_updated', () => {
 });
 
 // =====================================
-// CAMPANHAS RÁPIDAS (atalhos no topo de Disparos) — botões ainda sem ação
-// própria definida; cada data-campanha vira um case aqui quando a função
-// de cada uma for decidida.
+// CAMPANHAS RÁPIDAS (atalhos no topo de Disparos, Automação e Mensagens
+// Personalizadas) — cada botão aparece nas 3 telas; o clique funciona igual
+// não importa de qual tela partiu. Ainda faltam definir 5 das 6 (ficam com
+// o aviso "em breve" até serem configuradas).
 // =====================================
 document.querySelectorAll('.btn-campanha-rapida').forEach(btn => {
     btn.addEventListener('click', () => {
-        showToast('Em breve', `Ação da campanha "${btn.dataset.campanha}" ainda não foi configurada.`, 'info', 2500);
+        const campanha = btn.dataset.campanha;
+        if (campanha === 'aniversariantes') {
+            // Define o filtro ANTES de navegar: o clique no nav-btn já dispara
+            // loadMensagensPersonalizadas() sozinho (ver troca de seção mais
+            // acima) — setar depois criaria uma corrida entre duas chamadas
+            // async e a sem filtro podia "vencer" e sobrescrever a filtrada.
+            filtroCategoriaMensagens = 'aniversariantes';
+            document.querySelector('.nav-btn[data-target="mensagens-personalizadas-section"]')?.click();
+            return;
+        }
+        showToast('Em breve', `Ação da campanha "${campanha}" ainda não foi configurada.`, 'info', 2500);
     });
 });
 
@@ -3414,11 +3425,26 @@ modalMensagemPersonalizada?.addEventListener('click', (e) => {
 });
 
 let mensagensPersonalizadasGlobais = [];
+// Qual "Campanha Rápida" está filtrando a lista agora (null = mostra todas).
+// Setado ao clicar num botão de campanha (ex: Aniversariantes) em qualquer tela.
+let filtroCategoriaMensagens = null;
+
+const CAMPANHAS_INFO = {
+    'aniversariantes':          { label: 'Aniversariantes',           icon: '🎂' },
+    'inadimplentes':            { label: 'Inadimplentes',             icon: '💰' },
+    'alunos-novos':             { label: 'Alunos Novos',              icon: '🆕' },
+    'confirmacao-agendamento':  { label: 'Confirmação Agendamento',   icon: '📅' },
+    'ex-alunos':                { label: 'Ex-Alunos',                 icon: '👋' },
+    'pos-venda-1':              { label: 'Pós Venda 1',               icon: '🎯' },
+};
 
 async function loadMensagensPersonalizadas() {
     if (!mensagensPersonalizadasLista) return;
     try {
-        const res = await fetch('/api/mensagens-personalizadas');
+        const url = filtroCategoriaMensagens
+            ? `/api/mensagens-personalizadas?categoria=${encodeURIComponent(filtroCategoriaMensagens)}`
+            : '/api/mensagens-personalizadas';
+        const res = await fetch(url);
         mensagensPersonalizadasGlobais = await res.json();
         renderMensagensPersonalizadasLista();
     } catch (e) {
@@ -3428,21 +3454,41 @@ async function loadMensagensPersonalizadas() {
 
 function renderMensagensPersonalizadasLista() {
     if (!mensagensPersonalizadasLista) return;
+
+    const tituloEl = document.getElementById('mensagens-personalizadas-titulo');
+    const filtroWrap = document.getElementById('mensagens-personalizadas-filtro-ativo');
+    const filtroTexto = document.getElementById('mensagens-personalizadas-filtro-texto');
+    const campanha = filtroCategoriaMensagens ? CAMPANHAS_INFO[filtroCategoriaMensagens] : null;
+    if (tituloEl) tituloEl.textContent = campanha ? `${campanha.icon} Mensagens — ${campanha.label}` : '💬 Mensagens Personalizadas';
+    if (filtroWrap) filtroWrap.style.display = campanha ? 'flex' : 'none';
+    if (filtroTexto && campanha) filtroTexto.textContent = `Mostrando só mensagens da campanha "${campanha.label}"`;
+
     if (mensagensPersonalizadasGlobais.length === 0) {
-        mensagensPersonalizadasLista.innerHTML = '<div style="padding:2rem;text-align:center;color:var(--text-3)">Nenhuma mensagem criada ainda. Crie a primeira!</div>';
+        mensagensPersonalizadasLista.innerHTML = `<div style="padding:2rem;text-align:center;color:var(--text-3)">${campanha ? `Nenhuma mensagem em "${campanha.label}" ainda.` : 'Nenhuma mensagem criada ainda.'} Crie a primeira!</div>`;
         return;
     }
-    mensagensPersonalizadasLista.innerHTML = mensagensPersonalizadasGlobais.map(m => `
+    mensagensPersonalizadasLista.innerHTML = mensagensPersonalizadasGlobais.map(m => {
+        const info = m.categoria ? CAMPANHAS_INFO[m.categoria] : null;
+        return `
         <div class="card glass" style="padding:1.1rem 1.3rem;display:flex;align-items:center;gap:1rem;flex-wrap:wrap" data-mensagem-id="${m.id}">
             <div style="flex:1;min-width:200px">
-                <div style="font-weight:600;color:var(--text-1);font-size:.95rem;margin-bottom:.3rem">🎂 ${m.nome}</div>
-                ${m.media_path ? '<span style="font-size:.75rem;color:var(--text-3)">📎 com mídia</span>' : ''}
+                <div style="font-weight:600;color:var(--text-1);font-size:.95rem;margin-bottom:.3rem">${info ? info.icon : '📝'} ${m.nome}</div>
+                <div style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap">
+                    ${info ? `<span style="font-size:.72rem;color:var(--green)">${info.label}</span>` : '<span style="font-size:.72rem;color:var(--text-3)">Sem campanha</span>'}
+                    ${m.media_path ? '<span style="font-size:.75rem;color:var(--text-3)">📎 com mídia</span>' : ''}
+                </div>
             </div>
             <button type="button" class="btn-secondary btn-editar-mensagem-personalizada" data-id="${m.id}" style="padding:.5rem .8rem;font-size:.82rem">✏️ Editar</button>
             <button type="button" class="btn-danger btn-excluir-mensagem-personalizada" data-id="${m.id}" style="padding:.5rem .7rem;font-size:.82rem">🗑️</button>
         </div>
-    `).join('');
+    `;
+    }).join('');
 }
+
+document.getElementById('btn-limpar-filtro-mensagens')?.addEventListener('click', () => {
+    filtroCategoriaMensagens = null;
+    loadMensagensPersonalizadas();
+});
 
 mensagensPersonalizadasLista?.addEventListener('click', async (e) => {
     const btnEditar = e.target.closest('.btn-editar-mensagem-personalizada');
@@ -3450,7 +3496,7 @@ mensagensPersonalizadasLista?.addEventListener('click', async (e) => {
 
     const btnExcluir = e.target.closest('.btn-excluir-mensagem-personalizada');
     if (btnExcluir) {
-        if (!confirm('Excluir esta mensagem de aniversário? Ela para de ser enviada automaticamente.')) return;
+        if (!confirm('Excluir esta mensagem? Ela para de ser enviada automaticamente por qualquer automação que a use.')) return;
         try {
             await fetch(`/api/mensagens-personalizadas/${btnExcluir.dataset.id}`, { method: 'DELETE' });
             showToast('Mensagem excluída', '', 'success', 2000);
@@ -3463,11 +3509,16 @@ mensagensPersonalizadasLista?.addEventListener('click', async (e) => {
 
 function abrirModalMensagemPersonalizada(m = null) {
     mensagemPersonalizadaId.value = m ? m.id : '';
-    modalMensagemPersonalizadaTitulo.textContent = m ? '✏️ Editar Mensagem de Aniversário' : '➕ Nova Mensagem de Aniversário';
+    modalMensagemPersonalizadaTitulo.textContent = m ? '✏️ Editar Mensagem' : '➕ Nova Mensagem';
     mensagemPersonalizadaNome.value = m ? m.nome : '';
     mensagemPersonalizadaTexto.value = m ? m.texto : '';
     mensagemPersonalizadaMediaPath.value = m?.media_path || '';
     mensagemPersonalizadaMediaTipo.value = m?.media_tipo || '';
+    // Editando: mantém a campanha que a mensagem já tinha. Criando: já vem
+    // pré-selecionada com a campanha que está filtrando a lista agora (se veio
+    // de um botão "Campanha Rápida"), senão fica "sem campanha".
+    const categoriaSelect = document.getElementById('mensagem-personalizada-categoria');
+    if (categoriaSelect) categoriaSelect.value = m ? (m.categoria || '') : (filtroCategoriaMensagens || '');
     mpUploadArea.classList.remove('has-file');
     mpUploadAreaText.textContent = m?.media_path ? '✅ Mídia já configurada' : '📎 Clique ou arraste um arquivo aqui';
     if (m?.media_path) mpUploadArea.classList.add('has-file');
@@ -3519,7 +3570,8 @@ btnMensagemPersonalizadaSalvar?.addEventListener('click', async () => {
     const payload = {
         nome, texto,
         media_path: mensagemPersonalizadaMediaPath.value || null,
-        media_tipo: mensagemPersonalizadaMediaTipo.value || null
+        media_tipo: mensagemPersonalizadaMediaTipo.value || null,
+        categoria: document.getElementById('mensagem-personalizada-categoria')?.value || null
     };
     const id = mensagemPersonalizadaId.value;
     try {
