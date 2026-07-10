@@ -4,6 +4,28 @@
 const socket = io();
 
 // =====================================
+// SIDEBAR RECOLHÍVEL — mais espaço de tela pras telas do painel. Preferência
+// fica salva no localStorage, então volta do jeito que a pessoa deixou.
+// =====================================
+const btnSidebarToggle = document.getElementById('btn-sidebar-toggle');
+if (localStorage.getItem('sidebarCollapsed') === '1') {
+    document.body.classList.add('sidebar-collapsed');
+}
+function atualizarTituloSidebarToggle() {
+    if (!btnSidebarToggle) return;
+    const recolhida = document.body.classList.contains('sidebar-collapsed');
+    const rotulo = recolhida ? 'Expandir menu' : 'Recolher menu';
+    btnSidebarToggle.title = rotulo;
+    btnSidebarToggle.setAttribute('aria-label', rotulo);
+}
+atualizarTituloSidebarToggle();
+btnSidebarToggle?.addEventListener('click', () => {
+    const recolhida = document.body.classList.toggle('sidebar-collapsed');
+    localStorage.setItem('sidebarCollapsed', recolhida ? '1' : '0');
+    atualizarTituloSidebarToggle();
+});
+
+// =====================================
 // TOAST NOTIFICATIONS
 // =====================================
 function showToast(title, msg, type = 'success', duration = 4000) {

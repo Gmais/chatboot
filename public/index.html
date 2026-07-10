@@ -12,59 +12,62 @@
 
     <!-- SIDEBAR -->
     <aside class="sidebar">
+        <button type="button" id="btn-sidebar-toggle" class="sidebar-toggle-btn" title="Recolher menu" aria-label="Recolher menu">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+        </button>
         <div class="logo">
             <div class="logo-icon">🤖</div>
             <h2>Bot<span>Pro</span></h2>
         </div>
 
         <nav class="menu">
-            <a href="#" class="nav-btn active" data-target="dashboard-section">
+            <a href="#" class="nav-btn active" data-target="dashboard-section" title="Painel de Controle">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
-                Painel de Controle
+                <span class="nav-label">Painel de Controle</span>
             </a>
-            <a href="#" class="nav-btn" data-target="conversas-section" id="nav-conversas">
+            <a href="#" class="nav-btn" data-target="conversas-section" id="nav-conversas" title="Bate Papo ao Vivo">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 8h2a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2h-2v4l-4-4H9a1.994 1.994 0 0 1-1.414-.586"/><path d="M15 2H6a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h2v4l4-4h3a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2z"/></svg>
-                Bate Papo ao Vivo
+                <span class="nav-label">Bate Papo ao Vivo</span>
                 <span id="badge-nao-lidas" style="display:none;background:var(--red);color:#fff;border-radius:50px;padding:0.1rem 0.45rem;font-size:0.7rem;font-weight:700;margin-left:auto;">0</span>
             </a>
-            <a href="#" class="nav-btn" data-target="contatos-section">
+            <a href="#" class="nav-btn" data-target="contatos-section" title="Contatos">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20"/></svg>
-                Contatos
+                <span class="nav-label">Contatos</span>
             </a>
-            <a href="#" class="nav-btn" data-target="disparos-section">
+            <a href="#" class="nav-btn" data-target="disparos-section" title="Disparos">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
-                Disparos
+                <span class="nav-label">Disparos</span>
             </a>
-            <a href="#" class="nav-btn" data-target="automacoes-section">
+            <a href="#" class="nav-btn" data-target="automacoes-section" title="Automação">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M3 12h3m12 0h3M12 3v3m0 12v3M5.6 5.6l2.1 2.1m8.6 8.6 2.1 2.1M5.6 18.4l2.1-2.1m8.6-8.6 2.1-2.1"/></svg>
-                Automação
+                <span class="nav-label">Automação</span>
             </a>
-            <a href="#" class="nav-btn" data-target="mensagens-personalizadas-section">
+            <a href="#" class="nav-btn" data-target="mensagens-personalizadas-section" title="Mensagens Personalizadas">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12v6a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-6"/><path d="M12 2v13M8 6l4-4 4 4"/><rect x="2" y="7" width="20" height="5" rx="1"/></svg>
-                Mensagens Personalizadas
+                <span class="nav-label">Mensagens Personalizadas</span>
             </a>
-            <a href="#" class="nav-btn" data-target="ia-section">
+            <a href="#" class="nav-btn" data-target="ia-section" title="Inteligência Artificial">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
-                Inteligência Artificial
+                <span class="nav-label">Inteligência Artificial</span>
             </a>
-            <a href="#" class="nav-btn" data-target="mensagens-section">
+            <a href="#" class="nav-btn" data-target="mensagens-section" title="Mensagem Rápida">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
-                Mensagem Rápida
+                <span class="nav-label">Mensagem Rápida</span>
             </a>
-            <a href="#" class="nav-btn" data-target="integracoes-section">
+            <a href="#" class="nav-btn" data-target="integracoes-section" title="Integração">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18.37 5.63 5.63 18.37M9 6H6a3 3 0 0 0-3 3v0a3 3 0 0 0 3 3h1"/><path d="M15 18h3a3 3 0 0 0 3-3v0a3 3 0 0 0-3-3h-1"/><path d="m14 7 3 3-3 3M10 17l-3-3 3-3"/></svg>
-                Integração
+                <span class="nav-label">Integração</span>
             </a>
-            <a href="#" class="nav-btn" data-target="configuracoes-section">
+            <a href="#" class="nav-btn" data-target="configuracoes-section" title="Configurações">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-                Configurações
+                <span class="nav-label">Configurações</span>
             </a>
         </nav>
 
         <div class="sidebar-footer">
             <div class="connection-pill">
                 <span class="dot" id="sidebar-dot"></span>
-                <span id="sidebar-status">Verificando...</span>
+                <span id="sidebar-status" class="nav-label">Verificando...</span>
             </div>
         </div>
     </aside>
