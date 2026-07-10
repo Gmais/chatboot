@@ -1059,6 +1059,17 @@ socket.on('respostas_updated', () => {
 });
 
 // =====================================
+// CAMPANHAS RÁPIDAS (atalhos no topo de Disparos) — botões ainda sem ação
+// própria definida; cada data-campanha vira um case aqui quando a função
+// de cada uma for decidida.
+// =====================================
+document.querySelectorAll('.btn-campanha-rapida').forEach(btn => {
+    btn.addEventListener('click', () => {
+        showToast('Em breve', `Ação da campanha "${btn.dataset.campanha}" ainda não foi configurada.`, 'info', 2500);
+    });
+});
+
+// =====================================
 // LISTA DE CONTATOS (SELEÇÃO PARA DISPAROS)
 // =====================================
 const contatosLista       = document.getElementById('contatos-lista');
