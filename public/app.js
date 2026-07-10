@@ -3092,6 +3092,7 @@ function renderAutomacoesLista() {
                     Ativa
                 </label>
                 <button type="button" class="btn-secondary btn-config-etapas" data-id="${a.id}" data-nome="${a.nome}" style="padding:.5rem .8rem;font-size:.82rem">⚙️ Configurar Etapas</button>
+                <button type="button" class="btn-secondary btn-ver-contatos-automacao" data-id="${a.id}" data-nome="${a.nome}" style="padding:.5rem .7rem;font-size:.82rem" title="Ver quem tem a etiqueta e o status de cada um (já importado ou aguardando)">👥 Ver Contatos</button>
                 <button type="button" class="btn-secondary btn-importar-lista-automacao" data-id="${a.id}" data-nome="${a.nome}" style="padding:.5rem .7rem;font-size:.82rem" title="Sincroniza a fila com quem tem a etiqueta agora — quem perdeu a etiqueta sai, quem ganhou entra">📥 Importar Lista</button>
                 <button type="button" class="btn-danger btn-excluir-automacao" data-id="${a.id}" style="padding:.5rem .7rem;font-size:.82rem">🗑️</button>
             </div>
@@ -3141,6 +3142,9 @@ async function sincronizarListaAutomacao(btn) {
 automacoesLista?.addEventListener('click', async (e) => {
     const btnConfig = e.target.closest('.btn-config-etapas');
     if (btnConfig) { abrirConfigurarEtapas(btnConfig.dataset.id, btnConfig.dataset.nome); return; }
+
+    const btnVerContatos = e.target.closest('.btn-ver-contatos-automacao');
+    if (btnVerContatos) { abrirContatosComEtiqueta(btnVerContatos.dataset.id, btnVerContatos.dataset.nome); return; }
 
     const btnImportarLista = e.target.closest('.btn-importar-lista-automacao');
     if (btnImportarLista) { await sincronizarListaAutomacao(btnImportarLista); return; }
