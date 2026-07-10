@@ -3496,11 +3496,14 @@ let filtroCategoriaMensagens = null;
 
 const CAMPANHAS_INFO = {
     'aniversariantes':          { label: 'Aniversariantes',           icon: '🎂' },
-    'inadimplentes':            { label: 'Inadimplentes',             icon: '💰' },
-    'alunos-novos':             { label: 'Alunos Novos',              icon: '🆕' },
     'confirmacao-agendamento':  { label: 'Confirmação Agendamento',   icon: '📅' },
+    'alunos-novos':             { label: 'Alunos Novos',              icon: '🆕' },
+    'inadimplentes':            { label: 'Inadimplentes',             icon: '🔴' },
+    'parcelas-atrasadas':       { label: 'Parcelas Atrasadas',        icon: '🟡' },
+    'vence-hoje':               { label: 'Vence Hoje',                icon: '🔵' },
     'ex-alunos':                { label: 'Ex-Alunos',                 icon: '👋' },
     'pos-venda-1':              { label: 'Pós Venda 1',               icon: '🎯' },
+    'pos-venda-2':              { label: 'Pós Venda 2',               icon: '🔁' },
 };
 
 async function loadMensagensPersonalizadas() {
