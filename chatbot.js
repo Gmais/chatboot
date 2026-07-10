@@ -2055,12 +2055,28 @@ app.post('/api/automacoes/:id/importar-contatos', async (req, res) => {
 // "contatos com a etiqueta", já que a etiqueta e essa lista são a mesma
 // coisa na prática (quem entra na lista recebe a etiqueta), mas este botão
 // deixa a origem do dado explícita.
+// Sincroniza a fila com a lista de inadimplentes de verdade: quem quitou (não
+// está mais em pacto_inadimplentes) sai da fila — não faz sentido continuar
+// cobrando quem já pagou — e quem é novo entra. Diferente do "Importar
+// Contatos" genérico (esse só soma), aqui a fila é sempre um espelho exato
+// da lista atual de "Ativos com Parcelas Atrasadas".
 app.post('/api/automacoes/:id/importar-inadimplentes-pacto', async (req, res) => {
     const { id } = req.params;
     try {
         const automacao = await db.get('SELECT id FROM automacoes WHERE id = ?', id);
         if (!automacao) return res.status(404).json({ error: 'Automação não encontrada.' });
         const contatos = await db.all('SELECT telefone FROM pacto_inadimplentes');
+        const telefonesAtuais = contatos.map(c => c.telefone);
+
+        const naFila = await db.all('SELECT telefone FROM contato_automacao_estado WHERE automacao_id = ?', id);
+        let removidos = 0;
+        for (const f of naFila) {
+            if (!telefonesAtuais.includes(f.telefone)) {
+                await db.run('DELETE FROM contato_automacao_estado WHERE telefone = ? AND automacao_id = ?', [f.telefone, id]);
+                removidos++;
+            }
+        }
+
         let importados = 0;
         for (const c of contatos) {
             const jaMatriculado = await db.get(
@@ -2076,7 +2092,7 @@ app.post('/api/automacoes/:id/importar-inadimplentes-pacto', async (req, res) =>
             importados++;
         }
         io.emit('automacoes_atualizadas');
-        res.json({ success: true, importados });
+        res.json({ success: true, importados, removidos });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }

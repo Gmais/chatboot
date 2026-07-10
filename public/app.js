@@ -2963,7 +2963,10 @@ automacoesLista?.addEventListener('click', async (e) => {
             const res = await fetch(`/api/automacoes/${btnImportarInadimplentesPacto.dataset.id}/importar-inadimplentes-pacto`, { method: 'POST' });
             const data = await res.json();
             if (!res.ok) throw new Error(data.error || 'Erro ao importar');
-            showToast('Importado!', `${data.importados} contato(s) novo(s) trazido(s) pra fila.`, 'success', 4000);
+            const partes = [];
+            if (data.importados > 0) partes.push(`${data.importados} novo(s)`);
+            if (data.removidos > 0) partes.push(`${data.removidos} removido(s) (já quitaram)`);
+            showToast('Lista sincronizada!', partes.length ? partes.join(' · ') : 'Nenhuma mudança — fila já batia com a lista de inadimplentes.', 'success', 4000);
         } catch (err) {
             showToast('Erro', err.message, 'error');
         } finally {
