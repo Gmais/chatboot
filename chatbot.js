@@ -1429,11 +1429,11 @@ app.delete('/api/etiquetas/:id', async (req, res) => {
     res.json({ success: true });
 });
 
-// Aplica uma etiqueta a um contato (idempotente) e, se ela tiver uma automação
-// ativa vinculada, matricula o contato nela (dispara a etapa 1 na hora). Ponto
-// único usado por toda aplicação de etiqueta no sistema — regras automáticas,
-// fluxos, import de planilha e aplicação manual — pra garantir que a
-// automação sempre dispara, não importa de onde a etiqueta veio.
+// Aplica uma etiqueta a um contato (idempotente). NÃO matricula em nenhuma
+// automação sozinho — matrícula só acontece quando alguém clica "Importar
+// Lista" no card da automação. Ponto único usado por toda aplicação de
+// etiqueta no sistema (regras automáticas, fluxos, import de planilha e
+// aplicação manual).
 async function aplicarEtiquetaContato(telefone, etiquetaId) {
     const numLimpo = telefone.replace('@c.us','').replace('@lid','');
     const etiqueta = await db.get('SELECT duracao_dias FROM etiquetas WHERE id = ?', etiquetaId);
@@ -1450,9 +1450,6 @@ async function aplicarEtiquetaContato(telefone, etiquetaId) {
         [numLimpo, etiquetaId, expiraEm]
     );
     io.emit('etiqueta_atualizada', { telefone: numLimpo });
-    if (!jaTinha) {
-        await iniciarAutomacoesParaEtiqueta(numLimpo, etiquetaId);
-    }
     return { changes: jaTinha ? 0 : 1 };
 }
 
@@ -1706,52 +1703,6 @@ async function dispararMensagensDaAutomacao(automacaoId) {
     }
 }
 
-// Matricula o contato em toda automação ativa vinculada à etiqueta recém-aplicada
-// (se ainda não estiver matriculado) e dispara a etapa 1 na hora.
-async function iniciarAutomacoesParaEtiqueta(telefone, etiquetaId) {
-    const numLimpo = telefone.replace('@c.us','').replace('@lid','');
-    const automacoes = await db.all('SELECT * FROM automacoes WHERE etiqueta_id = ? AND ativo = 1', etiquetaId);
-    for (const automacao of automacoes) {
-        const jaMatriculado = await db.get(
-            'SELECT 1 FROM contato_automacao_estado WHERE telefone = ? AND automacao_id = ?',
-            [numLimpo, automacao.id]
-        );
-        if (jaMatriculado) continue;
-        const etapa1 = await db.get('SELECT * FROM automacao_etapas WHERE automacao_id = ? ORDER BY ordem ASC LIMIT 1', automacao.id);
-        if (!etapa1) continue;
-        await executarEtapaAutomacao(numLimpo, automacao, etapa1);
-    }
-}
-
-// iniciarAutomacoesParaEtiqueta só dispara no INSTANTE em que a etiqueta é
-// aplicada — quem já tinha a etiqueta antes da automação existir (ou antes
-// dela ganhar etapas) nunca é matriculado sozinho. Chamada depois de salvar
-// etapas ou reativar uma automação, pra pegar esses contatos "atrasados".
-async function enrolarContatosExistentesNaAutomacao(automacaoId) {
-    const automacao = await db.get('SELECT * FROM automacoes WHERE id = ?', automacaoId);
-    if (!automacao || !automacao.ativo) return;
-    const etapa1 = await db.get('SELECT * FROM automacao_etapas WHERE automacao_id = ? ORDER BY ordem ASC LIMIT 1', automacaoId);
-    if (!etapa1) return;
-    const contatos = await db.all('SELECT telefone FROM contato_etiquetas WHERE etiqueta_id = ?', automacao.etiqueta_id);
-    let primeiro = true;
-    for (const c of contatos) {
-        const jaMatriculado = await db.get(
-            'SELECT 1 FROM contato_automacao_estado WHERE telefone = ? AND automacao_id = ?',
-            [c.telefone, automacaoId]
-        );
-        if (jaMatriculado) continue;
-        if (!primeiro) await delay(await obterProximoDelayAutomacao());
-        primeiro = false;
-        // Um erro num contato não pode abortar o lote inteiro — os demais nunca
-        // mais seriam pegos, já que essa varredura não roda sozinha de novo.
-        try {
-            await executarEtapaAutomacao(c.telefone, automacao, etapa1);
-        } catch (e) {
-            console.error(`Erro ao matricular ${c.telefone} na automação #${automacaoId}:`, e.message);
-        }
-    }
-}
-
 // Roda periodicamente: busca contatos cuja etapa atual já venceu (dias
 // passaram) e avança pra próxima etapa da automação.
 async function processarAutomacoesPendentes() {
@@ -1912,10 +1863,9 @@ async function processarEtiquetaAniversariantes() {
             `SELECT telefone FROM leads WHERE data_nascimento IS NOT NULL AND strftime('%m-%d', data_nascimento) = ?`,
             hojeMD
         );
-        // Aplicar a etiqueta pode disparar Automações vinculadas na hora
-        // (iniciarAutomacoesParaEtiqueta) — com um respiro entre cada contato pra
-        // não mandar tudo em rajada simultânea quando várias pessoas fazem
-        // aniversário no mesmo dia (risco de bloqueio no WhatsApp).
+        // Respiro entre cada contato — não muda o envio (que agora só sai via
+        // "Importar Lista" + "Disparar Mensagens"), mas evita um lote grande de
+        // escritas simultâneas quando várias pessoas fazem aniversário no mesmo dia.
         let primeiro = true;
         for (const lead of aniversariantesHoje) {
             const numLimpo = lead.telefone.replace('@c.us', '').replace('@lid', '');
@@ -1997,8 +1947,6 @@ app.put('/api/automacoes/:id', async (req, res) => {
         await db.run(`UPDATE automacoes SET ${sets.join(', ')} WHERE id = ?`, params);
         io.emit('automacoes_atualizadas');
         res.json({ success: true });
-        // Reativou a automação: pega quem já tem a etiqueta mas ainda não foi matriculado.
-        if (ativo) enrolarContatosExistentesNaAutomacao(id).catch(e => console.error('Erro ao matricular contatos existentes:', e.message));
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
@@ -2021,20 +1969,6 @@ app.get('/api/automacoes/:id/etapas', async (req, res) => {
         etapa.mensagens = (await db.all('SELECT mensagem_id FROM automacao_etapa_mensagens WHERE etapa_id = ?', etapa.id)).map(r => r.mensagem_id);
     }
     res.json(etapas);
-});
-
-// Força matricular agora quem já tem a etiqueta da automação mas ficou de fora
-// (etiqueta aplicada antes da automação existir/ter etapas) — mesmo caso que
-// roda sozinho ao salvar etapas ou reativar, só que sob demanda.
-// Roda em background (não espera terminar pra responder) — o envio é
-// espaçado de propósito (30-120s por contato, mesmo intervalo de Disparos)
-// pra não arriscar bloqueio no WhatsApp, então com vários contatos isso pode
-// levar minutos. O front acompanha via socket "automacoes_atualizadas", que
-// já dispara a cada contato matriculado.
-app.post('/api/automacoes/:id/matricular-existentes', async (req, res) => {
-    const { id } = req.params;
-    res.json({ success: true });
-    enrolarContatosExistentesNaAutomacao(id).catch(e => console.error('Erro ao matricular contatos existentes:', e.message));
 });
 
 // Automação aqui só organiza contatos por etiqueta — não manda mensagem
@@ -2256,10 +2190,6 @@ app.put('/api/automacoes/:id/etapas', async (req, res) => {
         }
         io.emit('automacoes_atualizadas');
         res.json({ success: true });
-        // Acabou de ganhar etapa 1: pega quem já tem a etiqueta da automação mas
-        // ainda não foi matriculado (a etiqueta pode ter sido aplicada antes de
-        // a automação existir ou antes dela ter etapas configuradas).
-        enrolarContatosExistentesNaAutomacao(id).catch(e => console.error('Erro ao matricular contatos existentes:', e.message));
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
