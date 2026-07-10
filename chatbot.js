@@ -1450,7 +1450,7 @@ async function removerEtiquetaContato(telefone, etiquetaId) {
 app.get('/api/contatos/:telefone/etiquetas', async (req, res) => {
     const { telefone } = req.params;
     const etiquetas = await db.all(`
-        SELECT e.* FROM contato_etiquetas ce
+        SELECT e.*, ce.expira_em FROM contato_etiquetas ce
         INNER JOIN etiquetas e ON e.id = ce.etiqueta_id
         WHERE ce.telefone = ?
         ORDER BY e.nome ASC
