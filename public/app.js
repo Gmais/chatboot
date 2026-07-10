@@ -1061,18 +1061,86 @@ socket.on('respostas_updated', () => {
 // =====================================
 // CAMPANHAS RÁPIDAS (atalhos no topo de Disparos, Automação e Mensagens
 // Personalizadas) — o MESMO botão (ex: "INADIMPLENTES") faz uma coisa
-// diferente em cada tela; não é um atalho genérico único. Só a versão de
-// Mensagens Personalizadas está definida (abre a biblioteca filtrada por
-// campanha); Disparos e Automação ainda esperam suas próprias funções.
+// diferente em cada tela; não é um atalho genérico único.
+// - Mensagens Personalizadas: abre a biblioteca filtrada por campanha.
+// - Automação: acha a automação cujo NOME bate com a campanha (ex: botão
+//   "Pós Venda 2" acha a automação chamada "Pós Venda 2") e importa a lista
+//   dela — mesma ação do botão "📥 Importar Lista" daquele card.
+// - Disparos: ainda espera sua própria função.
 // =====================================
+
+// Compara nomes ignorando acento/maiúscula/espaço/pontuação — assim
+// "Aniversariante", "Aniversariantes" e "aniversariante(s)" batem igual.
+function normalizarTexto(s) {
+    // Tira acento sem embutir caractere combinante literal na fonte (evita
+    // risco de corrupção de encoding): normaliza NFD e descarta pelo
+    // code point (faixa dos diacríticos combinantes, U+0300–U+036F).
+    const semAcento = (s || '').toString().normalize('NFD')
+        .split('').filter(ch => { const c = ch.codePointAt(0); return c < 0x0300 || c > 0x036f; }).join('');
+    return semAcento.toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+// Cada campanha exige que TODAS as palavras-chave apareçam OU no nome da
+// automação OU no nome da etiqueta dela (ex: a automação pode se chamar
+// "Aviso de Vencimento" mas a etiqueta que a alimenta chama "Vence Hoje" —
+// qualquer um dos dois batendo já conta). Evita, por exemplo, o botão
+// "Alunos Novos" (precisa de "aluno" E "novo") casar com uma automação
+// chamada só "Ex-Alunos".
+const CAMPANHA_MATCH_KEYWORDS = {
+    'aniversariantes':         ['aniversari'],
+    'confirmacao-agendamento': ['agenda'],
+    'alunos-novos':            ['aluno', 'novo'],
+    'inadimplentes':           ['inadimplent'],
+    'parcelas-atrasadas':      ['parcela', 'atrasad'],
+    'vence-hoje':              ['vence', 'hoje'],
+    'ex-alunos':               ['ex', 'aluno'],
+    'pos-venda-1':             ['posvenda', '1'],
+    'pos-venda-2':             ['posvenda', '2'],
+};
+
+function encontrarAutomacaoDaCampanha(campanha) {
+    const keywords = CAMPANHA_MATCH_KEYWORDS[campanha];
+    if (!keywords) return null;
+    return automacoesGlobais.find(a => {
+        const candidatos = [normalizarTexto(a.nome), normalizarTexto(a.etiqueta_nome)];
+        return candidatos.some(texto => keywords.every(k => texto.includes(k)));
+    }) || null;
+}
+
 document.querySelectorAll('.btn-campanha-rapida').forEach(btn => {
-    btn.addEventListener('click', () => {
+    btn.addEventListener('click', async () => {
         const campanha = btn.dataset.campanha;
         const secaoId = btn.closest('.page-section')?.id;
 
         if (secaoId === 'mensagens-personalizadas-section') {
             filtroCategoriaMensagens = campanha;
             loadMensagensPersonalizadas();
+            return;
+        }
+
+        if (secaoId === 'automacoes-section') {
+            if (btn.disabled) return;
+            if (automacoesGlobais.length === 0) await loadAutomacoes();
+            const automacao = encontrarAutomacaoDaCampanha(campanha);
+            if (!automacao) {
+                const label = CAMPANHAS_INFO[campanha]?.label || campanha;
+                showToast('Nenhuma automação encontrada', `Crie (ou renomeie) uma automação com um nome parecido com "${label}" pra esse botão importar a lista nela.`, 'error', 5500);
+                return;
+            }
+            btn.disabled = true;
+            try {
+                const data = await importarListaParaAutomacao(automacao.id);
+                const partes = [];
+                if (data.importados > 0) partes.push(`${data.importados} novo(s)`);
+                if (data.removidos > 0) partes.push(`${data.removidos} removido(s) (não tem mais a etiqueta)`);
+                if (!automacao.ativo) partes.push('⚠️ automação está PAUSADA — ative pra ela começar a enviar');
+                showToast(`Lista importada em "${automacao.nome}"`, partes.length ? partes.join(' · ') : 'Nenhuma mudança — fila já batia com a etiqueta.', 'success', 5000);
+                loadAutomacoes();
+            } catch (err) {
+                showToast('Erro ao importar', err.message, 'error');
+            } finally {
+                btn.disabled = false;
+            }
             return;
         }
 
@@ -3046,13 +3114,18 @@ automacoesLista?.addEventListener('change', async (e) => {
     }
 });
 
+async function importarListaParaAutomacao(automacaoId) {
+    const res = await fetch(`/api/automacoes/${automacaoId}/importar-contatos`, { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Erro ao importar');
+    return data;
+}
+
 async function sincronizarListaAutomacao(btn) {
     btn.disabled = true;
     btn.textContent = '⏳ Importando...';
     try {
-        const res = await fetch(`/api/automacoes/${btn.dataset.id}/importar-contatos`, { method: 'POST' });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error || 'Erro ao importar');
+        const data = await importarListaParaAutomacao(btn.dataset.id);
         const partes = [];
         if (data.importados > 0) partes.push(`${data.importados} novo(s)`);
         if (data.removidos > 0) partes.push(`${data.removidos} removido(s) (não tem mais a etiqueta)`);
