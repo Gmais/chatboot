@@ -2796,7 +2796,12 @@ socket.on('pacto_import_done', (p) => {
 // =====================================
 const btnPactoInadimplentes = document.getElementById('btn-pacto-inadimplentes');
 const pactoInadimplentesResultado = document.getElementById('pacto-inadimplentes-resultado');
-const pactoInadimplentesListaBody = document.getElementById('pacto-inadimplentes-lista');
+// Duas tabelas alimentadas pelo MESMO dado (pacto_inadimplentes já guarda
+// dias_atraso_mais_antiga) — só separa na hora de exibir, sem precisar de
+// duas varreduras nem duas listas de verdade no banco.
+const pactoInadimplentesLongoBody = document.getElementById('pacto-inadimplentes-lista-longo');
+const pactoInadimplentesRecenteBody = document.getElementById('pacto-inadimplentes-lista-recente');
+const LIMITE_DIAS_ATRASO_LONGO = 30;
 
 function renderPactoInadimplentesProgress(p) {
     if (!pactoInadimplentesResultado) return;
@@ -2814,47 +2819,64 @@ function formatarMoeda(valor) {
     return (valor || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 }
 
+function linhaPactoInadimplente(i) {
+    return `
+        <tr>
+            <td>
+                <div style="font-weight:500;color:var(--text-1)">${i.nome || '-'}</div>
+                <div style="font-size:.75rem;color:var(--text-3)">${i.telefone}</div>
+            </td>
+            <td style="color:var(--text-2);font-size:.85rem">${i.matricula || '-'}</td>
+            <td style="text-align:right;color:var(--text-2)">${i.qtd_parcelas_atrasadas}</td>
+            <td style="text-align:right;color:var(--red);font-weight:600">${formatarMoeda(i.valor_total_atrasado)}</td>
+            <td style="text-align:right;color:var(--text-2)">${i.dias_atraso_mais_antiga}d</td>
+            <td style="text-align:right">
+                <button type="button" class="btn-danger btn-excluir-inadimplente" data-telefone="${i.telefone}" data-nome="${i.nome || i.telefone}" style="padding:.35rem .6rem;font-size:.75rem" title="Excluir da lista e remover a etiqueta Inadimplente">🗑️</button>
+            </td>
+        </tr>
+    `;
+}
+
 async function loadPactoInadimplentes() {
-    if (!pactoInadimplentesListaBody) return;
+    if (!pactoInadimplentesLongoBody || !pactoInadimplentesRecenteBody) return;
     try {
         const res = await fetch('/api/pacto/inadimplentes');
         const lista = await res.json();
-        if (lista.length === 0) {
-            pactoInadimplentesListaBody.innerHTML = '<tr><td colspan="6" style="padding:1.5rem;text-align:center;color:var(--text-3)">Nenhum inadimplente encontrado.</td></tr>';
-            return;
-        }
-        pactoInadimplentesListaBody.innerHTML = lista.map(i => `
-            <tr>
-                <td>
-                    <div style="font-weight:500;color:var(--text-1)">${i.nome || '-'}</div>
-                    <div style="font-size:.75rem;color:var(--text-3)">${i.telefone}</div>
-                </td>
-                <td style="color:var(--text-2);font-size:.85rem">${i.matricula || '-'}</td>
-                <td style="text-align:right;color:var(--text-2)">${i.qtd_parcelas_atrasadas}</td>
-                <td style="text-align:right;color:var(--red);font-weight:600">${formatarMoeda(i.valor_total_atrasado)}</td>
-                <td style="text-align:right;color:var(--text-2)">${i.dias_atraso_mais_antiga}d</td>
-                <td style="text-align:right">
-                    <button type="button" class="btn-danger btn-excluir-inadimplente" data-telefone="${i.telefone}" data-nome="${i.nome || i.telefone}" style="padding:.35rem .6rem;font-size:.75rem" title="Excluir da lista e remover a etiqueta Inadimplente">🗑️</button>
-                </td>
-            </tr>
-        `).join('');
+        const longos = lista.filter(i => i.dias_atraso_mais_antiga > LIMITE_DIAS_ATRASO_LONGO);
+        const recentes = lista.filter(i => i.dias_atraso_mais_antiga <= LIMITE_DIAS_ATRASO_LONGO);
+
+        pactoInadimplentesLongoBody.innerHTML = longos.length
+            ? longos.map(linhaPactoInadimplente).join('')
+            : '<tr><td colspan="6" style="padding:1.5rem;text-align:center;color:var(--text-3)">Nenhum inadimplente com mais de 30 dias de atraso.</td></tr>';
+
+        pactoInadimplentesRecenteBody.innerHTML = recentes.length
+            ? recentes.map(linhaPactoInadimplente).join('')
+            : '<tr><td colspan="6" style="padding:1.5rem;text-align:center;color:var(--text-3)">Nenhum inadimplente com até 30 dias de atraso.</td></tr>';
     } catch (e) {
-        pactoInadimplentesListaBody.innerHTML = '<tr><td colspan="6" style="padding:1.5rem;text-align:center;color:var(--text-3)">Erro ao carregar.</td></tr>';
+        const erro = '<tr><td colspan="6" style="padding:1.5rem;text-align:center;color:var(--text-3)">Erro ao carregar.</td></tr>';
+        pactoInadimplentesLongoBody.innerHTML = erro;
+        pactoInadimplentesRecenteBody.innerHTML = erro;
     }
 }
 
-pactoInadimplentesListaBody?.addEventListener('click', async (e) => {
-    const btn = e.target.closest('.btn-excluir-inadimplente');
-    if (!btn) return;
-    if (!confirm(`Excluir "${btn.dataset.nome}" da lista de inadimplentes e remover a etiqueta "Inadimplente"?`)) return;
+async function excluirPactoInadimplente(telefone, nome) {
+    if (!confirm(`Excluir "${nome}" da lista de inadimplentes e remover a etiqueta "Inadimplente"?`)) return;
     try {
-        const res = await fetch(`/api/pacto/inadimplentes/${encodeURIComponent(btn.dataset.telefone)}`, { method: 'DELETE' });
+        const res = await fetch(`/api/pacto/inadimplentes/${encodeURIComponent(telefone)}`, { method: 'DELETE' });
         if (!res.ok) throw new Error('Falha ao excluir');
         showToast('Removido', '', 'success', 2000);
         loadPactoInadimplentes();
     } catch (err) {
         showToast('Erro', 'Não foi possível remover', 'error');
     }
+}
+
+[pactoInadimplentesLongoBody, pactoInadimplentesRecenteBody].forEach(tbody => {
+    tbody?.addEventListener('click', (e) => {
+        const btn = e.target.closest('.btn-excluir-inadimplente');
+        if (!btn) return;
+        excluirPactoInadimplente(btn.dataset.telefone, btn.dataset.nome);
+    });
 });
 
 btnPactoInadimplentes?.addEventListener('click', async () => {
