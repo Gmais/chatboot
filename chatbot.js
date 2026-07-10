@@ -1958,6 +1958,53 @@ app.get('/api/conversas', async (req, res) => {
     }
 });
 
+// Limpeza pontual das "conversas fantasma" salvas antes do filtro de tipo de
+// mensagem existir (ruído de protocolo do WhatsApp: sincronização entre
+// aparelhos, notificação de criptografia, etc). Critério bem conservador —
+// só remove telefone que NUNCA teve nome real resolvido (nome sempre igual
+// ao telefone) E NUNCA teve nenhuma mensagem com conteúdo de verdade (sempre
+// "[mensagem sem texto]"). Contato com nome resolvido ou qualquer mensagem
+// com conteúdo real fica de fora, mesmo que o telefone pareça estranho —
+// evita apagar conversa de gente real que usa @lid.
+app.get('/api/conversas/fantasmas', async (req, res) => {
+    try {
+        const candidatos = await db.all(`
+            SELECT telefone, COUNT(*) as total_mensagens
+            FROM conversas
+            GROUP BY telefone
+            HAVING telefone = '0'
+                OR (SUM(CASE WHEN nome != telefone THEN 1 ELSE 0 END) = 0
+                    AND SUM(CASE WHEN texto != '[mensagem sem texto]' THEN 1 ELSE 0 END) = 0)
+        `);
+        res.json(candidatos);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.delete('/api/conversas/fantasmas', async (req, res) => {
+    try {
+        const candidatos = await db.all(`
+            SELECT telefone
+            FROM conversas
+            GROUP BY telefone
+            HAVING telefone = '0'
+                OR (SUM(CASE WHEN nome != telefone THEN 1 ELSE 0 END) = 0
+                    AND SUM(CASE WHEN texto != '[mensagem sem texto]' THEN 1 ELSE 0 END) = 0)
+        `);
+        const telefones = candidatos.map(c => c.telefone);
+        let mensagensRemovidas = 0;
+        if (telefones.length > 0) {
+            const placeholders = telefones.map(() => '?').join(',');
+            const result = await db.run(`DELETE FROM conversas WHERE telefone IN (${placeholders})`, telefones);
+            mensagensRemovidas = result.changes;
+        }
+        res.json({ success: true, contatos_removidos: telefones.length, mensagens_removidas: mensagensRemovidas, telefones });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
 // Assume/libera uma conversa manualmente: enquanto assumida, o robô não
 // responde automaticamente esse contato (tem prioridade sobre horário e
 // sobre o override global "Ativar Robô").
@@ -3034,6 +3081,10 @@ client.on('message_create', async (msg) => {
     if (!msg.fromMe || !db) return;
     if (!msg.to || msg.to.endsWith('@g.us') || msg.to.endsWith('@broadcast')) return;
     if (!TIPOS_MSG_VALIDOS.has(msg.type)) return; // ruído de protocolo — nunca vira conversa
+    // "chat" com corpo vazio nunca é uma mensagem de texto real (ninguém manda
+    // texto em branco pelo WhatsApp) — é ruído de sincronização entre
+    // aparelhos disfarçado de mensagem de texto legítima (mesmo msg.type).
+    if (msg.type === 'chat' && !msg.body) return;
 
     const msgId = msg.id?._serialized;
     if (msgId) {
@@ -3269,6 +3320,10 @@ client.on('message', async (msg) => {
     try {
         if (!msg.from || msg.from.endsWith('@g.us') || msg.from.endsWith('@broadcast')) return;
         if (!TIPOS_MSG_VALIDOS.has(msg.type)) return; // ruído de protocolo — nunca vira conversa
+        // "chat" com corpo vazio nunca é uma mensagem de texto real (ninguém
+        // manda texto em branco pelo WhatsApp) — é ruído de sincronização
+        // entre aparelhos disfarçado de mensagem de texto legítima.
+        if (msg.type === 'chat' && !msg.body) return;
         const chat = await msg.getChat();
         if (chat.isGroup) return;
 
