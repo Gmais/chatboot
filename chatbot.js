@@ -1592,8 +1592,21 @@ async function dispararMensagensDaAutomacao(automacaoId) {
                         'SELECT * FROM pacto_inadimplentes WHERE telefone = ? OR telefone = ? OR telefone = ?',
                         [numLimpo, `${numLimpo}@c.us`, `${numLimpo}@lid`]
                     );
-                    const parcelasStr = inadimplente ? String(inadimplente.qtd_parcelas_atrasadas) : '';
-                    const valorStr = inadimplente ? new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(inadimplente.valor_total_atrasado) : '';
+                    // {parcelas} e {valor} também precisam preencher pra quem está na
+                    // lista "Vence Hoje" (pacto_vencem_hoje) — não só inadimplente/
+                    // parcela atrasada. Sem isso, uma mensagem de campanha "Vence Hoje"
+                    // que usa {valor} manda o placeholder vazio (foi o bug relatado:
+                    // "Sua parcela no valor de  reais vence hoje", sem o valor).
+                    const venceHoje = !inadimplente ? await db.get(
+                        'SELECT * FROM pacto_vencem_hoje WHERE telefone = ? OR telefone = ? OR telefone = ?',
+                        [numLimpo, `${numLimpo}@c.us`, `${numLimpo}@lid`]
+                    ) : null;
+                    const parcelasStr = inadimplente ? String(inadimplente.qtd_parcelas_atrasadas)
+                        : venceHoje ? String(venceHoje.qtd_parcelas) : '';
+                    const valorStr = inadimplente ? new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(inadimplente.valor_total_atrasado)
+                        : venceHoje ? new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(venceHoje.valor_total) : '';
+                    // {dias_atrasados} continua só pra inadimplente/parcela atrasada —
+                    // "vence hoje" não está atrasado, não faz sentido ter dias de atraso.
                     const diasAtrasadosStr = inadimplente ? String(inadimplente.dias_atraso_mais_antiga) : '';
                     const agendamentoAF = await db.get(
                         'SELECT * FROM agenda_avaliacoes_hoje WHERE telefone = ? OR telefone = ? OR telefone = ?',
