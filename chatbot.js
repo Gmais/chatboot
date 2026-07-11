@@ -686,12 +686,19 @@ app.delete('/api/respostas/:id', async (req, res) => {
 });
 
 // =====================================
-// API REST — CONFIGURAÇÕES (IA)
+// API REST — CONFIGURAÇÕES (genérico, chave/valor)
 // =====================================
+// Essa rota não tem autenticação e virou um dump genérico usado por várias
+// telas que não têm nada a ver com IA (Delay de resposta, intervalo de
+// Automação, etc.) — por isso as chaves de API NUNCA voltam aqui, senão
+// qualquer um com a URL do painel conseguiria ler a chave da OpenAI/Groq
+// em texto puro. Quem realmente precisa da chave (tela Inteligência
+// Artificial, pra mostrar/editar o que já está salvo) usa /api/ia/config.
+const CONFIG_CHAVES_SENSIVEIS = ['openai_api_key', 'groq_api_key'];
 app.get('/api/configuracoes', async (req, res) => {
     const rows = await db.all('SELECT * FROM configuracoes');
     const config = {};
-    rows.forEach(r => config[r.chave] = r.valor);
+    rows.forEach(r => { if (!CONFIG_CHAVES_SENSIVEIS.includes(r.chave)) config[r.chave] = r.valor; });
     res.json(config);
 });
 
@@ -701,6 +708,16 @@ app.put('/api/configuracoes', async (req, res) => {
         await db.run('INSERT OR REPLACE INTO configuracoes (chave, valor) VALUES (?, ?)', [key, String(req.body[key])]);
     }
     res.json({ success: true });
+});
+
+// Config completa da IA (inclui a chave de API em texto puro) — usada só
+// pela tela Inteligência Artificial, que precisa mostrar/editar a chave já
+// salva. Deliberadamente separada da rota genérica acima.
+app.get('/api/ia/config', async (req, res) => {
+    const rows = await db.all('SELECT * FROM configuracoes');
+    const config = {};
+    rows.forEach(r => config[r.chave] = r.valor);
+    res.json(config);
 });
 
 // =====================================

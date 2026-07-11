@@ -513,7 +513,10 @@ iaProvider?.addEventListener('change', () => updateIaProviderUI(iaProvider.value
 
 async function loadIaConfig() {
     try {
-        const res = await fetch('/api/configuracoes');
+        // Rota dedicada (não a genérica /api/configuracoes) — é a única tela
+        // que precisa mesmo da chave de API em texto puro, pra mostrar/editar
+        // o que já está salvo.
+        const res = await fetch('/api/ia/config');
         const config = await res.json();
         const provider = config.ia_provider || 'openai';
         if (iaProvider)    iaProvider.value  = provider;
