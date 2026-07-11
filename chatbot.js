@@ -365,6 +365,22 @@ async function initDB() {
             enviado_em DATETIME DEFAULT CURRENT_TIMESTAMP
         );
         CREATE INDEX IF NOT EXISTS idx_disparo_envios_log_ts ON disparo_envios_log(enviado_em);
+        CREATE TABLE IF NOT EXISTS programacoes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            nome TEXT NOT NULL,
+            dias TEXT NOT NULL,
+            horario TEXT NOT NULL,
+            ativo INTEGER DEFAULT 1,
+            ultima_execucao_em TEXT,
+            criado_em DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE IF NOT EXISTS programacao_acoes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            programacao_id INTEGER NOT NULL,
+            automacao_id INTEGER NOT NULL,
+            ordem INTEGER DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS idx_programacao_acoes_prog ON programacao_acoes(programacao_id);
     `);
 
     // Adiciona colunas novas se migrando de versão anterior
@@ -2207,25 +2223,145 @@ app.post('/api/automacoes/:id/importar-contatos', async (req, res) => {
     }
 });
 
+// Valida as mesmas guardas de sempre (WhatsApp conectado, automação ativa,
+// dentro do horário configurado, sem outro disparo já rodando pra ela) e, se
+// tudo certo, inicia o envio em background — usado tanto pelo disparo manual
+// (POST /api/automacoes/:id/disparar) quanto pelo scheduler de Programação
+// (checarProgramacoes). `origem` é só pro log, pra saber quem pediu.
+async function dispararAutomacaoComGuardas(id, origem = 'manual') {
+    if (automacaoDisparoRodando[id]) return { ok: false, error: 'Já tem um disparo rodando pra essa automação.' };
+    if (!isConnected) return { ok: false, error: 'WhatsApp não está conectado.' };
+    const automacao = await db.get('SELECT * FROM automacoes WHERE id = ?', id);
+    if (!automacao) return { ok: false, error: 'Automação não encontrada.' };
+    if (!automacao.ativo) return { ok: false, error: 'Essa automação está pausada — ative-a antes de disparar.' };
+    if (!dentroDoHorarioAutomacao(automacao)) {
+        return { ok: false, error: `Fora do horário configurado pra essa automação (${automacao.horario_inicio}–${automacao.horario_fim}).` };
+    }
+    automacaoDisparoRodando[id] = true;
+    console.log(`🚀 Disparo da automação #${id} (${automacao.nome}) iniciado — origem: ${origem}`);
+    dispararMensagensDaAutomacao(id)
+        .catch(e => console.error('Erro ao disparar automação:', e.message))
+        .finally(() => { automacaoDisparoRodando[id] = false; });
+    return { ok: true };
+}
+
 // Dispara de verdade os contatos "em andamento" dessa automação — cada um
 // recebe a mensagem sorteada pra ele (ver dispararMensagensDaAutomacao).
 // Roda em background (espaçado, pode levar minutos) — front acompanha pelo
 // socket "automacoes_atualizadas", que já dispara a cada contato concluído.
 app.post('/api/automacoes/:id/disparar', async (req, res) => {
-    const { id } = req.params;
-    if (automacaoDisparoRodando[id]) return res.status(400).json({ error: 'Já tem um disparo rodando pra essa automação.' });
-    if (!isConnected) return res.status(400).json({ error: 'WhatsApp não está conectado.' });
-    const automacao = await db.get('SELECT * FROM automacoes WHERE id = ?', id);
-    if (!automacao) return res.status(404).json({ error: 'Automação não encontrada.' });
-    if (!automacao.ativo) return res.status(400).json({ error: 'Essa automação está pausada — ative-a antes de disparar.' });
-    if (!dentroDoHorarioAutomacao(automacao)) {
-        return res.status(400).json({ error: `Fora do horário configurado pra essa automação (${automacao.horario_inicio}–${automacao.horario_fim}).` });
-    }
-    automacaoDisparoRodando[id] = true;
+    const resultado = await dispararAutomacaoComGuardas(req.params.id, 'manual');
+    if (!resultado.ok) return res.status(400).json({ error: resultado.error });
     res.json({ success: true });
-    dispararMensagensDaAutomacao(id)
-        .catch(e => console.error('Erro ao disparar automação:', e.message))
-        .finally(() => { automacaoDisparoRodando[id] = false; });
+});
+
+// =====================================
+// API REST — PROGRAMAÇÃO (agenda dias/horário pra disparar automações sozinhas)
+// =====================================
+// Cada programação agrupa nome + dias da semana + horário + uma ou mais
+// automações (programacao_acoes) — no horário configurado, dispara TODAS as
+// automações da lista, em ordem, do mesmo jeito que o botão manual "Disparar
+// Mensagens" já faz (ver dispararAutomacaoComGuardas). Não roda "Importar
+// Lista" sozinha — só manda pra quem já está na fila de cada automação.
+app.get('/api/programacoes', async (req, res) => {
+    try {
+        const programacoes = await db.all('SELECT * FROM programacoes ORDER BY criado_em DESC');
+        const acoesRows = await db.all(`
+            SELECT pa.programacao_id, pa.automacao_id, pa.ordem, a.nome, a.ativo AS automacao_ativa,
+                   e.nome AS etiqueta_nome, e.cor AS etiqueta_cor
+            FROM programacao_acoes pa
+            INNER JOIN automacoes a ON a.id = pa.automacao_id
+            LEFT JOIN etiquetas e ON e.id = a.etiqueta_id
+            ORDER BY pa.programacao_id, pa.ordem ASC
+        `);
+        const resultado = programacoes.map(p => ({
+            id: p.id,
+            nome: p.nome,
+            dias: p.dias.split(',').filter(Boolean).map(Number),
+            horario: p.horario,
+            ativo: !!p.ativo,
+            ultima_execucao_em: p.ultima_execucao_em,
+            acoes: acoesRows
+                .filter(a => a.programacao_id === p.id)
+                .map(a => ({ automacao_id: a.automacao_id, nome: a.nome, ativo: !!a.automacao_ativa, etiqueta_nome: a.etiqueta_nome, etiqueta_cor: a.etiqueta_cor })),
+        }));
+        res.json(resultado);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+function validarPayloadProgramacao(body) {
+    const { nome, dias, horario, acoes } = body;
+    if (!nome || !nome.trim()) return 'Nome é obrigatório.';
+    if (!Array.isArray(dias) || dias.length === 0) return 'Escolha pelo menos um dia da semana.';
+    if (!horario || !/^\d{1,2}:\d{2}$/.test(horario)) return 'Horário inválido.';
+    if (!Array.isArray(acoes) || acoes.length === 0) return 'Escolha pelo menos uma automação pra disparar.';
+    return null;
+}
+
+app.post('/api/programacoes', async (req, res) => {
+    const erro = validarPayloadProgramacao(req.body);
+    if (erro) return res.status(400).json({ error: erro });
+    const { nome, dias, horario, acoes, ativo } = req.body;
+    try {
+        const result = await db.run(
+            'INSERT INTO programacoes (nome, dias, horario, ativo) VALUES (?, ?, ?, ?)',
+            [nome.trim(), dias.join(','), horario, ativo === false ? 0 : 1]
+        );
+        const programacaoId = result.lastID;
+        let ordem = 0;
+        for (const automacaoId of acoes) {
+            await db.run('INSERT INTO programacao_acoes (programacao_id, automacao_id, ordem) VALUES (?, ?, ?)', [programacaoId, automacaoId, ordem++]);
+        }
+        res.json({ success: true, id: programacaoId });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.put('/api/programacoes/:id', async (req, res) => {
+    const { id } = req.params;
+    const { nome, dias, horario, acoes, ativo } = req.body;
+    // Update parcial nos campos simples — só mexe no que veio no body, mesmo
+    // padrão de PUT /api/automacoes/:id (toggle de "Ativo" não deve apagar o resto).
+    const sets = [];
+    const params = [];
+    if (nome !== undefined) { sets.push('nome = ?'); params.push(nome.trim()); }
+    if (dias !== undefined) {
+        if (!Array.isArray(dias) || dias.length === 0) return res.status(400).json({ error: 'Escolha pelo menos um dia da semana.' });
+        sets.push('dias = ?'); params.push(dias.join(','));
+    }
+    if (horario !== undefined) { sets.push('horario = ?'); params.push(horario); }
+    if (ativo !== undefined) { sets.push('ativo = ?'); params.push(ativo ? 1 : 0); }
+    try {
+        if (sets.length > 0) {
+            params.push(id);
+            await db.run(`UPDATE programacoes SET ${sets.join(', ')} WHERE id = ?`, params);
+        }
+        if (acoes !== undefined) {
+            if (!Array.isArray(acoes) || acoes.length === 0) return res.status(400).json({ error: 'Escolha pelo menos uma automação pra disparar.' });
+            await db.run('DELETE FROM programacao_acoes WHERE programacao_id = ?', id);
+            let ordem = 0;
+            for (const automacaoId of acoes) {
+                await db.run('INSERT INTO programacao_acoes (programacao_id, automacao_id, ordem) VALUES (?, ?, ?)', [id, automacaoId, ordem++]);
+            }
+        }
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.delete('/api/programacoes/:id', async (req, res) => {
+    const { id } = req.params;
+    try {
+        await db.run('DELETE FROM programacao_acoes WHERE programacao_id = ?', id);
+        await db.run('DELETE FROM programacoes WHERE id = ?', id);
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
 // Lista quem já tem a etiqueta que dispara essa automação, com as etiquetas
@@ -3338,6 +3474,41 @@ async function checarSituacaoFinanceiraAutomatica() {
 }
 setInterval(checarSituacaoFinanceiraAutomatica, 5 * 60 * 1000);
 setTimeout(checarSituacaoFinanceiraAutomatica, 130 * 1000);
+
+// Mesmo padrão das duas varreduras acima, só que generalizado: N programações
+// configuráveis pelo usuário (dias da semana + horário próprios cada uma) em
+// vez de um horário fixo no código. No horário configurado, dispara TODAS as
+// automações vinculadas àquela programação, em ordem — uma travada (pausada,
+// fora do horário dela, já rodando) só pula essa e segue pras outras, não
+// derruba a programação inteira (ver dispararAutomacaoComGuardas).
+async function checarProgramacoes() {
+    if (!db) return;
+    try {
+        const agora = moment.tz('America/Sao_Paulo');
+        const diaAtual = agora.day();
+        const minutoAtual = agora.hours() * 60 + agora.minutes();
+        const hojeYMD = agora.format('YYYY-MM-DD');
+        const programacoes = await db.all('SELECT * FROM programacoes WHERE ativo = 1');
+        for (const prog of programacoes) {
+            if (prog.ultima_execucao_em === hojeYMD) continue; // já rodou hoje
+            const dias = prog.dias.split(',').filter(Boolean).map(Number);
+            if (!dias.includes(diaAtual)) continue;
+            const [h, m] = prog.horario.split(':').map(Number);
+            if (minutoAtual < h * 60 + m) continue; // ainda não chegou o horário
+            await db.run('UPDATE programacoes SET ultima_execucao_em = ? WHERE id = ?', [hojeYMD, prog.id]);
+            console.log(`🗓️ Programação "${prog.nome}": disparando...`);
+            const acoes = await db.all('SELECT automacao_id FROM programacao_acoes WHERE programacao_id = ? ORDER BY ordem ASC', prog.id);
+            for (const acao of acoes) {
+                const resultado = await dispararAutomacaoComGuardas(acao.automacao_id, `Programação "${prog.nome}"`);
+                if (!resultado.ok) console.log(`⚠️ Programação "${prog.nome}": automação #${acao.automacao_id} não disparou — ${resultado.error}`);
+            }
+        }
+    } catch (e) {
+        console.error('Erro ao checar programações:', e.message);
+    }
+}
+setInterval(checarProgramacoes, 5 * 60 * 1000);
+setTimeout(checarProgramacoes, 150 * 1000);
 
 // Expira etiquetas temporárias (contato_etiquetas.expira_em) de QUALQUER
 // etiqueta configurada com duracao_dias — genérico, não é só pro "Desafio":

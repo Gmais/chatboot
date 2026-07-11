@@ -1028,6 +1028,17 @@ Sempre tente agendar uma aula experimental."></textarea>
 
                 <div class="card glass">
                     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem">
+                        <h3>🗓️ Programação</h3>
+                        <button type="button" class="btn-primary" id="btn-nova-programacao" style="padding:.5rem 1rem;font-size:.85rem">➕ Adicionar Ação</button>
+                    </div>
+                    <p style="color:var(--text-3);font-size:.8rem;margin:-.4rem 0 1rem">Agenda automações pra disparar sozinhas em dias e horários específicos — manda pra quem já está na fila de cada automação (não importa lista sozinho, isso continua manual).</p>
+                    <div id="programacoes-lista" style="display:flex;flex-direction:column;gap:.8rem">
+                        <div style="padding:1.5rem;text-align:center;color:var(--text-3)">Carregando...</div>
+                    </div>
+                </div>
+
+                <div class="card glass">
+                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem">
                         <h3>⏰ Horário de Funcionamento</h3>
                         <label style="display:flex;align-items:center;gap:.5rem;cursor:pointer">
                             <input type="checkbox" id="horario-ativo" style="accent-color:var(--green);width:18px;height:18px">
@@ -1203,6 +1214,31 @@ Sempre tente agendar uma aula experimental."></textarea>
             <div id="nova-conversa-lista" style="max-height:220px;overflow-y:auto;display:flex;flex-direction:column;gap:.3rem;margin-bottom:1rem"></div>
             <div class="modal-footer">
                 <button class="btn-cancel" id="modal-nova-conversa-fechar">Fechar</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- MODAL: CRIAR / EDITAR PROGRAMAÇÃO -->
+    <div class="modal-overlay" id="modal-programacao-overlay">
+        <div class="modal">
+            <h3 id="modal-programacao-titulo">➕ Nova Programação</h3>
+            <input type="hidden" id="programacao-id">
+            <label style="display:block;font-size:.78rem;color:var(--text-3);margin-bottom:.3rem">Nome</label>
+            <input type="text" id="programacao-nome" placeholder="Ex: Cobrança semanal" style="width:100%;background:var(--input-bg);border:1px solid rgba(255,255,255,0.1);border-radius:var(--radius-sm);padding:.6rem .8rem;color:var(--text-1);font-size:.9rem;margin-bottom:1rem">
+
+            <label style="display:block;font-size:.78rem;color:var(--text-3);margin-bottom:.4rem">Dias da semana</label>
+            <div id="programacao-dias" style="display:flex;flex-wrap:wrap;gap:.6rem;margin-bottom:1rem"></div>
+
+            <label style="display:block;font-size:.78rem;color:var(--text-3);margin-bottom:.3rem">Horário</label>
+            <input type="time" id="programacao-horario" value="08:00" style="width:100%;background:var(--input-bg);border:1px solid rgba(255,255,255,0.1);border-radius:var(--radius-sm);padding:.6rem .8rem;color:var(--text-1);font-size:.9rem;margin-bottom:1.2rem">
+
+            <label style="display:block;font-size:.78rem;color:var(--text-3);margin-bottom:.4rem">Automações a disparar nesse dia/horário</label>
+            <div id="programacao-acoes-lista" style="display:flex;flex-direction:column;gap:.5rem;margin-bottom:.6rem"></div>
+            <button type="button" class="btn-secondary" id="btn-add-programacao-acao" style="margin-bottom:1rem">+ Adicionar outra ação</button>
+
+            <div class="modal-footer">
+                <button class="btn-cancel" id="modal-programacao-fechar">Cancelar</button>
+                <button class="btn-primary" id="btn-programacao-salvar">💾 Salvar</button>
             </div>
         </div>
     </div>

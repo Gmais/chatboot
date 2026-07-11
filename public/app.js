@@ -676,7 +676,7 @@ navBtns.forEach(btn => {
         if (targetId === 'dashboard-section') carregarEstatisticas();
         if (targetId === 'mensagens-section') loadRegras();
         if (targetId === 'ia-section') loadIaConfig();
-        if (targetId === 'configuracoes-section') { loadHorarioConfig(); loadDelayResposta(); }
+        if (targetId === 'configuracoes-section') { loadHorarioConfig(); loadDelayResposta(); loadProgramacoes(); }
         if (targetId === 'conversas-section') CM.onEnterSection();
         if (targetId === 'contatos-section' || targetId === 'disparos-section') loadContatos();
         if (targetId === 'integracoes-section') { loadPactoInadimplentes(); loadPactoVencemHoje(); loadAgendaAvaliacao(); }
@@ -1010,6 +1010,200 @@ btnSalvarHorario?.addEventListener('click', async () => {
         addActivity('⏰', 'Horário de funcionamento atualizado', new Date().toLocaleString('pt-BR'));
     } catch (e) {
         showToast('Erro', 'Não foi possível salvar o horário de funcionamento', 'error');
+    }
+});
+
+// =====================================
+// PROGRAMAÇÃO — agenda automações pra disparar sozinhas em dias/horário
+// =====================================
+const programacoesLista        = document.getElementById('programacoes-lista');
+const btnNovaProgramacao       = document.getElementById('btn-nova-programacao');
+const modalProgramacao         = document.getElementById('modal-programacao-overlay');
+const modalProgramacaoTitulo   = document.getElementById('modal-programacao-titulo');
+const programacaoIdInput       = document.getElementById('programacao-id');
+const programacaoNomeInput     = document.getElementById('programacao-nome');
+const programacaoDiasDiv       = document.getElementById('programacao-dias');
+const programacaoHorarioInput  = document.getElementById('programacao-horario');
+const programacaoAcoesListaDiv = document.getElementById('programacao-acoes-lista');
+const btnAddProgramacaoAcao    = document.getElementById('btn-add-programacao-acao');
+const btnProgramacaoSalvar     = document.getElementById('btn-programacao-salvar');
+const modalProgramacaoFechar   = document.getElementById('modal-programacao-fechar');
+
+let programacaoDiasSelecionados = [1, 2, 3, 4, 5];
+let programacaoAcoesForm = []; // [automacao_id, automacao_id, ...] — um por seletor da lista repetível
+
+function renderProgramacaoDias() {
+    if (!programacaoDiasDiv) return;
+    programacaoDiasDiv.innerHTML = DIAS_SEMANA.map((label, d) => `
+        <label style="display:flex;align-items:center;gap:.3rem;cursor:pointer;font-size:.82rem">
+            <input type="checkbox" class="programacao-dia" data-dia="${d}" ${programacaoDiasSelecionados.includes(d) ? 'checked' : ''} style="accent-color:var(--green)"> ${label}
+        </label>
+    `).join('');
+}
+
+programacaoDiasDiv?.addEventListener('change', (e) => {
+    if (!e.target.classList.contains('programacao-dia')) return;
+    const dia = Number(e.target.dataset.dia);
+    if (e.target.checked) { if (!programacaoDiasSelecionados.includes(dia)) programacaoDiasSelecionados.push(dia); }
+    else programacaoDiasSelecionados = programacaoDiasSelecionados.filter(d => d !== dia);
+});
+
+function renderProgramacaoAcoesForm() {
+    if (!programacaoAcoesListaDiv) return;
+    if (programacaoAcoesForm.length === 0) {
+        programacaoAcoesListaDiv.innerHTML = '<p style="color:var(--text-3);font-size:.82rem">Nenhuma ação adicionada — clique em "+ Adicionar outra ação".</p>';
+        return;
+    }
+    programacaoAcoesListaDiv.innerHTML = programacaoAcoesForm.map((automacaoId, idx) => `
+        <div style="display:flex;gap:.5rem;align-items:center">
+            <select class="programacao-acao-select" data-idx="${idx}" style="flex:1;background:var(--input-bg);border:1px solid rgba(255,255,255,0.1);border-radius:var(--radius-sm);padding:.55rem .7rem;color:var(--text-1);font-family:'Inter',sans-serif;font-size:.85rem">
+                <option value="">Selecione uma automação...</option>
+                ${automacoesGlobais.map(a => `<option value="${a.id}" ${Number(automacaoId) === a.id ? 'selected' : ''}>${a.nome}${!a.ativo ? ' (pausada)' : ''}</option>`).join('')}
+            </select>
+            <button type="button" class="btn-remove-programacao-acao" data-idx="${idx}" style="background:none;border:none;color:var(--red);font-size:1.1rem;cursor:pointer;padding:.2rem .5rem">✕</button>
+        </div>
+    `).join('');
+}
+
+function sincronizarProgramacaoAcoesDoDOM() {
+    if (!programacaoAcoesListaDiv) return;
+    programacaoAcoesListaDiv.querySelectorAll('.programacao-acao-select').forEach(sel => {
+        const idx = Number(sel.dataset.idx);
+        programacaoAcoesForm[idx] = sel.value ? Number(sel.value) : '';
+    });
+}
+
+btnAddProgramacaoAcao?.addEventListener('click', () => {
+    sincronizarProgramacaoAcoesDoDOM();
+    programacaoAcoesForm.push('');
+    renderProgramacaoAcoesForm();
+});
+
+programacaoAcoesListaDiv?.addEventListener('click', (e) => {
+    const btn = e.target.closest('.btn-remove-programacao-acao');
+    if (!btn) return;
+    sincronizarProgramacaoAcoesDoDOM();
+    programacaoAcoesForm.splice(Number(btn.dataset.idx), 1);
+    renderProgramacaoAcoesForm();
+});
+
+async function abrirModalProgramacao(prog = null) {
+    if (automacoesGlobais.length === 0) await loadAutomacoes();
+    if (modalProgramacaoTitulo) modalProgramacaoTitulo.textContent = prog ? '✏️ Editar Programação' : '➕ Nova Programação';
+    if (programacaoIdInput) programacaoIdInput.value = prog?.id || '';
+    if (programacaoNomeInput) programacaoNomeInput.value = prog?.nome || '';
+    if (programacaoHorarioInput) programacaoHorarioInput.value = prog?.horario || '08:00';
+    programacaoDiasSelecionados = prog ? [...prog.dias] : [1, 2, 3, 4, 5];
+    programacaoAcoesForm = prog ? prog.acoes.map(a => a.automacao_id) : [];
+    renderProgramacaoDias();
+    renderProgramacaoAcoesForm();
+    modalProgramacao?.classList.add('open');
+}
+
+btnNovaProgramacao?.addEventListener('click', () => abrirModalProgramacao(null));
+modalProgramacaoFechar?.addEventListener('click', () => modalProgramacao?.classList.remove('open'));
+
+btnProgramacaoSalvar?.addEventListener('click', async () => {
+    sincronizarProgramacaoAcoesDoDOM();
+    const nome = (programacaoNomeInput?.value || '').trim();
+    const horario = programacaoHorarioInput?.value || '';
+    const acoes = programacaoAcoesForm.filter(id => id !== '' && id != null);
+    if (!nome) { showToast('Erro', 'Digite um nome pra programação.', 'error'); return; }
+    if (programacaoDiasSelecionados.length === 0) { showToast('Erro', 'Escolha pelo menos um dia da semana.', 'error'); return; }
+    if (!horario) { showToast('Erro', 'Escolha um horário.', 'error'); return; }
+    if (acoes.length === 0) { showToast('Erro', 'Adicione pelo menos uma automação.', 'error'); return; }
+
+    const payload = { nome, dias: programacaoDiasSelecionados, horario, acoes };
+    const id = programacaoIdInput?.value;
+    try {
+        const res = await fetch(id ? `/api/programacoes/${id}` : '/api/programacoes', {
+            method: id ? 'PUT' : 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Erro ao salvar programação');
+        showToast('Programação salva!', '', 'success');
+        modalProgramacao?.classList.remove('open');
+        loadProgramacoes();
+    } catch (err) {
+        showToast('Erro', err.message, 'error');
+    }
+});
+
+function renderProgramacoes(lista) {
+    if (!programacoesLista) return;
+    if (lista.length === 0) {
+        programacoesLista.innerHTML = '<div style="padding:1.5rem;text-align:center;color:var(--text-3)">Nenhuma programação criada ainda.</div>';
+        return;
+    }
+    programacoesLista.innerHTML = lista.map(p => {
+        const diasTxt = p.dias.length === 7 ? 'Todos os dias' : p.dias.sort().map(d => DIAS_SEMANA[d]).join(', ');
+        const acoesTxt = p.acoes.map(a => `<span class="etiqueta-chip" style="background:${a.etiqueta_cor || '#25D366'}22;color:${a.etiqueta_cor || '#25D366'};border:1px solid ${a.etiqueta_cor || '#25D366'}55">${a.nome}${!a.ativo ? ' ⏸️' : ''}</span>`).join(' ');
+        return `
+            <div class="card glass" style="padding:1rem 1.2rem" data-programacao-id="${p.id}">
+                <div style="display:flex;align-items:center;gap:1rem;flex-wrap:wrap">
+                    <div style="flex:1;min-width:200px">
+                        <div style="font-weight:600;color:var(--text-1);font-size:.9rem;margin-bottom:.3rem">${p.nome}</div>
+                        <div style="font-size:.78rem;color:var(--text-3)">🗓️ ${diasTxt} · ⏰ ${p.horario}</div>
+                        <div style="display:flex;gap:.4rem;flex-wrap:wrap;margin-top:.5rem">${acoesTxt}</div>
+                    </div>
+                    <label style="display:flex;align-items:center;gap:.4rem;font-size:.78rem;color:var(--text-3);cursor:pointer">
+                        <input type="checkbox" class="programacao-toggle-ativo" data-id="${p.id}" ${p.ativo ? 'checked' : ''} style="accent-color:var(--green);width:16px;height:16px">
+                        Ativo
+                    </label>
+                    <button type="button" class="btn-secondary btn-editar-programacao" data-id="${p.id}" style="padding:.4rem .8rem;font-size:.78rem">✏️ Editar</button>
+                    <button type="button" class="btn-danger btn-excluir-programacao" data-id="${p.id}" style="padding:.4rem .8rem;font-size:.78rem">🗑️</button>
+                </div>
+            </div>
+        `;
+    }).join('');
+}
+
+let programacoesGlobais = [];
+async function loadProgramacoes() {
+    if (!programacoesLista) return;
+    try {
+        const res = await fetch('/api/programacoes');
+        programacoesGlobais = await res.json();
+        renderProgramacoes(programacoesGlobais);
+    } catch (e) {
+        programacoesLista.innerHTML = '<div style="padding:1.5rem;text-align:center;color:var(--text-3)">Erro ao carregar programações.</div>';
+    }
+}
+
+programacoesLista?.addEventListener('click', async (e) => {
+    const btnEditar = e.target.closest('.btn-editar-programacao');
+    if (btnEditar) {
+        const prog = programacoesGlobais.find(p => p.id === Number(btnEditar.dataset.id));
+        if (prog) abrirModalProgramacao(prog);
+        return;
+    }
+    const btnExcluir = e.target.closest('.btn-excluir-programacao');
+    if (btnExcluir) {
+        if (!confirm('Excluir essa programação? As automações vinculadas continuam existindo, só param de disparar sozinhas.')) return;
+        try {
+            await fetch(`/api/programacoes/${btnExcluir.dataset.id}`, { method: 'DELETE' });
+            showToast('Programação excluída', '', 'success', 2500);
+            loadProgramacoes();
+        } catch (err) {
+            showToast('Erro', 'Não foi possível excluir a programação', 'error');
+        }
+    }
+});
+
+programacoesLista?.addEventListener('change', async (e) => {
+    const toggle = e.target.closest('.programacao-toggle-ativo');
+    if (!toggle) return;
+    try {
+        await fetch(`/api/programacoes/${toggle.dataset.id}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ativo: toggle.checked })
+        });
+        showToast(toggle.checked ? 'Programação ativada' : 'Programação pausada', '', 'success', 2000);
+    } catch (e) {
+        showToast('Erro', 'Não foi possível atualizar a programação', 'error');
     }
 });
 
