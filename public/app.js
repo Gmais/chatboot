@@ -1360,9 +1360,6 @@ function renderContatos() {
 
 function contatosPageFiltrados() {
     const termo = (contatosPageBusca?.value || '').trim().toLowerCase();
-    // Mesma lógica de contatosFiltrados() — lista vazia até digitar algo ou
-    // escolher uma etiqueta, pra não carregar todo mundo de cara.
-    if (!termo && etiquetasFiltroAtivasPage.size === 0) return [];
     return todosContatos.filter(c => {
         const bateBusca = !termo || c.nome.toLowerCase().includes(termo) || c.telefone.includes(termo) || (c.matricula || '').toLowerCase().includes(termo);
         const bateEtiqueta = etiquetasFiltroAtivasPage.size === 0 || c.etiquetas.some(e => etiquetasFiltroAtivasPage.has(e.id));
@@ -1374,8 +1371,7 @@ function renderContatosPage() {
     if (!contatosPageTableBody) return;
     const filtrados = contatosPageFiltrados();
     if (filtrados.length === 0) {
-        const semFiltro = !(contatosPageBusca?.value || '').trim() && etiquetasFiltroAtivasPage.size === 0;
-        contatosPageTableBody.innerHTML = `<tr><td colspan="6" style="padding:2rem;text-align:center;color:var(--text-3)">${semFiltro ? 'Busque por nome, telefone ou etiqueta pra ver os contatos.' : 'Nenhum contato encontrado.'}</td></tr>`;
+        contatosPageTableBody.innerHTML = '<tr><td colspan="6" style="padding:2rem;text-align:center;color:var(--text-3)">Nenhum contato encontrado.</td></tr>';
         return;
     }
     contatosPageTableBody.innerHTML = filtrados.map(c => {
