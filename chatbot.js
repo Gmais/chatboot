@@ -3902,6 +3902,26 @@ function respostaIAParecevazamento(texto) {
     return PADRAO_VAZAMENTO_PROMPT.test(texto || '');
 }
 
+// Fecha o círculo do "Protocolo de Transferência" descrito no treinamento da
+// IA: lá a Consultora Maria é instruída a encerrar o atendimento com a frase
+// reservada "Tenha um ótimo dia" quando o cliente confirma que não tem mais
+// dúvidas e o caso vai ser encaminhado pra equipe. Antes disso era só um
+// "disse que ia encaminhar" sem nenhuma ação de verdade — agora, ao detectar
+// essa frase (também funciona pra regra manual, se algum dia usar o mesmo
+// fechamento), a conversa é realmente movida pra "Aguardando" no painel,
+// exatamente como o botão manual "Assumir Conversa" faz.
+const PADRAO_ENCERRAMENTO_ATENDIMENTO = /tenha um [oó]timo dia/i;
+async function encaminharParaHumanoSeEncerrou(texto, numLimpo) {
+    if (!PADRAO_ENCERRAMENTO_ATENDIMENTO.test(texto || '')) return;
+    try {
+        await db.run('INSERT OR IGNORE INTO conversas_humano (telefone) VALUES (?)', numLimpo);
+        io.emit('conversa_assumida', { telefone: numLimpo, assumida: true });
+        console.log(`🙋 Conversa com ${numLimpo} encaminhada pra "Aguardando" — robô identificou encerramento/transferência.`);
+    } catch (e) {
+        console.error('Erro ao encaminhar conversa pra humano após encerramento:', e.message);
+    }
+}
+
 client.on('message', async (msg) => {
     try {
         if (!msg.from || msg.from.endsWith('@g.us') || msg.from.endsWith('@broadcast')) return;
@@ -4163,7 +4183,10 @@ client.on('message', async (msg) => {
                     console.log(`🤖 IA respondendo para ${numLimpo}`);
                     const sentIA = await enviarResposta(msg, respostaIA);
                     io.emit('bot_digitando', { telefone: numLimpo, ativo: false });
-                    if (sentIA) await registrarMensagemEnviada(telefoneReal, respostaIA, nomeContato, sentIA.id?._serialized);
+                    if (sentIA) {
+                        await registrarMensagemEnviada(telefoneReal, respostaIA, nomeContato, sentIA.id?._serialized);
+                        await encaminharParaHumanoSeEncerrou(respostaIA, numLimpo);
+                    }
                 } catch (e) {
                     io.emit('bot_digitando', { telefone: numLimpo, ativo: false });
                     console.error(`❌ Erro na API da IA (${provider}):`, e.message);
@@ -4203,7 +4226,10 @@ client.on('message', async (msg) => {
 
         const sent = await enviarResposta(msg, textoFinal);
         io.emit('bot_digitando', { telefone: numLimpo, ativo: false });
-        if (sent) await registrarMensagemEnviada(telefoneReal, textoFinal, nomeContato, sent.id?._serialized);
+        if (sent) {
+            await registrarMensagemEnviada(telefoneReal, textoFinal, nomeContato, sent.id?._serialized);
+            await encaminharParaHumanoSeEncerrou(textoFinal, numLimpo);
+        }
 
         // Áudio temporariamente desativado (causa timeout no Puppeteer)
         // if (regraAtiva.enviar_audio) { ... }
