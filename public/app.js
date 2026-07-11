@@ -1030,7 +1030,7 @@ const btnProgramacaoSalvar     = document.getElementById('btn-programacao-salvar
 const modalProgramacaoFechar   = document.getElementById('modal-programacao-fechar');
 
 let programacaoDiasSelecionados = [1, 2, 3, 4, 5];
-let programacaoAcoesForm = []; // [automacao_id, automacao_id, ...] — um por seletor da lista repetível
+let programacaoAcoesForm = []; // [{ tipo: 'automacao'|'disparo', valor: automacao_id | chave_da_campanha }, ...]
 
 function renderProgramacaoDias() {
     if (!programacaoDiasDiv) return;
@@ -1048,18 +1048,35 @@ programacaoDiasDiv?.addEventListener('change', (e) => {
     else programacaoDiasSelecionados = programacaoDiasSelecionados.filter(d => d !== dia);
 });
 
+// Cada ação escolhe primeiro um TIPO — "Automação" (qualquer uma da lista
+// completa) ou "Disparo" (as mesmas Campanhas Rápidas já usadas em Disparos,
+// ver CAMPANHAS_INFO). Nos dois casos o resultado final é sempre um
+// automacao_id — "Disparo" só resolve a campanha pra automação certa na hora
+// de salvar (mesma lógica de encontrarAutomacaoDaCampanha), é um atalho de
+// UI, não um tipo de dado diferente no banco.
 function renderProgramacaoAcoesForm() {
     if (!programacaoAcoesListaDiv) return;
     if (programacaoAcoesForm.length === 0) {
         programacaoAcoesListaDiv.innerHTML = '<p style="color:var(--text-3);font-size:.82rem">Nenhuma ação adicionada — clique em "+ Adicionar outra ação".</p>';
         return;
     }
-    programacaoAcoesListaDiv.innerHTML = programacaoAcoesForm.map((automacaoId, idx) => `
-        <div style="display:flex;gap:.5rem;align-items:center">
-            <select class="programacao-acao-select" data-idx="${idx}" style="flex:1;background:var(--input-bg);border:1px solid rgba(255,255,255,0.1);border-radius:var(--radius-sm);padding:.55rem .7rem;color:var(--text-1);font-family:'Inter',sans-serif;font-size:.85rem">
-                <option value="">Selecione uma automação...</option>
-                ${automacoesGlobais.map(a => `<option value="${a.id}" ${Number(automacaoId) === a.id ? 'selected' : ''}>${a.nome}${!a.ativo ? ' (pausada)' : ''}</option>`).join('')}
+    programacaoAcoesListaDiv.innerHTML = programacaoAcoesForm.map((acao, idx) => `
+        <div style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;background:rgba(255,255,255,0.03);border-radius:8px;padding:.6rem">
+            <select class="programacao-acao-tipo" data-idx="${idx}" style="background:var(--input-bg);border:1px solid rgba(255,255,255,0.1);border-radius:var(--radius-sm);padding:.55rem .7rem;color:var(--text-1);font-family:'Inter',sans-serif;font-size:.85rem">
+                <option value="automacao" ${acao.tipo === 'automacao' ? 'selected' : ''}>Automação</option>
+                <option value="disparo" ${acao.tipo === 'disparo' ? 'selected' : ''}>Disparo</option>
             </select>
+            ${acao.tipo === 'disparo' ? `
+                <select class="programacao-acao-valor" data-idx="${idx}" style="flex:1;min-width:180px;background:var(--input-bg);border:1px solid rgba(255,255,255,0.1);border-radius:var(--radius-sm);padding:.55rem .7rem;color:var(--text-1);font-family:'Inter',sans-serif;font-size:.85rem">
+                    <option value="">Selecione um tipo de disparo...</option>
+                    ${Object.entries(CAMPANHAS_INFO).map(([chave, info]) => `<option value="${chave}" ${acao.valor === chave ? 'selected' : ''}>${info.icon} ${info.label}</option>`).join('')}
+                </select>
+            ` : `
+                <select class="programacao-acao-valor" data-idx="${idx}" style="flex:1;min-width:180px;background:var(--input-bg);border:1px solid rgba(255,255,255,0.1);border-radius:var(--radius-sm);padding:.55rem .7rem;color:var(--text-1);font-family:'Inter',sans-serif;font-size:.85rem">
+                    <option value="">Selecione uma automação...</option>
+                    ${automacoesGlobais.map(a => `<option value="${a.id}" ${String(acao.valor) === String(a.id) ? 'selected' : ''}>${a.nome}${!a.ativo ? ' (pausada)' : ''}</option>`).join('')}
+                </select>
+            `}
             <button type="button" class="btn-remove-programacao-acao" data-idx="${idx}" style="background:none;border:none;color:var(--red);font-size:1.1rem;cursor:pointer;padding:.2rem .5rem">✕</button>
         </div>
     `).join('');
@@ -1067,15 +1084,19 @@ function renderProgramacaoAcoesForm() {
 
 function sincronizarProgramacaoAcoesDoDOM() {
     if (!programacaoAcoesListaDiv) return;
-    programacaoAcoesListaDiv.querySelectorAll('.programacao-acao-select').forEach(sel => {
+    programacaoAcoesListaDiv.querySelectorAll('.programacao-acao-tipo').forEach(sel => {
         const idx = Number(sel.dataset.idx);
-        programacaoAcoesForm[idx] = sel.value ? Number(sel.value) : '';
+        if (programacaoAcoesForm[idx]) programacaoAcoesForm[idx].tipo = sel.value;
+    });
+    programacaoAcoesListaDiv.querySelectorAll('.programacao-acao-valor').forEach(sel => {
+        const idx = Number(sel.dataset.idx);
+        if (programacaoAcoesForm[idx]) programacaoAcoesForm[idx].valor = sel.value;
     });
 }
 
 btnAddProgramacaoAcao?.addEventListener('click', () => {
     sincronizarProgramacaoAcoesDoDOM();
-    programacaoAcoesForm.push('');
+    programacaoAcoesForm.push({ tipo: 'automacao', valor: '' });
     renderProgramacaoAcoesForm();
 });
 
@@ -1087,6 +1108,17 @@ programacaoAcoesListaDiv?.addEventListener('click', (e) => {
     renderProgramacaoAcoesForm();
 });
 
+// Trocar o Tipo (Automação ↔ Disparo) troca as opções do segundo seletor —
+// reseta o valor escolhido antes, senão fica um automacao_id "vazando" pro
+// contexto de chave de campanha (ou vice-versa) até o usuário escolher de novo.
+programacaoAcoesListaDiv?.addEventListener('change', (e) => {
+    if (!e.target.classList.contains('programacao-acao-tipo')) return;
+    sincronizarProgramacaoAcoesDoDOM();
+    const idx = Number(e.target.dataset.idx);
+    if (programacaoAcoesForm[idx]) programacaoAcoesForm[idx].valor = '';
+    renderProgramacaoAcoesForm();
+});
+
 async function abrirModalProgramacao(prog = null) {
     if (automacoesGlobais.length === 0) await loadAutomacoes();
     if (modalProgramacaoTitulo) modalProgramacaoTitulo.textContent = prog ? '✏️ Editar Programação' : '➕ Nova Programação';
@@ -1094,7 +1126,10 @@ async function abrirModalProgramacao(prog = null) {
     if (programacaoNomeInput) programacaoNomeInput.value = prog?.nome || '';
     if (programacaoHorarioInput) programacaoHorarioInput.value = prog?.horario || '08:00';
     programacaoDiasSelecionados = prog ? [...prog.dias] : [1, 2, 3, 4, 5];
-    programacaoAcoesForm = prog ? prog.acoes.map(a => a.automacao_id) : [];
+    // Ao editar, toda ação salva já existente mostra como "Automação" com o
+    // item certo pré-selecionado — "Disparo" é só um atalho de escolha na
+    // criação, o banco sempre guarda o automacao_id final (ver btnProgramacaoSalvar).
+    programacaoAcoesForm = prog ? prog.acoes.map(a => ({ tipo: 'automacao', valor: a.automacao_id })) : [];
     renderProgramacaoDias();
     renderProgramacaoAcoesForm();
     modalProgramacao?.classList.add('open');
@@ -1107,11 +1142,30 @@ btnProgramacaoSalvar?.addEventListener('click', async () => {
     sincronizarProgramacaoAcoesDoDOM();
     const nome = (programacaoNomeInput?.value || '').trim();
     const horario = programacaoHorarioInput?.value || '';
-    const acoes = programacaoAcoesForm.filter(id => id !== '' && id != null);
     if (!nome) { showToast('Erro', 'Digite um nome pra programação.', 'error'); return; }
     if (programacaoDiasSelecionados.length === 0) { showToast('Erro', 'Escolha pelo menos um dia da semana.', 'error'); return; }
     if (!horario) { showToast('Erro', 'Escolha um horário.', 'error'); return; }
-    if (acoes.length === 0) { showToast('Erro', 'Adicione pelo menos uma automação.', 'error'); return; }
+    if (programacaoAcoesForm.length === 0) { showToast('Erro', 'Adicione pelo menos uma ação.', 'error'); return; }
+
+    // Resolve cada ação pro automacao_id de verdade — "Disparo" escolhe pelo
+    // nome da campanha, então precisa achar a automação correspondente
+    // (mesma lógica de encontrarAutomacaoDaCampanha, usada pelas Campanhas
+    // Rápidas em Disparos); "Automação" já É o id direto.
+    if (automacoesGlobais.length === 0) await loadAutomacoes();
+    const acoes = [];
+    for (const acao of programacaoAcoesForm) {
+        if (!acao.valor) { showToast('Erro', 'Preencha todas as ações antes de salvar.', 'error'); return; }
+        if (acao.tipo === 'disparo') {
+            const automacao = encontrarAutomacaoDaCampanha(acao.valor);
+            if (!automacao) {
+                showToast('Erro', `Nenhuma automação encontrada pra "${CAMPANHAS_INFO[acao.valor]?.label || acao.valor}". Crie ou renomeie uma automação com um nome parecido.`, 'error', 6000);
+                return;
+            }
+            acoes.push(automacao.id);
+        } else {
+            acoes.push(Number(acao.valor));
+        }
+    }
 
     const payload = { nome, dias: programacaoDiasSelecionados, horario, acoes };
     const id = programacaoIdInput?.value;
