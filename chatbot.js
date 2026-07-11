@@ -71,6 +71,7 @@ const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
 const OpenAI = require('openai');
 const moment = require('moment-timezone');
 const { buscarAlunoPorMatricula, buscarAlunoPorCodigo, obterParcelasEmAberto, criarCliente, matricularAluno, gerarLinkPagamentoPixSantander } = require('./pacto');
+const { buscarAgendaDoDia } = require('./agenda');
 
 // =====================================
 // REDE DE SEGURANÇA — exceção não tratada nunca derruba o servidor inteiro
@@ -327,6 +328,15 @@ async function initDB() {
             matricula TEXT,
             qtd_parcelas INTEGER,
             valor_total REAL,
+            atualizado_em DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE IF NOT EXISTS agenda_avaliacoes_hoje (
+            telefone TEXT PRIMARY KEY,
+            appointment_id TEXT,
+            nome TEXT,
+            matricula TEXT,
+            horario TEXT,
+            professor TEXT,
             atualizado_em DATETIME DEFAULT CURRENT_TIMESTAMP
         );
     `);
@@ -1585,13 +1595,21 @@ async function dispararMensagensDaAutomacao(automacaoId) {
                     const parcelasStr = inadimplente ? String(inadimplente.qtd_parcelas_atrasadas) : '';
                     const valorStr = inadimplente ? new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(inadimplente.valor_total_atrasado) : '';
                     const diasAtrasadosStr = inadimplente ? String(inadimplente.dias_atraso_mais_antiga) : '';
+                    const agendamentoAF = await db.get(
+                        'SELECT * FROM agenda_avaliacoes_hoje WHERE telefone = ? OR telefone = ? OR telefone = ?',
+                        [numLimpo, `${numLimpo}@c.us`, `${numLimpo}@lid`]
+                    );
+                    const horarioStr = agendamentoAF?.horario || '';
+                    const professorStr = agendamentoAF?.professor || '';
                     const texto = (msg.texto || '')
                         .replace(/\{nome\}/gi, primeiroNome).replace(/\[nome\]/gi, primeiroNome)
                         .replace(/\{nome_completo\}/gi, nomeCompleto).replace(/\[nome_completo\]/gi, nomeCompleto)
                         .replace(/\{matricula\}/gi, matricula).replace(/\[matricula\]/gi, matricula)
                         .replace(/\{parcelas\}/gi, parcelasStr).replace(/\[parcelas\]/gi, parcelasStr)
                         .replace(/\{valor\}/gi, valorStr).replace(/\[valor\]/gi, valorStr)
-                        .replace(/\{dias_atrasados\}/gi, diasAtrasadosStr).replace(/\[dias_atrasados\]/gi, diasAtrasadosStr);
+                        .replace(/\{dias_atrasados\}/gi, diasAtrasadosStr).replace(/\[dias_atrasados\]/gi, diasAtrasadosStr)
+                        .replace(/\{horario\}/gi, horarioStr).replace(/\[horario\]/gi, horarioStr)
+                        .replace(/\{professor\}/gi, professorStr).replace(/\[professor\]/gi, professorStr);
 
                     let sucesso = false;
                     if (msg.media_path) {
@@ -2886,6 +2904,145 @@ async function expirarVencemHojeAntigos() {
 }
 setInterval(expirarVencemHojeAntigos, 30 * 60 * 1000);
 setTimeout(expirarVencemHojeAntigos, 95 * 1000);
+
+// =====================================
+// INTEGRAÇÃO — AGENDA DE AVALIAÇÃO FÍSICA (confirmação via WhatsApp)
+// =====================================
+const NOME_ETIQUETA_AGENDAMENTO_AF = 'Agendamento AF';
+async function garantirEtiquetaAgendamentoAF() {
+    const existente = await db.get('SELECT id FROM etiquetas WHERE LOWER(nome) = LOWER(?)', NOME_ETIQUETA_AGENDAMENTO_AF);
+    if (existente) return existente.id;
+    const result = await db.run('INSERT INTO etiquetas (nome, cor) VALUES (?, ?)', [NOME_ETIQUETA_AGENDAMENTO_AF, '#14b8a6']);
+    return result.lastID;
+}
+
+let agendaAvaliacaoRunning = false;
+let agendaAvaliacaoProgress = { total: 0, encontrados: 0, sem_whatsapp: 0, running: false, erro: null };
+
+app.get('/api/agenda-avaliacao/status', async (req, res) => {
+    const row = await db.get("SELECT valor FROM configuracoes WHERE chave = 'agenda_avaliacao_ultima_atualizacao'");
+    res.json({ ...agendaAvaliacaoProgress, ultima_atualizacao: row?.valor || null });
+});
+
+app.get('/api/agenda-avaliacao', async (req, res) => {
+    const lista = await db.all('SELECT * FROM agenda_avaliacoes_hoje ORDER BY horario ASC');
+    res.json(lista);
+});
+
+app.delete('/api/agenda-avaliacao/:telefone', async (req, res) => {
+    const { telefone } = req.params;
+    try {
+        const etiquetaId = await garantirEtiquetaAgendamentoAF();
+        await removerEtiquetaContato(telefone, etiquetaId);
+        await db.run('DELETE FROM agenda_avaliacoes_hoje WHERE telefone = ?', telefone);
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Varre a agenda de avaliação física do dia (via Supabase da Planeta Corpo) e
+// etiqueta cada aluno com WhatsApp válido como "Agendamento AF" — NÃO manda
+// mensagem nenhuma sozinha. A automação "Agendamento Avaliação" (já
+// configurada pelo usuário, vinculada a essa mesma etiqueta) é quem cuida do
+// envio, e só dispara quando alguém clica "Importar Lista" + "Disparar
+// Mensagens" nela, igual toda automação do sistema — essa varredura só
+// alimenta a etiqueta/lista, não põe ninguém na fila de envio sozinha.
+async function processarAgendaAvaliacao() {
+    if (agendaAvaliacaoRunning) return;
+    agendaAvaliacaoRunning = true;
+    agendaAvaliacaoProgress = { total: 0, encontrados: 0, sem_whatsapp: 0, running: true, erro: null };
+    io.emit('agenda_avaliacao_progress', agendaAvaliacaoProgress);
+    try {
+        const etiquetaId = await garantirEtiquetaAgendamentoAF();
+        const resposta = await buscarAgendaDoDia();
+        const agendamentos = resposta?.appointments || [];
+        agendaAvaliacaoProgress.total = agendamentos.length;
+
+        const jaEstavam = await db.all('SELECT telefone FROM agenda_avaliacoes_hoje');
+        const telefonesNovos = new Set();
+
+        for (const ag of agendamentos) {
+            const whatsappBruto = ag.aluno?.whatsapp;
+            if (!whatsappBruto) {
+                agendaAvaliacaoProgress.sem_whatsapp++;
+                console.log(`⚠️ Agenda de Avaliação: ${ag.aluno?.nome || 'aluno'} (matrícula ${ag.aluno?.matricula || '?'}) sem WhatsApp cadastrado — pulado.`);
+                continue;
+            }
+            const numLimpo = normalizarTelefoneImportado(whatsappBruto);
+            if (!numLimpo) {
+                agendaAvaliacaoProgress.sem_whatsapp++;
+                console.log(`⚠️ Agenda de Avaliação: ${ag.aluno?.nome || 'aluno'} (matrícula ${ag.aluno?.matricula || '?'}) com WhatsApp inválido ("${whatsappBruto}") — pulado.`);
+                continue;
+            }
+            telefonesNovos.add(numLimpo);
+            const horario = (ag.time || '').slice(0, 5);
+            await db.run(
+                `INSERT INTO agenda_avaliacoes_hoje (telefone, appointment_id, nome, matricula, horario, professor, atualizado_em)
+                 VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                 ON CONFLICT(telefone) DO UPDATE SET appointment_id = excluded.appointment_id, nome = excluded.nome,
+                    matricula = excluded.matricula, horario = excluded.horario, professor = excluded.professor,
+                    atualizado_em = CURRENT_TIMESTAMP`,
+                [numLimpo, ag.appointment_id || null, ag.aluno?.nome || null, ag.aluno?.matricula || null, horario, ag.professor?.nome || null]
+            );
+            await aplicarEtiquetaContato(numLimpo, etiquetaId);
+            agendaAvaliacaoProgress.encontrados++;
+        }
+
+        // Quem estava na lista de uma varredura anterior mas não está na de
+        // agora: sai da lista e perde a etiqueta (não é mais um agendamento
+        // válido pra hoje — foi cancelado, remarcado ou já passou o dia).
+        for (const c of jaEstavam) {
+            if (!telefonesNovos.has(c.telefone)) {
+                await db.run('DELETE FROM agenda_avaliacoes_hoje WHERE telefone = ?', c.telefone);
+                await removerEtiquetaContato(c.telefone, etiquetaId);
+            }
+        }
+
+        const ultimaAtualizacao = new Date().toISOString();
+        await db.run('INSERT OR REPLACE INTO configuracoes (chave, valor) VALUES (?, ?)', ['agenda_avaliacao_ultima_atualizacao', ultimaAtualizacao]);
+        agendaAvaliacaoProgress.running = false;
+        io.emit('agenda_avaliacao_progress', agendaAvaliacaoProgress);
+        io.emit('agenda_avaliacao_done', { ...agendaAvaliacaoProgress, ultima_atualizacao: ultimaAtualizacao });
+        console.log(`✅ Agenda de Avaliação: ${agendaAvaliacaoProgress.encontrados} aluno(s) etiquetado(s), ${agendaAvaliacaoProgress.sem_whatsapp} sem WhatsApp válido, de ${agendaAvaliacaoProgress.total} agendamento(s) hoje.`);
+    } catch (e) {
+        console.error('❌ Erro na varredura da Agenda de Avaliação:', e.message);
+        agendaAvaliacaoProgress.running = false;
+        agendaAvaliacaoProgress.erro = e.message;
+        io.emit('agenda_avaliacao_progress', agendaAvaliacaoProgress);
+    } finally {
+        agendaAvaliacaoRunning = false;
+    }
+}
+
+app.post('/api/agenda-avaliacao/atualizar', async (req, res) => {
+    if (agendaAvaliacaoRunning) return res.status(400).json({ error: 'Uma atualização da Agenda de Avaliação já está em andamento.' });
+    res.json({ success: true });
+    processarAgendaAvaliacao().catch(e => console.error('Erro ao processar agenda de avaliação:', e.message));
+});
+
+// Roda sozinha 1x por dia, na janela das 8h (America/Sao_Paulo) — checa a
+// cada 30min (mesmo padrão dos outros jobs periódicos) se já passou das 8h
+// hoje e ainda não rodou hoje; se sim, dispara. Guarda a data da última
+// execução automática em `configuracoes` pra sobreviver a deploy/restart
+// (senão um reinício logo depois das 8h faria rodar nunca, ou várias vezes).
+async function checarAgendaAvaliacaoAutomatica() {
+    if (!db) return;
+    try {
+        const agora = moment.tz('America/Sao_Paulo');
+        if (agora.hours() < 8) return;
+        const hojeYMD = agora.format('YYYY-MM-DD');
+        const row = await db.get("SELECT valor FROM configuracoes WHERE chave = 'agenda_avaliacao_ultima_execucao_automatica'");
+        if (row?.valor === hojeYMD) return; // já rodou hoje
+        await db.run('INSERT OR REPLACE INTO configuracoes (chave, valor) VALUES (?, ?)', ['agenda_avaliacao_ultima_execucao_automatica', hojeYMD]);
+        console.log('📅 Agenda de Avaliação: rodando varredura automática das 8h...');
+        await processarAgendaAvaliacao();
+    } catch (e) {
+        console.error('Erro ao checar varredura automática da Agenda de Avaliação:', e.message);
+    }
+}
+setInterval(checarAgendaAvaliacaoAutomatica, 30 * 60 * 1000);
+setTimeout(checarAgendaAvaliacaoAutomatica, 110 * 1000);
 
 // Expira etiquetas temporárias (contato_etiquetas.expira_em) de QUALQUER
 // etiqueta configurada com duracao_dias — genérico, não é só pro "Desafio":

@@ -349,8 +349,10 @@
                         <button type="button" class="btn-secondary btn-inserir-placeholder-mp" data-placeholder="{parcelas}" style="padding:.25rem .6rem;font-size:.72rem">➕ Parcelas</button>
                         <button type="button" class="btn-secondary btn-inserir-placeholder-mp" data-placeholder="{valor}" style="padding:.25rem .6rem;font-size:.72rem">➕ Valor</button>
                         <button type="button" class="btn-secondary btn-inserir-placeholder-mp" data-placeholder="{dias_atrasados}" style="padding:.25rem .6rem;font-size:.72rem">➕ Dias atrasados</button>
+                        <button type="button" class="btn-secondary btn-inserir-placeholder-mp" data-placeholder="{horario}" style="padding:.25rem .6rem;font-size:.72rem">➕ Horário</button>
+                        <button type="button" class="btn-secondary btn-inserir-placeholder-mp" data-placeholder="{professor}" style="padding:.25rem .6rem;font-size:.72rem">➕ Professor</button>
                     </div>
-                    <span class="hint">{parcelas}, {valor} e {dias_atrasados} só preenchem pra quem está na lista de inadimplentes (Integração).</span>
+                    <span class="hint">{parcelas}, {valor} e {dias_atrasados} só preenchem pra quem está na lista de inadimplentes; {horario} e {professor} só preenchem pra quem está na lista da Agenda de Avaliação (ambos em Integração).</span>
                 </div>
                 <div class="form-group">
                     <label>Mídia (opcional)</label>
@@ -811,6 +813,41 @@ Sempre tente agendar uma aula experimental."></textarea>
                                 </tr>
                             </thead>
                             <tbody id="pacto-vencem-hoje-lista">
+                                <tr><td colspan="5" style="padding:1.5rem;text-align:center;color:var(--text-3)">Nenhum dado ainda.</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="card glass">
+                    <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:.8rem;margin-bottom:1rem">
+                        <div>
+                            <h3 style="margin-bottom:.3rem">📅 Agenda de Avaliação Física</h3>
+                            <p style="color:var(--text-2);font-size:.85rem;max-width:560px">Busca a agenda de avaliações físicas do dia (sistema Planeta Corpo) e etiqueta sozinho cada aluno com WhatsApp cadastrado como "Agendamento AF" — some quando a avaliação deixa de estar na agenda de hoje. Roda automaticamente todo dia às 8h, e também pode ser atualizada na hora aqui. Não envia mensagem nenhuma sozinho — use "Importar Lista" e "Disparar Mensagens" na automação "Agendamento Avaliação" pra confirmar de verdade com os alunos.</p>
+                        </div>
+                    </div>
+
+                    <div style="display:flex;align-items:center;gap:.8rem;flex-wrap:wrap;margin-bottom:1rem">
+                        <button class="btn-primary" id="btn-agenda-avaliacao" style="padding:.6rem 1.1rem;font-size:.85rem">🔄 Atualizar Lista</button>
+                        <span id="agenda-avaliacao-ultima-atualizacao" style="color:var(--text-3);font-size:.78rem"></span>
+                    </div>
+
+                    <div id="agenda-avaliacao-resultado" style="background:rgba(255,255,255,0.03);border-radius:var(--radius-sm);padding:1rem;font-size:.82rem;color:var(--text-2);line-height:1.6;margin-bottom:1rem">
+                        Clique em "Atualizar Lista" pra começar.
+                    </div>
+
+                    <div style="overflow-x:auto">
+                        <table class="leads-table">
+                            <thead>
+                                <tr>
+                                    <th>Contato</th>
+                                    <th>Matrícula</th>
+                                    <th>Horário</th>
+                                    <th>Professor</th>
+                                    <th></th>
+                                </tr>
+                            </thead>
+                            <tbody id="agenda-avaliacao-lista">
                                 <tr><td colspan="5" style="padding:1.5rem;text-align:center;color:var(--text-3)">Nenhum dado ainda.</td></tr>
                             </tbody>
                         </table>

@@ -460,7 +460,7 @@ navBtns.forEach(btn => {
         if (targetId === 'configuracoes-section') { loadHorarioConfig(); loadDelayResposta(); }
         if (targetId === 'conversas-section') CM.onEnterSection();
         if (targetId === 'contatos-section' || targetId === 'disparos-section') loadContatos();
-        if (targetId === 'integracoes-section') { loadPactoInadimplentes(); loadPactoVencemHoje(); }
+        if (targetId === 'integracoes-section') { loadPactoInadimplentes(); loadPactoVencemHoje(); loadAgendaAvaliacao(); }
         if (targetId === 'automacoes-section') { loadEtiquetas().then(() => loadAutomacoes()); }
         if (targetId === 'mensagens-personalizadas-section') loadMensagensPersonalizadas();
         if (targetId === 'disparos-section') { loadAcompanhamentoAutomacoes(); loadAutomacaoDelayConfig(); }
@@ -2715,6 +2715,118 @@ pactoVencemHojeBody?.addEventListener('click', async (e) => {
     } catch (err) {
         showToast('Erro', 'Não foi possível remover', 'error');
     }
+});
+
+// =====================================
+// INTEGRAÇÃO — AGENDA DE AVALIAÇÃO FÍSICA
+// =====================================
+const btnAgendaAvaliacao = document.getElementById('btn-agenda-avaliacao');
+const agendaAvaliacaoResultado = document.getElementById('agenda-avaliacao-resultado');
+const agendaAvaliacaoUltimaAtualizacaoEl = document.getElementById('agenda-avaliacao-ultima-atualizacao');
+const agendaAvaliacaoBody = document.getElementById('agenda-avaliacao-lista');
+
+function formatarUltimaAtualizacaoAgenda(iso) {
+    if (!agendaAvaliacaoUltimaAtualizacaoEl) return;
+    if (!iso) { agendaAvaliacaoUltimaAtualizacaoEl.textContent = ''; return; }
+    const d = new Date(iso);
+    if (isNaN(d)) { agendaAvaliacaoUltimaAtualizacaoEl.textContent = ''; return; }
+    const data = d.toLocaleDateString('pt-BR');
+    const hora = d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+    agendaAvaliacaoUltimaAtualizacaoEl.textContent = `Última atualização: ${data} às ${hora}`;
+}
+
+function renderAgendaAvaliacaoResultado(p) {
+    if (!agendaAvaliacaoResultado) return;
+    if (p.erro) {
+        agendaAvaliacaoResultado.innerHTML = `<span style="color:var(--red)">❌ ${p.erro}</span>`;
+        return;
+    }
+    agendaAvaliacaoResultado.innerHTML = `
+        <div>📋 ${p.total} agendamento(s) hoje · 🏷️ ${p.encontrados} etiquetado(s)${p.sem_whatsapp ? ` · ⚠️ ${p.sem_whatsapp} sem WhatsApp válido` : ''}</div>
+    `;
+}
+
+async function carregarUltimaAtualizacaoAgenda() {
+    try {
+        const res = await fetch('/api/agenda-avaliacao/status');
+        const status = await res.json();
+        if (!status.running) {
+            formatarUltimaAtualizacaoAgenda(status.ultima_atualizacao);
+            if (status.total || status.erro) renderAgendaAvaliacaoResultado(status);
+        }
+    } catch (e) { /* silencioso — só o texto informativo */ }
+}
+
+async function loadAgendaAvaliacao() {
+    if (!agendaAvaliacaoBody) return;
+    carregarUltimaAtualizacaoAgenda();
+    try {
+        const res = await fetch('/api/agenda-avaliacao');
+        const lista = await res.json();
+        agendaAvaliacaoBody.innerHTML = lista.length
+            ? lista.map(i => `
+                <tr>
+                    <td>
+                        <div style="font-weight:500;color:var(--text-1)">${i.nome || '-'}</div>
+                        <div style="font-size:.75rem;color:var(--text-3)">${i.telefone}</div>
+                    </td>
+                    <td style="color:var(--text-2);font-size:.85rem">${i.matricula || '-'}</td>
+                    <td style="color:var(--text-2);font-size:.85rem">${i.horario || '-'}</td>
+                    <td style="color:var(--text-2);font-size:.85rem">${i.professor || '-'}</td>
+                    <td style="text-align:right">
+                        <button type="button" class="btn-danger btn-excluir-agenda-avaliacao" data-telefone="${i.telefone}" data-nome="${i.nome || i.telefone}" style="padding:.35rem .6rem;font-size:.75rem" title="Excluir da lista e remover a etiqueta Agendamento AF">🗑️</button>
+                    </td>
+                </tr>
+            `).join('')
+            : '<tr><td colspan="5" style="padding:1.5rem;text-align:center;color:var(--text-3)">Nenhuma avaliação agendada pra hoje.</td></tr>';
+    } catch (e) {
+        agendaAvaliacaoBody.innerHTML = '<tr><td colspan="5" style="padding:1.5rem;text-align:center;color:var(--text-3)">Erro ao carregar.</td></tr>';
+    }
+}
+
+agendaAvaliacaoBody?.addEventListener('click', async (e) => {
+    const btn = e.target.closest('.btn-excluir-agenda-avaliacao');
+    if (!btn) return;
+    if (!confirm(`Excluir "${btn.dataset.nome}" da lista e remover a etiqueta "Agendamento AF"?`)) return;
+    try {
+        const res = await fetch(`/api/agenda-avaliacao/${encodeURIComponent(btn.dataset.telefone)}`, { method: 'DELETE' });
+        if (!res.ok) throw new Error('Falha ao excluir');
+        showToast('Removido', '', 'success', 2000);
+        loadAgendaAvaliacao();
+    } catch (err) {
+        showToast('Erro', 'Não foi possível remover', 'error');
+    }
+});
+
+btnAgendaAvaliacao?.addEventListener('click', async () => {
+    btnAgendaAvaliacao.disabled = true;
+    btnAgendaAvaliacao.textContent = '⏳ Atualizando...';
+    try {
+        const res = await fetch('/api/agenda-avaliacao/atualizar', { method: 'POST' });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Erro ao iniciar');
+        if (agendaAvaliacaoResultado) agendaAvaliacaoResultado.innerHTML = '⏳ Buscando agenda do dia...';
+    } catch (e) {
+        showToast('Erro', e.message, 'error');
+        btnAgendaAvaliacao.disabled = false;
+        btnAgendaAvaliacao.textContent = '🔄 Atualizar Lista';
+    }
+});
+
+socket.on('agenda_avaliacao_progress', (p) => {
+    if (!p.running) return;
+    if (agendaAvaliacaoResultado) agendaAvaliacaoResultado.innerHTML = '⏳ Buscando agenda do dia...';
+});
+
+socket.on('agenda_avaliacao_done', (p) => {
+    if (btnAgendaAvaliacao) {
+        btnAgendaAvaliacao.disabled = false;
+        btnAgendaAvaliacao.textContent = '🔄 Atualizar Lista';
+    }
+    renderAgendaAvaliacaoResultado(p);
+    formatarUltimaAtualizacaoAgenda(p.ultima_atualizacao);
+    if (!p.erro) showToast('Agenda atualizada!', `${p.encontrados} aluno(s) etiquetado(s) com "Agendamento AF".`, 'success', 5000);
+    loadAgendaAvaliacao();
 });
 
 // =====================================
