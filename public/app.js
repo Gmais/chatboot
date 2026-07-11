@@ -446,9 +446,26 @@ const pageTitle    = document.getElementById('page-title');
 navBtns.forEach(btn => {
     btn.addEventListener('click', (e) => {
         e.preventDefault();
+        const secaoAnteriorId = document.querySelector('.page-section:not(.hidden)')?.id;
         navBtns.forEach(b => b.classList.remove('active'));
         btn.classList.add('active');
         const targetId = btn.getAttribute('data-target');
+        // Busca/filtro de contatos não fica "salvo" de uma visita pra outra —
+        // sair de Contatos ou Disparos limpa a barra de pesquisa e as etiquetas
+        // selecionadas, voltando a lista pro estado vazio de novo.
+        if (secaoAnteriorId && secaoAnteriorId !== targetId) {
+            if (secaoAnteriorId === 'contatos-section') {
+                if (contatosPageBusca) contatosPageBusca.value = '';
+                etiquetasFiltroAtivasPage.clear();
+                renderFiltroEtiquetasPage();
+                renderContatosPage();
+            } else if (secaoAnteriorId === 'disparos-section') {
+                if (contatosBusca) contatosBusca.value = '';
+                etiquetasFiltroAtivas.clear();
+                renderFiltroEtiquetas();
+                renderContatos();
+            }
+        }
         pageSections.forEach(s => s.classList.add('hidden'));
         const target = document.getElementById(targetId);
         if (target) target.classList.remove('hidden');
@@ -463,7 +480,7 @@ navBtns.forEach(btn => {
         if (targetId === 'integracoes-section') { loadPactoInadimplentes(); loadPactoVencemHoje(); loadAgendaAvaliacao(); }
         if (targetId === 'automacoes-section') { loadEtiquetas().then(() => loadAutomacoes()); }
         if (targetId === 'mensagens-personalizadas-section') loadMensagensPersonalizadas();
-        if (targetId === 'disparos-section') { loadAcompanhamentoAutomacoes(); loadAutomacaoDelayConfig(); }
+        if (targetId === 'disparos-section') { loadAcompanhamentoAutomacoes(); loadAutomacaoDelayConfig(); carregarMensagensPersonalizadasParaDisparo(); }
     });
 });
 
@@ -1248,6 +1265,11 @@ const etiquetasFiltroAtivasPage = new Set();
 
 function contatosFiltrados() {
     const termo = (contatosBusca?.value || '').trim().toLowerCase();
+    // Sem busca digitada nem etiqueta selecionada, a lista fica vazia de
+    // propósito — evita carregar/renderizar milhares de contatos de cara toda
+    // vez que a tela abre. Etiqueta sozinha (sem digitar nada) ainda funciona,
+    // pra continuar dando pra "navegar" por etiqueta.
+    if (!termo && etiquetasFiltroAtivas.size === 0) return [];
     return todosContatos.filter(c => {
         const bateBusca = !termo || c.nome.toLowerCase().includes(termo) || c.telefone.includes(termo) || (c.matricula || '').toLowerCase().includes(termo);
         const bateEtiqueta = etiquetasFiltroAtivas.size === 0 || c.etiquetas.some(e => etiquetasFiltroAtivas.has(e.id));
@@ -1318,7 +1340,8 @@ function renderContatos() {
     if (!contatosLista) return;
     const filtrados = contatosFiltrados();
     if (filtrados.length === 0) {
-        contatosLista.innerHTML = '<p style="color:var(--text-3);text-align:center;padding:2rem">Nenhum contato encontrado.</p>';
+        const semFiltro = !(contatosBusca?.value || '').trim() && etiquetasFiltroAtivas.size === 0;
+        contatosLista.innerHTML = `<p style="color:var(--text-3);text-align:center;padding:2rem">${semFiltro ? 'Busque por nome, telefone ou etiqueta pra ver os contatos.' : 'Nenhum contato encontrado.'}</p>`;
         atualizarContadorContatos();
         return;
     }
@@ -1337,6 +1360,9 @@ function renderContatos() {
 
 function contatosPageFiltrados() {
     const termo = (contatosPageBusca?.value || '').trim().toLowerCase();
+    // Mesma lógica de contatosFiltrados() — lista vazia até digitar algo ou
+    // escolher uma etiqueta, pra não carregar todo mundo de cara.
+    if (!termo && etiquetasFiltroAtivasPage.size === 0) return [];
     return todosContatos.filter(c => {
         const bateBusca = !termo || c.nome.toLowerCase().includes(termo) || c.telefone.includes(termo) || (c.matricula || '').toLowerCase().includes(termo);
         const bateEtiqueta = etiquetasFiltroAtivasPage.size === 0 || c.etiquetas.some(e => etiquetasFiltroAtivasPage.has(e.id));
@@ -1348,7 +1374,8 @@ function renderContatosPage() {
     if (!contatosPageTableBody) return;
     const filtrados = contatosPageFiltrados();
     if (filtrados.length === 0) {
-        contatosPageTableBody.innerHTML = '<tr><td colspan="6" style="padding:2rem;text-align:center;color:var(--text-3)">Nenhum contato encontrado.</td></tr>';
+        const semFiltro = !(contatosPageBusca?.value || '').trim() && etiquetasFiltroAtivasPage.size === 0;
+        contatosPageTableBody.innerHTML = `<tr><td colspan="6" style="padding:2rem;text-align:center;color:var(--text-3)">${semFiltro ? 'Busque por nome, telefone ou etiqueta pra ver os contatos.' : 'Nenhum contato encontrado.'}</td></tr>`;
         return;
     }
     contatosPageTableBody.innerHTML = filtrados.map(c => {
@@ -1666,6 +1693,34 @@ broadcastFile?.addEventListener('change', () => {
         broadcastFileName.textContent = `✅ ${broadcastFile.files[0].name}`;
         broadcastUpload.classList.add('has-file');
     }
+});
+
+// ---- Seletor de Mensagem Personalizada (preenche o campo de texto) ----
+const broadcastMensagemSelect = document.getElementById('broadcast-mensagem-personalizada');
+const broadcastMensagemAviso = document.getElementById('broadcast-mensagem-personalizada-aviso');
+const broadcastMensagem = document.getElementById('broadcast-mensagem');
+let mensagensPersonalizadasParaDisparo = [];
+
+async function carregarMensagensPersonalizadasParaDisparo() {
+    if (!broadcastMensagemSelect) return;
+    try {
+        const res = await fetch('/api/mensagens-personalizadas');
+        mensagensPersonalizadasParaDisparo = await res.json();
+        broadcastMensagemSelect.innerHTML = '<option value="">✏️ Escrever manualmente...</option>' +
+            mensagensPersonalizadasParaDisparo.map(m => `<option value="${m.id}">${m.nome}</option>`).join('');
+    } catch (e) {
+        console.error('Erro ao carregar mensagens personalizadas pra disparo', e);
+    }
+}
+
+broadcastMensagemSelect?.addEventListener('change', () => {
+    const id = Number(broadcastMensagemSelect.value);
+    if (broadcastMensagemAviso) broadcastMensagemAviso.style.display = 'none';
+    if (!id) return;
+    const m = mensagensPersonalizadasParaDisparo.find(x => x.id === id);
+    if (!m) return;
+    if (broadcastMensagem) broadcastMensagem.value = m.texto || '';
+    if (m.media_path && broadcastMensagemAviso) broadcastMensagemAviso.style.display = 'block';
 });
 
 function updateProgressUI(p) {
