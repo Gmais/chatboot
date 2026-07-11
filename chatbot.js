@@ -3386,6 +3386,16 @@ async function enviarEregistrar(telefone, conteudo) {
         await simularDigitando(client.getChatById(telefone));
         await delay(calcularDelayDigitacao(conteudo));
     }
+    // Rechecagem: entre decidir responder e chegar aqui pode ter se passado até
+    // ~1min (Delay configurável + simulação de digitação) — se o operador
+    // assumiu a conversa nesse meio tempo, o robô não pode mais mandar nada
+    // (checar isso só no início do processamento da mensagem não é suficiente
+    // com o Delay configurável habilitado).
+    const numLimpoCheck = telefone.replace('@c.us', '').replace('@lid', '');
+    if (await db.get('SELECT 1 FROM conversas_humano WHERE telefone = ?', numLimpoCheck)) {
+        console.log(`⏸️ Envio cancelado — conversa com ${numLimpoCheck} foi assumida por humano durante o atraso configurado.`);
+        return null;
+    }
     const resultado = await client.sendMessage(telefone, conteudo);
     await registrarMensagemEnviada(telefone, typeof conteudo === 'string' ? conteudo : '[mídia]', null, resultado.id?._serialized);
     return resultado;
@@ -3826,6 +3836,17 @@ async function enviarResposta(msg, conteudo, opcoes = {}) {
             await simularDigitando(msg.getChat());
             await delay(calcularDelayDigitacao(conteudo));
         }
+        // Rechecagem: entre decidir responder e chegar aqui pode ter se passado
+        // até ~1min (Delay configurável + simulação de digitação) — se o
+        // operador assumiu a conversa nesse meio tempo, o robô não pode mais
+        // mandar nada (checar isso só no início do processamento da mensagem
+        // não é suficiente com o Delay configurável habilitado).
+        const telefoneCheck = await resolvePhone(msg);
+        const numLimpoCheck = telefoneCheck.replace('@c.us', '').replace('@lid', '');
+        if (await db.get('SELECT 1 FROM conversas_humano WHERE telefone = ?', numLimpoCheck)) {
+            console.log(`⏸️ Envio cancelado — conversa com ${numLimpoCheck} foi assumida por humano durante o atraso configurado.`);
+            return null;
+        }
         const sent = await msg.reply(conteudo, undefined, opcoes);
         console.log(`✅ Resposta entregue.`);
         return sent;
@@ -3838,6 +3859,34 @@ async function enviarResposta(msg, conteudo, opcoes = {}) {
         }
         return null;
     }
+}
+
+// Mensagem "só emoji"/reconhecimento curto (👍, "vlw", "obrigado"...) não
+// precisa de IA — modelos pequenos (ex: llama-3.1-8b-instant) às vezes
+// "viajam" tentando montar uma resposta elaborada pra uma entrada tão vazia
+// e acabam ecoando/alucinando meta-instruções (foi o que aconteceu: o robô
+// mandou pro cliente um texto tipo "vamos criar uma conversa... mensagem do
+// Fulano:" — claramente vazamento do prompt interno, não uma resposta de
+// verdade). Mais seguro simplesmente não chamar a IA nesses casos.
+const PALAVRAS_TRIVIAIS = ['ok', 'okay', 'blz', 'vlw', 'valeu', 'obrigado', 'obrigada', 'obg', 'flw', 'tmj', 'show', 'top', 'otimo', 'ótimo', 'beleza', 'certo', 'entendi'];
+function ehMensagemTrivial(texto) {
+    const semEspaco = (texto || '').trim();
+    if (!semEspaco) return true;
+    // Faixa À-ÿ cobre as letras acentuadas do latin-1 (á, é, ç, õ...) — não
+    // precisa remover acento pra checar "tem letra", só pra comparar a palavra.
+    const temLetra = /[a-zA-ZÀ-ÿ]/.test(semEspaco);
+    if (!temLetra) return true; // só emoji/pontuação/figurinha
+    const soLetras = semEspaco.replace(/[^a-zA-ZÀ-ÿ]/g, '');
+    return soLetras.length <= 12 && PALAVRAS_TRIVIAIS.includes(soLetras.toLowerCase());
+}
+
+// Segunda linha de defesa: mesmo evitando chamar a IA pra mensagens triviais
+// (acima), um modelo ainda pode ocasionalmente vazar meta-instrução em vez de
+// responder de verdade pro cliente. Descarta a resposta se ela parecer isso
+// — melhor não mandar nada do que mandar um texto claramente quebrado/interno.
+const PADRAO_VAZAMENTO_PROMPT = /vamos criar uma conversa|responder a cada mensagem dele como|mensagem do \w+:|regras e o tom de voz estabelecidos|como a consultora maria/i;
+function respostaIAParecevazamento(texto) {
+    return PADRAO_VAZAMENTO_PROMPT.test(texto || '');
 }
 
 client.on('message', async (msg) => {
@@ -3996,6 +4045,11 @@ client.on('message', async (msg) => {
             if (matched) { regraAtiva = regra; break; }
         }
 
+        if (!regraAtiva && ehMensagemTrivial(texto)) {
+            io.emit('bot_digitando', { telefone: numLimpo, ativo: false });
+            return;
+        }
+
         if (!regraAtiva) {
             const confRows = await db.all('SELECT * FROM configuracoes');
             const config = {};
@@ -4072,6 +4126,16 @@ client.on('message', async (msg) => {
                             .replace(/\[nome\]/gi, nomeExibir)
                             .replace(/\{nome\}/gi, nomeExibir)
                         : respostaIARaw;
+
+                    // Sanity-check: se a resposta parecer vazamento de meta-instrução
+                    // (ex: "vamos criar uma conversa... mensagem do Fulano:") em vez de
+                    // uma resposta de verdade pro cliente, descarta — não põe no
+                    // histórico (senão o próximo turno herda a bagunça) nem manda.
+                    if (respostaIAParecevazamento(respostaIA)) {
+                        console.error(`🧨 IA (${provider}/${modelo}) gerou resposta com cara de vazamento de prompt pra ${numLimpo} — descartada, nada enviado. Trecho: "${respostaIA.slice(0, 120)}..."`);
+                        io.emit('bot_digitando', { telefone: numLimpo, ativo: false });
+                        return;
+                    }
 
                     history.push({ role: 'assistant', content: respostaIA });
 
