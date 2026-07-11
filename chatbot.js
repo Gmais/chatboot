@@ -1559,17 +1559,29 @@ async function dispararMensagensDaAutomacao(automacaoId) {
 
     let primeiro = true;
     for (const estado of pendentes) {
-        if (!primeiro) await delay(await obterProximoDelayAutomacao());
+        // "primeiro" precisa virar false ANTES de qualquer await — se o passo
+        // de delay/sorteio de mensagem abaixo falhar (ver catch mais adiante),
+        // o próximo contato da fila ainda precisa saber que não é mais o 1º.
+        const ehPrimeiro = primeiro;
         primeiro = false;
 
-        let mensagemId = estado.mensagem_id;
-        if (!mensagemId) {
-            if (pool.length === 0) continue; // nenhuma mensagem configurada nas etapas — nada pra mandar
-            mensagemId = pool[Math.floor(Math.random() * pool.length)].id;
-            await db.run('UPDATE contato_automacao_estado SET mensagem_id = ? WHERE telefone = ? AND automacao_id = ?', [mensagemId, estado.telefone, automacaoId]);
-        }
-
         try {
+            // O cálculo do delay e o sorteio/gravação da mensagem também entram
+            // no try — antes ficavam FORA dele, e uma falha aqui (ex: erro
+            // pontual de leitura no SQLite) derrubava a função inteira sem
+            // exceção tratada, abandonando o resto da fila em silêncio: os
+            // contatos seguintes ficavam sem mensagem sorteada E sem erro
+            // registrado (foi exatamente o que aconteceu com a automação
+            // Aniversariante: parou no meio, sem nenhum log do motivo).
+            if (!ehPrimeiro) await delay(await obterProximoDelayAutomacao());
+
+            let mensagemId = estado.mensagem_id;
+            if (!mensagemId) {
+                if (pool.length === 0) { io.emit('automacoes_atualizadas'); continue; } // nenhuma mensagem configurada nas etapas — nada pra mandar
+                mensagemId = pool[Math.floor(Math.random() * pool.length)].id;
+                await db.run('UPDATE contato_automacao_estado SET mensagem_id = ? WHERE telefone = ? AND automacao_id = ?', [mensagemId, estado.telefone, automacaoId]);
+            }
+
             // client.sendMessage / resolverChatId (getNumberId) dependem do
             // WhatsApp Web via Puppeteer — se a página ficar num estado esquisito,
             // essas chamadas podem TRAVAR sem nunca resolver nem rejeitar (nem
