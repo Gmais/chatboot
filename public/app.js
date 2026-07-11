@@ -26,6 +26,19 @@ btnSidebarToggle?.addEventListener('click', () => {
 });
 
 // =====================================
+// MENU MOBILE — em telas de celular a sidebar vira um painel off-canvas
+// (escondido por padrão, desliza por cima do conteúdo quando aberto).
+// =====================================
+const btnMobileMenu = document.getElementById('btn-mobile-menu');
+const sidebarBackdrop = document.getElementById('sidebar-backdrop');
+
+function fecharMenuMobile() {
+    document.body.classList.remove('mobile-menu-open');
+}
+btnMobileMenu?.addEventListener('click', () => document.body.classList.toggle('mobile-menu-open'));
+sidebarBackdrop?.addEventListener('click', fecharMenuMobile);
+
+// =====================================
 // TOAST NOTIFICATIONS
 // =====================================
 function showToast(title, msg, type = 'success', duration = 4000) {
@@ -446,6 +459,7 @@ const pageTitle    = document.getElementById('page-title');
 navBtns.forEach(btn => {
     btn.addEventListener('click', (e) => {
         e.preventDefault();
+        fecharMenuMobile();
         const secaoAnteriorId = document.querySelector('.page-section:not(.hidden)')?.id;
         navBtns.forEach(b => b.classList.remove('active'));
         btn.classList.add('active');
@@ -1811,6 +1825,7 @@ const CM = (() => {
     const chatHeaderStatus = document.getElementById('chat-header-status');
     const chatHeaderTags = document.getElementById('chat-header-tags');
     const chatHeaderAddTag = document.getElementById('chat-header-add-tag');
+    const btnChatVoltarMobile = document.getElementById('btn-chat-voltar-mobile');
     const btnChatAssumir = document.getElementById('btn-chat-assumir');
     const btnChatResolver = document.getElementById('btn-chat-resolver');
     const btnChatExcluir = document.getElementById('btn-chat-excluir');
@@ -1997,6 +2012,10 @@ const CM = (() => {
         const c = contacts.get(telefone);
         const nome = c ? c.nome : telefone;
 
+        // Em tela de celular, a lista e a janela do chat ocupam a tela
+        // inteira uma de cada vez — abrir um contato troca pra janela do chat.
+        document.querySelector('.chat-layout')?.classList.add('mobile-chat-open');
+
         // Atualiza header
         if (chatHeader)         chatHeader.style.display = 'flex';
         if (chatPlaceholder)    chatPlaceholder.style.display = 'none';
@@ -2032,6 +2051,10 @@ const CM = (() => {
         btnChatAssumir.textContent = assumida ? '🤖 Devolver ao Robô' : '🙋 Assumir Conversa';
         btnChatAssumir.className = assumida ? 'btn-danger' : 'btn-secondary';
     }
+
+    btnChatVoltarMobile?.addEventListener('click', () => {
+        document.querySelector('.chat-layout')?.classList.remove('mobile-chat-open');
+    });
 
     btnChatAssumir?.addEventListener('click', async () => {
         if (!activePhone) return;
@@ -2076,6 +2099,7 @@ const CM = (() => {
             if (!res.ok) throw new Error('Falha ao excluir');
             contacts.delete(activePhone);
             activePhone = null;
+            document.querySelector('.chat-layout')?.classList.remove('mobile-chat-open');
             if (chatHeader) chatHeader.style.display = 'none';
             if (chatMessages) chatMessages.style.display = 'none';
             if (chatInputBar) chatInputBar.style.display = 'none';
@@ -2435,6 +2459,7 @@ const CM = (() => {
             contacts.delete(telefone);
             if (activePhone === telefone) {
                 activePhone = null;
+                document.querySelector('.chat-layout')?.classList.remove('mobile-chat-open');
                 if (chatHeader) chatHeader.style.display = 'none';
                 if (chatMessages) chatMessages.style.display = 'none';
                 if (chatInputBar) chatInputBar.style.display = 'none';
