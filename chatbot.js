@@ -3021,28 +3021,63 @@ app.post('/api/agenda-avaliacao/atualizar', async (req, res) => {
     processarAgendaAvaliacao().catch(e => console.error('Erro ao processar agenda de avaliação:', e.message));
 });
 
-// Roda sozinha 1x por dia, na janela das 8h (America/Sao_Paulo) — checa a
-// cada 30min (mesmo padrão dos outros jobs periódicos) se já passou das 8h
-// hoje e ainda não rodou hoje; se sim, dispara. Guarda a data da última
-// execução automática em `configuracoes` pra sobreviver a deploy/restart
-// (senão um reinício logo depois das 8h faria rodar nunca, ou várias vezes).
+// true pra segunda a sexta (America/Sao_Paulo) — as duas varreduras
+// automáticas abaixo só fazem sentido em dia útil (é quando tem aula/
+// avaliação/atendimento; sábado e domingo não precisa).
+function ehDiaUtil(momentObj) {
+    const dia = momentObj.day(); // 0 = domingo, 6 = sábado
+    return dia >= 1 && dia <= 5;
+}
+
+// Roda sozinha 1x por dia útil, na janela das 06:00 (America/Sao_Paulo) —
+// checa a cada 5min (fino o bastante pra respeitar o intervalo de 5min em
+// relação à varredura de Situação Financeira, às 06:05, sem colidir no
+// mesmo tick) se já passou das 06:00 hoje e ainda não rodou hoje; se sim,
+// dispara. Guarda a data da última execução automática em `configuracoes`
+// pra sobreviver a deploy/restart (senão um reinício logo depois das 06:00
+// faria rodar nunca, ou várias vezes).
 async function checarAgendaAvaliacaoAutomatica() {
     if (!db) return;
     try {
         const agora = moment.tz('America/Sao_Paulo');
-        if (agora.hours() < 8) return;
+        if (!ehDiaUtil(agora)) return;
+        if (agora.hours() * 60 + agora.minutes() < 6 * 60) return; // antes das 06:00
         const hojeYMD = agora.format('YYYY-MM-DD');
         const row = await db.get("SELECT valor FROM configuracoes WHERE chave = 'agenda_avaliacao_ultima_execucao_automatica'");
         if (row?.valor === hojeYMD) return; // já rodou hoje
         await db.run('INSERT OR REPLACE INTO configuracoes (chave, valor) VALUES (?, ?)', ['agenda_avaliacao_ultima_execucao_automatica', hojeYMD]);
-        console.log('📅 Agenda de Avaliação: rodando varredura automática das 8h...');
+        console.log('📅 Agenda de Avaliação: rodando varredura automática das 06:00...');
         await processarAgendaAvaliacao();
     } catch (e) {
         console.error('Erro ao checar varredura automática da Agenda de Avaliação:', e.message);
     }
 }
-setInterval(checarAgendaAvaliacaoAutomatica, 30 * 60 * 1000);
+setInterval(checarAgendaAvaliacaoAutomatica, 5 * 60 * 1000);
 setTimeout(checarAgendaAvaliacaoAutomatica, 110 * 1000);
+
+// Mesmo padrão acima, só que pro CRM Pacto — Situação Financeira, 5min depois
+// (06:05) — dá tempo da Agenda de Avaliação (mais rápida, uma chamada só)
+// terminar antes da varredura pesada do Pacto (milhares de chamadas,
+// demora minutos) começar, evitando as duas competindo por CPU/rede juntas.
+async function checarSituacaoFinanceiraAutomatica() {
+    if (!db) return;
+    try {
+        const agora = moment.tz('America/Sao_Paulo');
+        if (!ehDiaUtil(agora)) return;
+        if (agora.hours() * 60 + agora.minutes() < 6 * 60 + 5) return; // antes das 06:05
+        const hojeYMD = agora.format('YYYY-MM-DD');
+        const row = await db.get("SELECT valor FROM configuracoes WHERE chave = 'situacao_financeira_ultima_execucao_automatica'");
+        if (row?.valor === hojeYMD) return; // já rodou hoje
+        if (pactoInadimplentesRunning) return; // alguém já disparou na mão bem nessa hora — não empilha
+        await db.run('INSERT OR REPLACE INTO configuracoes (chave, valor) VALUES (?, ?)', ['situacao_financeira_ultima_execucao_automatica', hojeYMD]);
+        console.log('💰 CRM Pacto — Situação Financeira: rodando varredura automática das 06:05...');
+        await processarInadimplentesPacto();
+    } catch (e) {
+        console.error('Erro ao checar varredura automática da Situação Financeira:', e.message);
+    }
+}
+setInterval(checarSituacaoFinanceiraAutomatica, 5 * 60 * 1000);
+setTimeout(checarSituacaoFinanceiraAutomatica, 130 * 1000);
 
 // Expira etiquetas temporárias (contato_etiquetas.expira_em) de QUALQUER
 // etiqueta configurada com duracao_dias — genérico, não é só pro "Desafio":
