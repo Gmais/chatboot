@@ -1,5 +1,7 @@
 // =====================================
+
 // PATCH (deve rodar ANTES de qualquer require do whatsapp-web.js)
+
 // Ignora erro "already exists" ao registrar funções do Puppeteer.
 // Ocorre quando whatsapp-web.js reexpõe os mesmos bindings (ex: onAddMessageEvent,
 // onAuthAppStateChangedEvent) durante reinicializações internas do Store.
@@ -22,7 +24,7 @@ try {
         }
     };
     console.log('✅ Patch aplicado (removeBinding via CDP).');
-} catch (_) {}
+} catch (_) { }
 
 // =====================================
 // PATCH 2 — CAUSA RAIZ do "conecta mas para de receber mensagem depois de um tempo"
@@ -51,7 +53,7 @@ try {
         }
     };
     console.log('✅ Patch 2 aplicado (attachEventListeners roda só 1x por processo).');
-} catch (_) {}
+} catch (_) { }
 
 // =====================================
 // IMPORTAÇÕES
@@ -382,56 +384,57 @@ async function initDB() {
         );
         CREATE INDEX IF NOT EXISTS idx_programacao_acoes_prog ON programacao_acoes(programacao_id);
     `);
+    try { await db.exec(`ALTER TABLE programacao_acoes ADD COLUMN intervalo_depois_segundos INTEGER DEFAULT 60`); } catch (e) { }
 
     // Adiciona colunas novas se migrando de versão anterior
-    try { await db.exec(`ALTER TABLE respostas ADD COLUMN media_path TEXT DEFAULT NULL`); } catch(e) {}
-    try { await db.exec(`ALTER TABLE respostas ADD COLUMN media_tipo TEXT DEFAULT NULL`); } catch(e) {}
-    try { await db.exec(`ALTER TABLE respostas ADD COLUMN etiqueta_id INTEGER DEFAULT NULL`); } catch(e) {}
+    try { await db.exec(`ALTER TABLE respostas ADD COLUMN media_path TEXT DEFAULT NULL`); } catch (e) { }
+    try { await db.exec(`ALTER TABLE respostas ADD COLUMN media_tipo TEXT DEFAULT NULL`); } catch (e) { }
+    try { await db.exec(`ALTER TABLE respostas ADD COLUMN etiqueta_id INTEGER DEFAULT NULL`); } catch (e) { }
     // Nome do contato importado via planilha (antes de ele mandar a primeira mensagem)
-    try { await db.exec(`ALTER TABLE leads ADD COLUMN nome TEXT DEFAULT NULL`); } catch(e) {}
-    try { await db.exec(`ALTER TABLE leads ADD COLUMN origem TEXT DEFAULT NULL`); } catch(e) {}
+    try { await db.exec(`ALTER TABLE leads ADD COLUMN nome TEXT DEFAULT NULL`); } catch (e) { }
+    try { await db.exec(`ALTER TABLE leads ADD COLUMN origem TEXT DEFAULT NULL`); } catch (e) { }
     // Matrícula editada manualmente na Audiência — separada de vinculo_pacto (que
     // exige codigo_cliente/codigo_pessoa) pra permitir contato sem vínculo formal
     // com o Pacto ainda assim ter uma matrícula cadastrada (mesmo padrão do nome).
-    try { await db.exec(`ALTER TABLE leads ADD COLUMN matricula TEXT DEFAULT NULL`); } catch(e) {}
-    try { await db.exec(`ALTER TABLE leads ADD COLUMN data_nascimento TEXT DEFAULT NULL`); } catch(e) {}
+    try { await db.exec(`ALTER TABLE leads ADD COLUMN matricula TEXT DEFAULT NULL`); } catch (e) { }
+    try { await db.exec(`ALTER TABLE leads ADD COLUMN data_nascimento TEXT DEFAULT NULL`); } catch (e) { }
     // Se a etapa tem mensagens da biblioteca (Mensagens Personalizadas) anexadas
     // e mais de uma, manda uma diferente por contato em vez de sempre a mesma.
-    try { await db.exec(`ALTER TABLE automacao_etapas ADD COLUMN envio_aleatorio INTEGER DEFAULT 0`); } catch(e) {}
+    try { await db.exec(`ALTER TABLE automacao_etapas ADD COLUMN envio_aleatorio INTEGER DEFAULT 0`); } catch (e) { }
     // Mensagem sorteada (de entre as anexadas nas etapas da automação) que
     // esse contato específico vai receber quando o disparo dessa automação
     // rodar em Disparos — cada contato recebe UMA, escolhida na hora do
     // disparo se ainda não tiver uma atribuída, e mantém a mesma depois.
-    try { await db.exec(`ALTER TABLE contato_automacao_estado ADD COLUMN mensagem_id INTEGER DEFAULT NULL`); } catch(e) {}
+    try { await db.exec(`ALTER TABLE contato_automacao_estado ADD COLUMN mensagem_id INTEGER DEFAULT NULL`); } catch (e) { }
     // Guarda o motivo da última falha de envio (ex: "número não tem WhatsApp",
     // timeout) pra mostrar na tela de acompanhamento — antes só ficava no log
     // do servidor, staff não tinha como saber por que um contato específico
     // nunca recebe a mensagem sem pedir pra checar o Railway.
-    try { await db.exec(`ALTER TABLE contato_automacao_estado ADD COLUMN ultimo_erro TEXT DEFAULT NULL`); } catch(e) {}
+    try { await db.exec(`ALTER TABLE contato_automacao_estado ADD COLUMN ultimo_erro TEXT DEFAULT NULL`); } catch (e) { }
     // Janela de horário permitida pra automação mandar mensagem (HH:mm) — vazio = sem restrição
-    try { await db.exec(`ALTER TABLE automacoes ADD COLUMN horario_inicio TEXT DEFAULT NULL`); } catch(e) {}
-    try { await db.exec(`ALTER TABLE automacoes ADD COLUMN horario_fim TEXT DEFAULT NULL`); } catch(e) {}
+    try { await db.exec(`ALTER TABLE automacoes ADD COLUMN horario_inicio TEXT DEFAULT NULL`); } catch (e) { }
+    try { await db.exec(`ALTER TABLE automacoes ADD COLUMN horario_fim TEXT DEFAULT NULL`); } catch (e) { }
     // Se, ao concluir a última etapa, a etiqueta que disparou a automação some do contato (padrão: sim)
-    try { await db.exec(`ALTER TABLE automacoes ADD COLUMN remove_etiqueta_ao_concluir INTEGER DEFAULT 1`); } catch(e) {}
+    try { await db.exec(`ALTER TABLE automacoes ADD COLUMN remove_etiqueta_ao_concluir INTEGER DEFAULT 1`); } catch (e) { }
     // Contador histórico de quantos contatos já terminaram a automação inteira
-    try { await db.exec(`ALTER TABLE automacoes ADD COLUMN total_concluidos INTEGER DEFAULT 0`); } catch(e) {}
+    try { await db.exec(`ALTER TABLE automacoes ADD COLUMN total_concluidos INTEGER DEFAULT 0`); } catch (e) { }
     // Unidade do "Aguardar X" de cada etapa — 'dias' (produção) ou 'horas' (testar rápido)
-    try { await db.exec(`ALTER TABLE automacao_etapas ADD COLUMN unidade_tempo TEXT DEFAULT 'dias'`); } catch(e) {}
+    try { await db.exec(`ALTER TABLE automacao_etapas ADD COLUMN unidade_tempo TEXT DEFAULT 'dias'`); } catch (e) { }
     // Distingue mensagem enviada pelo robô (regra/IA/automação) de mensagem
     // digitada por um atendente humano (dashboard ou direto no celular vinculado)
     // — mostra o rótulo certo ("🤖 Bot" vs "👤 Atendente") no Bate Papo ao Vivo.
-    try { await db.exec(`ALTER TABLE conversas ADD COLUMN manual INTEGER DEFAULT 0`); } catch(e) {}
+    try { await db.exec(`ALTER TABLE conversas ADD COLUMN manual INTEGER DEFAULT 0`); } catch (e) { }
     // Caminho do arquivo (imagem/documento/vídeo/figurinha) salvo em
     // public/uploads pra poder ser aberto clicando na bolha do Bate Papo ao
     // Vivo — antes a mídia recebida nunca era baixada, só o rótulo do tipo.
-    try { await db.exec(`ALTER TABLE conversas ADD COLUMN media_path TEXT DEFAULT NULL`); } catch(e) {}
+    try { await db.exec(`ALTER TABLE conversas ADD COLUMN media_path TEXT DEFAULT NULL`); } catch (e) { }
     // Etiqueta temporária (ex: "Desafio 30 dias"): duracao_dias define quanto
     // tempo ela dura DESDE QUE APLICADA em CADA contato — a etiqueta em si
     // nunca "acaba" (continua existindo pra aplicar em gente nova), só a
     // vinculação com aquele contato específico expira sozinha. NULL = etiqueta
     // permanente (comportamento de sempre, sem mudança pra etiquetas atuais).
-    try { await db.exec(`ALTER TABLE etiquetas ADD COLUMN duracao_dias INTEGER DEFAULT NULL`); } catch(e) {}
-    try { await db.exec(`ALTER TABLE contato_etiquetas ADD COLUMN expira_em DATETIME DEFAULT NULL`); } catch(e) {}
+    try { await db.exec(`ALTER TABLE etiquetas ADD COLUMN duracao_dias INTEGER DEFAULT NULL`); } catch (e) { }
+    try { await db.exec(`ALTER TABLE contato_etiquetas ADD COLUMN expira_em DATETIME DEFAULT NULL`); } catch (e) { }
     // "Mensagens Personalizadas" vira biblioteca de VÁRIAS campanhas (não só
     // aniversário) — categoria identifica qual "Campanha Rápida" (Aniversariantes,
     // Inadimplentes, etc) a mensagem pertence. Migração "importa" as que já
@@ -445,19 +448,19 @@ async function initDB() {
         await db.run(`UPDATE mensagens_personalizadas SET categoria = 'aniversariantes' WHERE categoria IS NULL AND nome LIKE 'Aniversário%'`);
         await db.run(`UPDATE mensagens_personalizadas SET categoria = 'inadimplentes' WHERE categoria IS NULL AND nome LIKE 'Cobrança%'`);
         await db.run(`UPDATE mensagens_personalizadas SET categoria = 'ex-alunos' WHERE categoria IS NULL AND (nome LIKE 'Ex Aluno%' OR nome LIKE 'Ex-Aluno%')`);
-    } catch(e) {}
+    } catch (e) { }
     // Feature "Fluxos" (Flow Builder visual) removida a pedido — limpeza única
     // das tabelas que sobraram de quando ela existia.
-    try { await db.exec(`DROP TABLE IF EXISTS fluxos`); } catch(e) {}
-    try { await db.exec(`DROP TABLE IF EXISTS contato_estado_fluxo`); } catch(e) {}
+    try { await db.exec(`DROP TABLE IF EXISTS fluxos`); } catch (e) { }
+    try { await db.exec(`DROP TABLE IF EXISTS contato_estado_fluxo`); } catch (e) { }
     // Garante tabela conversas em instalações antigas
-    try { await db.exec(`CREATE TABLE IF NOT EXISTS conversas (id INTEGER PRIMARY KEY AUTOINCREMENT, telefone TEXT NOT NULL, nome TEXT, direcao TEXT NOT NULL, texto TEXT, tipo TEXT DEFAULT 'text', ts DATETIME DEFAULT CURRENT_TIMESTAMP, lida INTEGER DEFAULT 0)`); } catch(e) {}
-    try { await db.exec(`CREATE INDEX IF NOT EXISTS idx_conversas_tel ON conversas(telefone, ts)`); } catch(e) {}
-    try { await db.exec(`CREATE INDEX IF NOT EXISTS idx_conversas_ts ON conversas(ts DESC)`); } catch(e) {}
+    try { await db.exec(`CREATE TABLE IF NOT EXISTS conversas (id INTEGER PRIMARY KEY AUTOINCREMENT, telefone TEXT NOT NULL, nome TEXT, direcao TEXT NOT NULL, texto TEXT, tipo TEXT DEFAULT 'text', ts DATETIME DEFAULT CURRENT_TIMESTAMP, lida INTEGER DEFAULT 0)`); } catch (e) { }
+    try { await db.exec(`CREATE INDEX IF NOT EXISTS idx_conversas_tel ON conversas(telefone, ts)`); } catch (e) { }
+    try { await db.exec(`CREATE INDEX IF NOT EXISTS idx_conversas_ts ON conversas(ts DESC)`); } catch (e) { }
     // Limpa contatos falsos de canais/listas de transmissão (@broadcast) que
     // entraram antes do filtro cobrir esse padrão — poluíam a lista de Conversas.
-    try { await db.exec(`DELETE FROM conversas WHERE telefone LIKE '%@broadcast'`); } catch(e) {}
-    try { await db.exec(`DELETE FROM leads WHERE telefone LIKE '%@broadcast'`); } catch(e) {}
+    try { await db.exec(`DELETE FROM conversas WHERE telefone LIKE '%@broadcast'`); } catch (e) { }
+    try { await db.exec(`DELETE FROM leads WHERE telefone LIKE '%@broadcast'`); } catch (e) { }
 
     // stats.sent reflete a contagem real de mensagens registradas em mensagens_enviadas,
     // não mais um contador solto — assim o número do dashboard sempre bate com o histórico exibido.
@@ -482,12 +485,12 @@ async function initDB() {
 const nomeContatos = new Map();
 
 async function resolverNomeContato(telefone) {
-    const num = telefone.replace('@c.us','').replace('@lid','');
+    const num = telefone.replace('@c.us', '').replace('@lid', '');
     if (nomeContatos.has(num)) return nomeContatos.get(num);
     try {
         const vinculo = await db.get('SELECT nome FROM vinculo_pacto WHERE telefone LIKE ?', [`%${num}%`]);
         if (vinculo?.nome) { nomeContatos.set(num, vinculo.nome); return vinculo.nome; }
-    } catch(_) {}
+    } catch (_) { }
     try {
         // Contato criado manualmente ou importado por planilha — nunca mandou
         // mensagem, então não tem pushname nem entrada em vinculo_pacto, mas já
@@ -497,7 +500,7 @@ async function resolverNomeContato(telefone) {
             [num, `${num}@c.us`, `${num}@lid`]
         );
         if (lead?.nome) { nomeContatos.set(num, lead.nome); return lead.nome; }
-    } catch(_) {}
+    } catch (_) { }
     return num;
 }
 
@@ -507,7 +510,7 @@ async function resolverNomeContato(telefone) {
 // devolve string vazia — o placeholder some da mensagem em vez de mostrar "null".
 const matriculaContatos = new Map();
 async function resolverMatriculaContato(telefone) {
-    const num = telefone.replace('@c.us','').replace('@lid','');
+    const num = telefone.replace('@c.us', '').replace('@lid', '');
     if (matriculaContatos.has(num)) return matriculaContatos.get(num);
     try {
         // Matrícula digitada manualmente em Contatos tem prioridade (mesma regra
@@ -518,7 +521,7 @@ async function resolverMatriculaContato(telefone) {
             [num, `${num}@c.us`, `${num}@lid`]
         );
         if (lead?.matricula) { matriculaContatos.set(num, lead.matricula); return lead.matricula; }
-    } catch (_) {}
+    } catch (_) { }
     try {
         const vinculo = await db.get('SELECT matricula FROM vinculo_pacto WHERE telefone LIKE ?', [`%${num}%`]);
         const matricula = vinculo?.matricula || '';
@@ -570,7 +573,7 @@ const TIPO_LABEL_FALLBACK = {
 // mensagem sincronizada em lote (ex: reconexão trazendo histórico) fica com
 // o horário de quando o robô processou, não o horário real da mensagem.
 async function salvarNaConversa(telefone, nome, direcao, texto, tipo = 'text', tsReal = null, manual = false, mediaPath = null) {
-    const num = telefone.replace('@c.us','').replace('@lid','');
+    const num = telefone.replace('@c.us', '').replace('@lid', '');
     const ts = tsReal ? new Date(tsReal * 1000).toISOString() : new Date().toISOString();
     const lida = direcao === 'out' ? 1 : 0;
     await db.run(
@@ -658,7 +661,7 @@ function faixaCobreAgora(faixa, diaAtual, diaAnterior, minutoAtual) {
         return dias.includes(diaAtual) && minutoAtual >= minutoIni && minutoAtual < minutoFim;
     }
     return (dias.includes(diaAtual) && minutoAtual >= minutoIni) ||
-           (dias.includes(diaAnterior) && minutoAtual < minutoFim);
+        (dias.includes(diaAnterior) && minutoAtual < minutoFim);
 }
 
 // Resolve quem deve atender agora: o override manual manda mais que tudo; na
@@ -1086,7 +1089,7 @@ app.get('/api/estatisticas', async (req, res) => {
 app.get('/api/leads/export', async (req, res) => {
     const leads = await db.all('SELECT telefone, data_captura, mensagens_recebidas FROM leads ORDER BY data_captura DESC');
     const csv = ['Telefone,Data de Captura,Mensagens Recebidas',
-        ...leads.map(l => `${l.telefone.replace('@c.us','').replace('@lid','')},${l.data_captura},${l.mensagens_recebidas}`)
+        ...leads.map(l => `${l.telefone.replace('@c.us', '').replace('@lid', '')},${l.data_captura},${l.mensagens_recebidas}`)
     ].join('\n');
     res.setHeader('Content-Type', 'text/csv');
     res.setHeader('Content-Disposition', 'attachment; filename="leads.csv"');
@@ -1603,7 +1606,7 @@ app.delete('/api/etiquetas/:id', async (req, res) => {
 // etiqueta no sistema (regras automáticas, import de planilha e aplicação
 // manual).
 async function aplicarEtiquetaContato(telefone, etiquetaId) {
-    const numLimpo = telefone.replace('@c.us','').replace('@lid','');
+    const numLimpo = telefone.replace('@c.us', '').replace('@lid', '');
     const etiqueta = await db.get('SELECT duracao_dias FROM etiquetas WHERE id = ?', etiquetaId);
     const expiraEm = etiqueta?.duracao_dias
         ? new Date(Date.now() + etiqueta.duracao_dias * 86400000).toISOString()
@@ -1624,7 +1627,7 @@ async function aplicarEtiquetaContato(telefone, etiquetaId) {
 // Remove uma etiqueta de um contato e cancela qualquer automação em andamento
 // vinculada a ela — a etapa que ainda não foi cumprida não faz mais sentido.
 async function removerEtiquetaContato(telefone, etiquetaId) {
-    const numLimpo = telefone.replace('@c.us','').replace('@lid','');
+    const numLimpo = telefone.replace('@c.us', '').replace('@lid', '');
     await db.run('DELETE FROM contato_etiquetas WHERE telefone = ? AND etiqueta_id = ?', [numLimpo, etiquetaId]);
     io.emit('etiqueta_atualizada', { telefone: numLimpo });
     const automacoesLigadas = await db.all('SELECT id FROM automacoes WHERE etiqueta_id = ?', etiquetaId);
@@ -1745,7 +1748,7 @@ async function estimarDelayMedioAutomacao() {
 // chegou a receber a mesma mensagem ~10 vezes num loop antes de perceberem.
 // Envio de mensagem de verdade agora é 100% manual, pela aba Disparos.
 async function executarEtapaAutomacao(telefone, automacao, etapa) {
-    const numLimpo = telefone.replace('@c.us','').replace('@lid','');
+    const numLimpo = telefone.replace('@c.us', '').replace('@lid', '');
     await db.run(
         `INSERT INTO contato_automacao_estado (telefone, automacao_id, etapa_atual, entrou_em, proxima_execucao_em)
          VALUES (?, ?, ?, CURRENT_TIMESTAMP, NULL)
@@ -1815,7 +1818,7 @@ async function dispararMensagensDaAutomacao(automacaoId) {
             // WhatsApp Web via Puppeteer — se a página ficar num estado esquisito,
             // essas chamadas podem TRAVAR sem nunca resolver nem rejeitar (nem
             // sucesso, nem erro). Sem esse timeout, um único contato travado
-          // parava a fila inteira pra sempre, silenciosamente, até reiniciar o
+            // parava a fila inteira pra sempre, silenciosamente, até reiniciar o
             // servidor (foi exatamente o que aconteceu com a automação
             // Aniversariante: 4 contatos ficaram com mensagem sorteada mas nenhum
             // foi enviado, o "disparo_ativo" ficou true pra sempre).
@@ -2267,7 +2270,7 @@ app.get('/api/programacoes', async (req, res) => {
     try {
         const programacoes = await db.all('SELECT * FROM programacoes ORDER BY criado_em DESC');
         const acoesRows = await db.all(`
-            SELECT pa.programacao_id, pa.automacao_id, pa.ordem, a.nome, a.ativo AS automacao_ativa,
+            SELECT pa.programacao_id, pa.automacao_id, pa.ordem, pa.intervalo_depois_segundos, a.nome, a.ativo AS automacao_ativa,
                    e.nome AS etiqueta_nome, e.cor AS etiqueta_cor
             FROM programacao_acoes pa
             INNER JOIN automacoes a ON a.id = pa.automacao_id
@@ -2283,7 +2286,7 @@ app.get('/api/programacoes', async (req, res) => {
             ultima_execucao_em: p.ultima_execucao_em,
             acoes: acoesRows
                 .filter(a => a.programacao_id === p.id)
-                .map(a => ({ automacao_id: a.automacao_id, nome: a.nome, ativo: !!a.automacao_ativa, etiqueta_nome: a.etiqueta_nome, etiqueta_cor: a.etiqueta_cor })),
+                .map(a => ({ automacao_id: a.automacao_id, nome: a.nome, ativo: !!a.automacao_ativa, etiqueta_nome: a.etiqueta_nome, etiqueta_cor: a.etiqueta_cor, intervalo_depois_segundos: a.intervalo_depois_segundos ?? 60 })),
         }));
         res.json(resultado);
     } catch (err) {
@@ -2311,8 +2314,11 @@ app.post('/api/programacoes', async (req, res) => {
         );
         const programacaoId = result.lastID;
         let ordem = 0;
-        for (const automacaoId of acoes) {
-            await db.run('INSERT INTO programacao_acoes (programacao_id, automacao_id, ordem) VALUES (?, ?, ?)', [programacaoId, automacaoId, ordem++]);
+        for (const acao of acoes) {
+            await db.run(
+                'INSERT INTO programacao_acoes (programacao_id, automacao_id, ordem, intervalo_depois_segundos) VALUES (?, ?, ?, ?)',
+                [programacaoId, acao.automacao_id, ordem++, parseInt(acao.intervalo_depois_segundos) || 60]
+            );
         }
         res.json({ success: true, id: programacaoId });
     } catch (err) {
@@ -2343,8 +2349,11 @@ app.put('/api/programacoes/:id', async (req, res) => {
             if (!Array.isArray(acoes) || acoes.length === 0) return res.status(400).json({ error: 'Escolha pelo menos uma automação pra disparar.' });
             await db.run('DELETE FROM programacao_acoes WHERE programacao_id = ?', id);
             let ordem = 0;
-            for (const automacaoId of acoes) {
-                await db.run('INSERT INTO programacao_acoes (programacao_id, automacao_id, ordem) VALUES (?, ?, ?)', [id, automacaoId, ordem++]);
+            for (const acao of acoes) {
+                await db.run(
+                    'INSERT INTO programacao_acoes (programacao_id, automacao_id, ordem, intervalo_depois_segundos) VALUES (?, ?, ?, ?)',
+                    [id, acao.automacao_id, ordem++, parseInt(acao.intervalo_depois_segundos) || 60]
+                );
             }
         }
         res.json({ success: true });
@@ -2432,7 +2441,7 @@ app.get('/api/automacoes/:id/progresso', async (req, res) => {
         `);
         nomesConversas.forEach(n => nomePorTelefone.set(n.telefone, n.nome));
         const leadsComNome = await db.all('SELECT telefone, nome FROM leads WHERE nome IS NOT NULL');
-        leadsComNome.forEach(l => nomePorTelefone.set(l.telefone.replace('@c.us','').replace('@lid',''), l.nome));
+        leadsComNome.forEach(l => nomePorTelefone.set(l.telefone.replace('@c.us', '').replace('@lid', ''), l.nome));
 
         // Nome da mensagem já sorteada pra cada contato (sorteio é lento — só
         // acontece quando o disparo passa por ele, ver dispararMensagensDaAutomacao)
@@ -2620,7 +2629,7 @@ app.get('/api/conversas', async (req, res) => {
     try {
         const conversas = await listarConversasComEtiquetas();
         res.json(conversas);
-    } catch(err) {
+    } catch (err) {
         console.error('Erro /api/conversas:', err.message);
         res.status(500).json({ error: err.message });
     }
@@ -2717,7 +2726,7 @@ app.get('/api/conversas/:telefone', async (req, res) => {
         // precisa virar boolean de verdade aqui, senão a bolha nunca marca
         // "👤 Atendente" mesmo quando manual=1 no banco.
         res.json(msgs.map(m => ({ ...m, manual: !!m.manual })));
-    } catch(err) {
+    } catch (err) {
         res.status(500).json({ error: err.message });
     }
 });
@@ -2740,7 +2749,7 @@ app.post('/api/conversas/:telefone/enviar', async (req, res) => {
         const nome = await resolverNomeContato(telefone);
         await registrarMensagemEnviada(telefone, texto.trim(), nome, sentMsg.id?._serialized, true);
         res.json({ success: true });
-    } catch(err) {
+    } catch (err) {
         console.error('Erro envio manual:', err.message);
         res.status(500).json({ error: err.message });
     }
@@ -2753,7 +2762,7 @@ app.post('/api/conversas/:telefone/lida', async (req, res) => {
         await db.run('UPDATE conversas SET lida = 1 WHERE telefone = ? AND direcao = "in"', telefone);
         io.emit('conversa_lida', { telefone });
         res.json({ success: true });
-    } catch(err) {
+    } catch (err) {
         res.status(500).json({ error: err.message });
     }
 });
@@ -2772,7 +2781,7 @@ app.post('/api/conversas/:telefone/status', async (req, res) => {
         );
         io.emit('conversa_status_atualizada', { telefone, status });
         res.json({ success: true, status });
-    } catch(err) {
+    } catch (err) {
         res.status(500).json({ error: err.message });
     }
 });
@@ -2787,7 +2796,7 @@ app.delete('/api/conversas/:telefone', async (req, res) => {
         await db.run('DELETE FROM conversas_status WHERE telefone = ?', telefone);
         io.emit('conversa_excluida', { telefone });
         res.json({ success: true });
-    } catch(err) {
+    } catch (err) {
         res.status(500).json({ error: err.message });
     }
 });
@@ -2808,15 +2817,15 @@ app.post('/api/conversas/:telefone/enviar-arquivo', upload.single('arquivo'), as
 
         const tipo = req.file.mimetype.startsWith('image/') ? 'image'
             : req.file.mimetype.startsWith('video/') ? 'video'
-            : req.file.mimetype.startsWith('audio/') ? 'audio'
-            : 'document';
+                : req.file.mimetype.startsWith('audio/') ? 'audio'
+                    : 'document';
         const nome = await resolverNomeContato(telefone);
         const numeroLimpo = telefone.replace('@c.us', '').replace('@lid', '');
         marcarMensagemComoDoSistema(sentMsg.id?._serialized);
         await salvarNaConversa(numeroLimpo, nome, 'out', legenda || req.file.originalname, tipo, null, true, mediaUrl);
         io.emit('stats', stats);
         res.json({ success: true });
-    } catch(err) {
+    } catch (err) {
         console.error('Erro ao enviar arquivo:', err.message);
         res.status(500).json({ error: err.message });
     }
@@ -2891,11 +2900,11 @@ app.post('/api/broadcast/start', upload.single('media'), async (req, res) => {
                 }
 
                 broadcastProgress.sent++;
-                db.run('INSERT INTO disparo_envios_log (telefone, sucesso) VALUES (?, 1)', numero).catch(() => {});
+                db.run('INSERT INTO disparo_envios_log (telefone, sucesso) VALUES (?, 1)', numero).catch(() => { });
             } catch (err) {
                 console.error(`❌ Falha ao enviar para ${numero}:`, err.message);
                 broadcastProgress.failed++;
-                db.run('INSERT INTO disparo_envios_log (telefone, sucesso, erro) VALUES (?, 0, ?)', [numero, err.message]).catch(() => {});
+                db.run('INSERT INTO disparo_envios_log (telefone, sucesso, erro) VALUES (?, 0, ?)', [numero, err.message]).catch(() => { });
             }
             io.emit('broadcast_progress', broadcastProgress);
             await delay(proximoDelay());
@@ -3497,10 +3506,16 @@ async function checarProgramacoes() {
             if (minutoAtual < h * 60 + m) continue; // ainda não chegou o horário
             await db.run('UPDATE programacoes SET ultima_execucao_em = ? WHERE id = ?', [hojeYMD, prog.id]);
             console.log(`🗓️ Programação "${prog.nome}": disparando...`);
-            const acoes = await db.all('SELECT automacao_id FROM programacao_acoes WHERE programacao_id = ? ORDER BY ordem ASC', prog.id);
-            for (const acao of acoes) {
+            const acoes = await db.all('SELECT automacao_id, intervalo_depois_segundos FROM programacao_acoes WHERE programacao_id = ? ORDER BY ordem ASC', prog.id);
+            for (let i = 0; i < acoes.length; i++) {
+                const acao = acoes[i];
                 const resultado = await dispararAutomacaoComGuardas(acao.automacao_id, `Programação "${prog.nome}"`);
                 if (!resultado.ok) console.log(`⚠️ Programação "${prog.nome}": automação #${acao.automacao_id} não disparou — ${resultado.error}`);
+                // Espera o intervalo configurado ANTES da próxima ação da mesma
+                // programação — não espera o disparo atual terminar de enviar
+                // (isso roda em background e pode levar minutos sozinho), só
+                // espaça o INÍCIO de uma ação e da próxima.
+                if (i < acoes.length - 1) await delay((acao.intervalo_depois_segundos || 60) * 1000);
             }
         }
     } catch (e) {
@@ -3606,7 +3621,7 @@ app.post('/api/disconnect', async (req, res) => {
     try {
         const authDir = path.join(DATA_DIR, '.wwebjs_auth');
         if (fs.existsSync(authDir)) fs.rmSync(authDir, { recursive: true, force: true });
-    } catch (_) {}
+    } catch (_) { }
 
     // Tenta logout suave com timeout de 5s, depois força destroy e reinicia processo
     const exitClean = () => { console.log('🔄 Reiniciando para gerar novo QR Code...'); process.exit(1); };
@@ -3617,7 +3632,7 @@ app.post('/api/disconnect', async (req, res) => {
             new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 4000))
         ]);
     } catch (_) {
-        try { await client.destroy(); } catch (__) {}
+        try { await client.destroy(); } catch (__) { }
     }
     clearTimeout(timer);
     exitClean();
@@ -3628,13 +3643,13 @@ app.post('/api/disconnect', async (req, res) => {
 // =====================================
 
 // Mata qualquer Chrome residual de inicializações anteriores
-try { require('child_process').execSync('pkill -f chrome || true', { stdio: 'ignore' }); } catch (_) {}
+try { require('child_process').execSync('pkill -f chrome || true', { stdio: 'ignore' }); } catch (_) { }
 
 // Usa chromium do sistema se disponível (evita download do Chrome pelo puppeteer)
 const chromiumPath = (() => {
     const candidates = ['/usr/bin/chromium', '/usr/bin/chromium-browser', '/usr/bin/google-chrome'];
     for (const p of candidates) {
-        try { if (require('fs').existsSync(p)) return p; } catch (_) {}
+        try { if (require('fs').existsSync(p)) return p; } catch (_) { }
     }
     return undefined;
 })();
@@ -3705,7 +3720,7 @@ io.on('connection', async (socket) => {
         try {
             const conversas = await listarConversasComEtiquetas();
             socket.emit('all_conversas', conversas);
-        } catch(e) { console.error('Erro ao carregar conversas:', e.message); }
+        } catch (e) { console.error('Erro ao carregar conversas:', e.message); }
     }
 
     if (isConnected) socket.emit('ready');
@@ -3753,7 +3768,7 @@ client.on('ready', async () => {
     try {
         const info = client.info;
         if (info) console.log(`📱 Número conectado: ${info.wid.user} (${info.pushname})`);
-    } catch (_) {}
+    } catch (_) { }
 
     isConnected = true;
     currentQR = null;
@@ -3785,7 +3800,7 @@ client.on('ready', async () => {
                 console.log('🔄 Reiniciando cliente WhatsApp (servidor HTTP permanece no ar)...');
 
                 // Destroi o cliente atual silenciosamente
-                try { await client.destroy(); } catch (_) {}
+                try { await client.destroy(); } catch (_) { }
 
                 // Aguarda 4s e reinicializa — sem matar o processo Node!
                 setTimeout(async () => {
@@ -4076,7 +4091,7 @@ const FAIXAS_VELOCIDADE = {
 // OpenAI mudar a tabela de preços.
 const PRECO_POR_1K_TOKENS = {
     'gpt-3.5-turbo': { prompt: 0.0005, completion: 0.0015 },
-    'gpt-4o':        { prompt: 0.0025, completion: 0.01 },
+    'gpt-4o': { prompt: 0.0025, completion: 0.01 },
 };
 function custoEstimadoIA(provedor, modelo, promptTokens, completionTokens) {
     if (provedor === 'groq') return 0;
@@ -4120,7 +4135,7 @@ async function simularDigitando(chatOuGetter) {
             Promise.resolve(chatOuGetter).then(chat => chat.sendStateTyping()),
             new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 3000))
         ]);
-    } catch (_) {}
+    } catch (_) { }
 }
 
 // Transcreve áudio/nota de voz recebida via Whisper. Sempre usa a Groq
@@ -4229,7 +4244,7 @@ async function resolveJid(jid) {
             lidParaTelefone.set(jid, pnNormalizado);
             return pnNormalizado;
         }
-    } catch (_) {}
+    } catch (_) { }
     return jid;
 }
 async function resolvePhone(msg) {
@@ -4260,7 +4275,7 @@ async function resolverChatId(numeroLimpo) {
 client.on('message_create', async (msg) => {
     const dir = msg.fromMe ? '→ ENVIADA' : '← RECEBIDA';
     if (msg.from !== 'status@broadcast') {
-        console.log(`🔍 [DEBUG] ${dir} from=${msg.from} body="${(msg.body||'[sem texto]').slice(0,40)}"`);
+        console.log(`🔍 [DEBUG] ${dir} from=${msg.from} body="${(msg.body || '[sem texto]').slice(0, 40)}"`);
     }
 
     if (!msg.fromMe || !db) return;
@@ -4402,9 +4417,9 @@ client.on('message', async (msg) => {
         if (chat.isGroup) return;
 
         // Usa o ID interno do chat para envio — funciona com @lid e @c.us
-        const replyTo    = chat.id._serialized;
+        const replyTo = chat.id._serialized;
         const telefoneReal = await resolvePhone(msg);  // número limpo para salvar no banco
-        const numLimpo = telefoneReal.replace('@c.us','').replace('@lid','');
+        const numLimpo = telefoneReal.replace('@c.us', '').replace('@lid', '');
 
         // Tenta obter o nome do contato (pushname ou nome da agenda). NUNCA usa
         // contact.number como fallback: em contatos migrados pro sistema @lid do
@@ -4420,7 +4435,7 @@ client.on('message', async (msg) => {
             ]);
             nomeContato = contact.pushname || contact.name || numLimpo;
             nomeContatos.set(numLimpo, nomeContato);
-        } catch(_) {}
+        } catch (_) { }
 
         // BUG DE VERDADE encontrado: usava telefoneReal (ainda com @c.us/@lid
         // grudado) em vez de numLimpo — registerLead("5542984014994@c.us") e
@@ -4556,15 +4571,15 @@ client.on('message', async (msg) => {
             const config = {};
             confRows.forEach(r => config[r.chave] = r.valor);
 
-            const provider  = config.ia_provider || 'openai';
-            const iaAtiva   = config.openai_status === 'true';
-            const apiKey    = provider === 'groq' ? config.groq_api_key : config.openai_api_key;
-            const modelo    = provider === 'groq'
+            const provider = config.ia_provider || 'openai';
+            const iaAtiva = config.openai_status === 'true';
+            const apiKey = provider === 'groq' ? config.groq_api_key : config.openai_api_key;
+            const modelo = provider === 'groq'
                 ? (config.groq_modelo || 'llama-3.3-70b-versatile')
                 : (config.openai_modelo || 'gpt-3.5-turbo');
 
             if (iaAtiva && apiKey) {
-                
+
 
                 if (!global.chatHistory) global.chatHistory = new Map();
                 const history = global.chatHistory.get(telefoneReal) || [];
@@ -4606,7 +4621,7 @@ client.on('message', async (msg) => {
                     } catch (e) {
                         if (e.status === 429 && tentativa < 3) {
                             const espera = tentativa * 15000; // 15s, 30s
-                            console.log(`⏳ Rate limit (${provider}), tentativa ${tentativa}/3 — aguardando ${espera/1000}s...`);
+                            console.log(`⏳ Rate limit (${provider}), tentativa ${tentativa}/3 — aguardando ${espera / 1000}s...`);
                             await new Promise(r => setTimeout(r, espera));
                             return chamarIA(tentativa + 1);
                         }
@@ -4680,7 +4695,7 @@ client.on('message', async (msg) => {
         // — o servidor (Railway) roda em UTC, então new Date().getHours() daria errado.
         const hora = moment.tz('America/Sao_Paulo').hours();
         let saudacao = 'Olá';
-        if (hora >= 5  && hora < 12) saudacao = 'Bom dia';
+        if (hora >= 5 && hora < 12) saudacao = 'Bom dia';
         else if (hora >= 12 && hora < 18) saudacao = 'Boa tarde';
         else saudacao = 'Boa noite';
 

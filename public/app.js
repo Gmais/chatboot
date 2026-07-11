@@ -1079,6 +1079,17 @@ function renderProgramacaoAcoesForm() {
             `}
             <button type="button" class="btn-remove-programacao-acao" data-idx="${idx}" style="background:none;border:none;color:var(--red);font-size:1.1rem;cursor:pointer;padding:.2rem .5rem">✕</button>
         </div>
+        ${idx < programacaoAcoesForm.length - 1 ? `
+            <div style="display:flex;align-items:center;gap:.5rem;padding:.2rem 0 .2rem .8rem;border-left:2px solid rgba(255,255,255,0.08);margin-left:1rem">
+                <span style="color:var(--text-3);font-size:.75rem">⏱️ Esperar</span>
+                <select class="programacao-acao-intervalo" data-idx="${idx}" style="background:var(--input-bg);border:1px solid rgba(255,255,255,0.1);border-radius:var(--radius-sm);padding:.35rem .6rem;color:var(--text-1);font-family:'Inter',sans-serif;font-size:.78rem">
+                    <option value="60" ${(acao.intervaloDepoisSegundos || 60) === 60 ? 'selected' : ''}>1 minuto</option>
+                    <option value="180" ${acao.intervaloDepoisSegundos === 180 ? 'selected' : ''}>3 minutos</option>
+                    <option value="300" ${acao.intervaloDepoisSegundos === 300 ? 'selected' : ''}>5 minutos</option>
+                </select>
+                <span style="color:var(--text-3);font-size:.75rem">antes da próxima ação</span>
+            </div>
+        ` : ''}
     `).join('');
 }
 
@@ -1092,11 +1103,15 @@ function sincronizarProgramacaoAcoesDoDOM() {
         const idx = Number(sel.dataset.idx);
         if (programacaoAcoesForm[idx]) programacaoAcoesForm[idx].valor = sel.value;
     });
+    programacaoAcoesListaDiv.querySelectorAll('.programacao-acao-intervalo').forEach(sel => {
+        const idx = Number(sel.dataset.idx);
+        if (programacaoAcoesForm[idx]) programacaoAcoesForm[idx].intervaloDepoisSegundos = Number(sel.value);
+    });
 }
 
 btnAddProgramacaoAcao?.addEventListener('click', () => {
     sincronizarProgramacaoAcoesDoDOM();
-    programacaoAcoesForm.push({ tipo: 'automacao', valor: '' });
+    programacaoAcoesForm.push({ tipo: 'automacao', valor: '', intervaloDepoisSegundos: 60 });
     renderProgramacaoAcoesForm();
 });
 
@@ -1129,7 +1144,7 @@ async function abrirModalProgramacao(prog = null) {
     // Ao editar, toda ação salva já existente mostra como "Automação" com o
     // item certo pré-selecionado — "Disparo" é só um atalho de escolha na
     // criação, o banco sempre guarda o automacao_id final (ver btnProgramacaoSalvar).
-    programacaoAcoesForm = prog ? prog.acoes.map(a => ({ tipo: 'automacao', valor: a.automacao_id })) : [];
+    programacaoAcoesForm = prog ? prog.acoes.map(a => ({ tipo: 'automacao', valor: a.automacao_id, intervaloDepoisSegundos: a.intervalo_depois_segundos || 60 })) : [];
     renderProgramacaoDias();
     renderProgramacaoAcoesForm();
     modalProgramacao?.classList.add('open');
@@ -1161,9 +1176,9 @@ btnProgramacaoSalvar?.addEventListener('click', async () => {
                 showToast('Erro', `Nenhuma automação encontrada pra "${CAMPANHAS_INFO[acao.valor]?.label || acao.valor}". Crie ou renomeie uma automação com um nome parecido.`, 'error', 6000);
                 return;
             }
-            acoes.push(automacao.id);
+            acoes.push({ automacao_id: automacao.id, intervalo_depois_segundos: acao.intervaloDepoisSegundos || 60 });
         } else {
-            acoes.push(Number(acao.valor));
+            acoes.push({ automacao_id: Number(acao.valor), intervalo_depois_segundos: acao.intervaloDepoisSegundos || 60 });
         }
     }
 
