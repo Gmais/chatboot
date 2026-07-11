@@ -362,6 +362,11 @@ header h1 {
 .page-section { animation: fadeIn 0.35s ease; }
 .page-section.hidden { display: none !important; }
 
+/* Utilitário genérico pra esconder qualquer elemento (ex: seções de
+   relatório recolhíveis) — mais fraco que .page-section.hidden de propósito,
+   pra não precisar de !important em toda parte. */
+.hidden { display: none; }
+
 @keyframes fadeIn {
     from { opacity: 0; transform: translateY(8px); }
     to   { opacity: 1; transform: translateY(0); }

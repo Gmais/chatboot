@@ -2530,8 +2530,17 @@ socket.on('pacto_import_done', (p) => {
 // INTEGRAÇÃO — CRM PACTO (ATIVOS COM PARCELAS ATRASADAS)
 // =====================================
 const btnPactoInadimplentes = document.getElementById('btn-pacto-inadimplentes');
+const btnPactoInadimplentesToggle = document.getElementById('btn-pacto-inadimplentes-toggle');
+const pactoInadimplentesDetalhe = document.getElementById('pacto-inadimplentes-detalhe');
 const pactoInadimplentesResultado = document.getElementById('pacto-inadimplentes-resultado');
 const pactoInadimplentesUltimaAtualizacaoEl = document.getElementById('pacto-inadimplentes-ultima-atualizacao');
+
+// Relatório detalhado (as 3 tabelas) começa recolhido — só o resumo (contagens)
+// fica visível de cara, pra não ocupar a tela toda sem precisar.
+btnPactoInadimplentesToggle?.addEventListener('click', () => {
+    const aberto = pactoInadimplentesDetalhe?.classList.toggle('hidden') === false;
+    btnPactoInadimplentesToggle.textContent = aberto ? '▲ Esconder relatório detalhado' : '▼ Ver relatório detalhado';
+});
 
 function formatarUltimaAtualizacaoPacto(iso) {
     if (!pactoInadimplentesUltimaAtualizacaoEl) return;
@@ -2557,7 +2566,8 @@ function renderPactoInadimplentesProgress(p) {
         <div style="background:rgba(255,255,255,0.08);border-radius:50px;height:8px;overflow:hidden;margin-bottom:.8rem">
             <div style="background:var(--red);height:100%;width:${pct}%;transition:width .3s"></div>
         </div>
-        <div>🔴 Inadimplentes encontrados até agora: <strong style="color:var(--text-1)">${p.inadimplentes}</strong></div>
+        <div>🔴 Inadimplentes encontrados até agora: <strong style="color:var(--text-1)">${p.inadimplentes || 0}</strong></div>
+        <div>🟡 Parcelas atrasadas encontradas até agora: <strong style="color:var(--text-1)">${p.parcelasAtrasadas || 0}</strong></div>
         <div>🔵 Vencendo hoje encontrados até agora: <strong style="color:var(--text-1)">${p.vencemHoje || 0}</strong></div>
     `;
 }
@@ -2649,7 +2659,7 @@ btnPactoInadimplentes?.addEventListener('click', async () => {
         const res = await fetch('/api/pacto/inadimplentes/atualizar', { method: 'POST' });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || 'Erro ao iniciar');
-        renderPactoInadimplentesProgress({ total: 0, verificados: 0, inadimplentes: 0, vencemHoje: 0 });
+        renderPactoInadimplentesProgress({ total: 0, verificados: 0, inadimplentes: 0, parcelasAtrasadas: 0, vencemHoje: 0 });
     } catch (e) {
         showToast('Erro', e.message, 'error');
         btnPactoInadimplentes.disabled = false;
@@ -2664,7 +2674,7 @@ socket.on('pacto_inadimplentes_done', (p) => {
         btnPactoInadimplentes.disabled = false;
         btnPactoInadimplentes.textContent = '🔄 Atualizar Lista';
     }
-    showToast('Atualização concluída!', `${p.inadimplentes} com parcela atrasada, ${p.vencemHoje || 0} vencendo hoje.`, 'success', 6000);
+    showToast('Atualização concluída!', `${p.inadimplentes || 0} inadimplente(s), ${p.parcelasAtrasadas || 0} com parcela atrasada, ${p.vencemHoje || 0} vencendo hoje.`, 'success', 6000);
     formatarUltimaAtualizacaoPacto(p.ultima_atualizacao);
     loadPactoInadimplentes();
     loadPactoVencemHoje();

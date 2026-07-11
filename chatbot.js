@@ -2664,7 +2664,7 @@ async function garantirEtiquetaParcelaAtrasada() {
 }
 
 let pactoInadimplentesRunning = false;
-let pactoInadimplentesProgress = { total: 0, verificados: 0, inadimplentes: 0, running: false };
+let pactoInadimplentesProgress = { total: 0, verificados: 0, inadimplentes: 0, parcelasAtrasadas: 0, running: false };
 
 app.get('/api/pacto/inadimplentes/status', async (req, res) => {
     // Última varredura concluída fica salva em `configuracoes` (sobrevive a
@@ -2717,7 +2717,7 @@ async function processarInadimplentesPacto() {
     const hojeYMD = moment.tz('America/Sao_Paulo').format('YYYY-MM-DD');
 
     pactoInadimplentesRunning = true;
-    pactoInadimplentesProgress = { total: contatos.length, verificados: 0, inadimplentes: 0, vencemHoje: 0, running: true };
+    pactoInadimplentesProgress = { total: contatos.length, verificados: 0, inadimplentes: 0, parcelasAtrasadas: 0, vencemHoje: 0, running: true };
     io.emit('pacto_inadimplentes_progress', pactoInadimplentesProgress);
 
     const CONCORRENCIA = 5;
@@ -2759,11 +2759,12 @@ async function processarInadimplentesPacto() {
                 if (diasAtraso > LIMITE_DIAS_ATRASO_LONGO) {
                     await aplicarEtiquetaContato(numLimpo, etiquetaLongaId);
                     await removerEtiquetaContato(numLimpo, etiquetaRecenteId);
+                    pactoInadimplentesProgress.inadimplentes++;
                 } else {
                     await aplicarEtiquetaContato(numLimpo, etiquetaRecenteId);
                     await removerEtiquetaContato(numLimpo, etiquetaLongaId);
+                    pactoInadimplentesProgress.parcelasAtrasadas++;
                 }
-                pactoInadimplentesProgress.inadimplentes++;
             } else if (jaEstavaNoCache) {
                 // Não é mais ativo ou já quitou as parcelas — some do cache e das
                 // duas etiquetas (só porque sabemos que fomos nós que aplicamos).
@@ -2811,7 +2812,7 @@ async function processarInadimplentesPacto() {
     await db.run('INSERT OR REPLACE INTO configuracoes (chave, valor) VALUES (?, ?)', ['pacto_inadimplentes_ultima_atualizacao', ultimaAtualizacao]);
     io.emit('pacto_inadimplentes_progress', pactoInadimplentesProgress);
     io.emit('pacto_inadimplentes_done', { ...pactoInadimplentesProgress, ultima_atualizacao: ultimaAtualizacao });
-    console.log(`✅ Varredura finalizada: ${pactoInadimplentesProgress.inadimplentes} inadimplente(s), ${pactoInadimplentesProgress.vencemHoje} vencendo hoje, de ${pactoInadimplentesProgress.verificados} verificados.`);
+    console.log(`✅ Varredura finalizada: ${pactoInadimplentesProgress.inadimplentes} inadimplente(s), ${pactoInadimplentesProgress.parcelasAtrasadas} com parcela atrasada, ${pactoInadimplentesProgress.vencemHoje} vencendo hoje, de ${pactoInadimplentesProgress.verificados} verificados.`);
 }
 
 app.post('/api/pacto/inadimplentes/atualizar', async (req, res) => {

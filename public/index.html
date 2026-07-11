@@ -755,6 +755,7 @@ Sempre tente agendar uma aula experimental."></textarea>
 
                     <div style="display:flex;align-items:center;gap:.8rem;flex-wrap:wrap;margin-bottom:1rem">
                         <button class="btn-primary" id="btn-pacto-inadimplentes" style="padding:.6rem 1.1rem;font-size:.85rem">🔄 Atualizar Lista</button>
+                        <button class="btn-secondary" id="btn-pacto-inadimplentes-toggle" style="padding:.6rem 1rem;font-size:.85rem">▼ Ver relatório detalhado</button>
                         <span id="pacto-inadimplentes-ultima-atualizacao" style="color:var(--text-3);font-size:.78rem"></span>
                     </div>
 
@@ -762,60 +763,62 @@ Sempre tente agendar uma aula experimental."></textarea>
                         Clique em "Atualizar Lista" pra começar.
                     </div>
 
-                    <h4 style="color:var(--red);font-size:.85rem;margin:1.2rem 0 .6rem">🔴 Atraso superior a 30 dias</h4>
-                    <div style="overflow-x:auto">
-                        <table class="leads-table">
-                            <thead>
-                                <tr>
-                                    <th>Contato</th>
-                                    <th>Matrícula</th>
-                                    <th style="text-align:right">Parcelas</th>
-                                    <th style="text-align:right">Valor Atrasado</th>
-                                    <th style="text-align:right">Atraso</th>
-                                    <th></th>
-                                </tr>
-                            </thead>
-                            <tbody id="pacto-inadimplentes-lista-longo">
-                                <tr><td colspan="6" style="padding:1.5rem;text-align:center;color:var(--text-3)">Nenhum dado ainda.</td></tr>
-                            </tbody>
-                        </table>
-                    </div>
+                    <div id="pacto-inadimplentes-detalhe" class="hidden">
+                        <h4 style="color:var(--red);font-size:.85rem;margin:1.2rem 0 .6rem">🔴 Atraso superior a 30 dias</h4>
+                        <div style="overflow-x:auto">
+                            <table class="leads-table">
+                                <thead>
+                                    <tr>
+                                        <th>Contato</th>
+                                        <th>Matrícula</th>
+                                        <th style="text-align:right">Parcelas</th>
+                                        <th style="text-align:right">Valor Atrasado</th>
+                                        <th style="text-align:right">Atraso</th>
+                                        <th></th>
+                                    </tr>
+                                </thead>
+                                <tbody id="pacto-inadimplentes-lista-longo">
+                                    <tr><td colspan="6" style="padding:1.5rem;text-align:center;color:var(--text-3)">Nenhum dado ainda.</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
 
-                    <h4 style="color:#f59e0b;font-size:.85rem;margin:1.6rem 0 .6rem">🟡 Atraso de até 30 dias</h4>
-                    <div style="overflow-x:auto">
-                        <table class="leads-table">
-                            <thead>
-                                <tr>
-                                    <th>Contato</th>
-                                    <th>Matrícula</th>
-                                    <th style="text-align:right">Parcelas</th>
-                                    <th style="text-align:right">Valor Atrasado</th>
-                                    <th style="text-align:right">Atraso</th>
-                                    <th></th>
-                                </tr>
-                            </thead>
-                            <tbody id="pacto-inadimplentes-lista-recente">
-                                <tr><td colspan="6" style="padding:1.5rem;text-align:center;color:var(--text-3)">Nenhum dado ainda.</td></tr>
-                            </tbody>
-                        </table>
-                    </div>
+                        <h4 style="color:#f59e0b;font-size:.85rem;margin:1.6rem 0 .6rem">🟡 Atraso de até 30 dias</h4>
+                        <div style="overflow-x:auto">
+                            <table class="leads-table">
+                                <thead>
+                                    <tr>
+                                        <th>Contato</th>
+                                        <th>Matrícula</th>
+                                        <th style="text-align:right">Parcelas</th>
+                                        <th style="text-align:right">Valor Atrasado</th>
+                                        <th style="text-align:right">Atraso</th>
+                                        <th></th>
+                                    </tr>
+                                </thead>
+                                <tbody id="pacto-inadimplentes-lista-recente">
+                                    <tr><td colspan="6" style="padding:1.5rem;text-align:center;color:var(--text-3)">Nenhum dado ainda.</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
 
-                    <h4 style="color:#3b82f6;font-size:.85rem;margin:1.6rem 0 .6rem">🔵 Vencendo hoje</h4>
-                    <div style="overflow-x:auto">
-                        <table class="leads-table">
-                            <thead>
-                                <tr>
-                                    <th>Contato</th>
-                                    <th>Matrícula</th>
-                                    <th style="text-align:right">Parcelas</th>
-                                    <th style="text-align:right">Valor</th>
-                                    <th></th>
-                                </tr>
-                            </thead>
-                            <tbody id="pacto-vencem-hoje-lista">
-                                <tr><td colspan="5" style="padding:1.5rem;text-align:center;color:var(--text-3)">Nenhum dado ainda.</td></tr>
-                            </tbody>
-                        </table>
+                        <h4 style="color:#3b82f6;font-size:.85rem;margin:1.6rem 0 .6rem">🔵 Vencendo hoje</h4>
+                        <div style="overflow-x:auto">
+                            <table class="leads-table">
+                                <thead>
+                                    <tr>
+                                        <th>Contato</th>
+                                        <th>Matrícula</th>
+                                        <th style="text-align:right">Parcelas</th>
+                                        <th style="text-align:right">Valor</th>
+                                        <th></th>
+                                    </tr>
+                                </thead>
+                                <tbody id="pacto-vencem-hoje-lista">
+                                    <tr><td colspan="5" style="padding:1.5rem;text-align:center;color:var(--text-3)">Nenhum dado ainda.</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
                     </div>
                 </div>
 
