@@ -457,7 +457,7 @@ navBtns.forEach(btn => {
         pageTitle.textContent = text;
         if (targetId === 'mensagens-section') loadRegras();
         if (targetId === 'ia-section') loadIaConfig();
-        if (targetId === 'configuracoes-section') loadHorarioConfig();
+        if (targetId === 'configuracoes-section') { loadHorarioConfig(); loadDelayResposta(); }
         if (targetId === 'conversas-section') CM.onEnterSection();
         if (targetId === 'contatos-section' || targetId === 'disparos-section') loadContatos();
         if (targetId === 'integracoes-section') { loadPactoInadimplentes(); loadPactoVencemHoje(); }
@@ -657,6 +657,36 @@ socket.on('robo_override', (state) => {
 });
 
 loadRoboOverride();
+
+// =====================================
+// COMPORTAMENTO DO ROBÔ — DELAY antes de responder
+// =====================================
+const cfgDelayResposta = document.getElementById('cfg-delay-resposta');
+
+async function loadDelayResposta() {
+    if (!cfgDelayResposta) return;
+    try {
+        const res = await fetch('/api/configuracoes');
+        const config = await res.json();
+        cfgDelayResposta.value = config.robo_delay_resposta_segundos || '0';
+    } catch (e) {
+        console.error('Erro ao carregar delay de resposta', e);
+    }
+}
+
+cfgDelayResposta?.addEventListener('change', async () => {
+    try {
+        await fetch('/api/configuracoes', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ robo_delay_resposta_segundos: cfgDelayResposta.value })
+        });
+        const texto = cfgDelayResposta.value === '0' ? 'sem atraso' : `${cfgDelayResposta.value}s de atraso`;
+        showToast('Delay atualizado!', `O robô agora responde com ${texto} antes de começar a digitar.`, 'success', 3500);
+    } catch (e) {
+        showToast('Erro', 'Não foi possível salvar o delay.', 'error');
+    }
+});
 
 // =====================================
 // HORÁRIO DE FUNCIONAMENTO

@@ -3170,6 +3170,8 @@ function ehIntencaoPacto(texto) {
 
 // Envia uma mensagem via WhatsApp e registra no histórico de mensagens enviadas.
 async function enviarEregistrar(telefone, conteudo) {
+    const delayConfigurado = await obterDelayRespostaConfigurado();
+    if (delayConfigurado > 0) await delay(delayConfigurado * 1000);
     if (typeof conteudo === 'string') {
         await simularDigitando(client.getChatById(telefone));
         await delay(calcularDelayDigitacao(conteudo));
@@ -3392,6 +3394,21 @@ function calcularDelayDigitacao(texto) {
     return Math.min(DIGITACAO_MAX_MS, Math.max(DIGITACAO_MIN_MS, estimado));
 }
 
+// "Delay" configurável em Configurações → Comportamento do Robô: espera fixa
+// ANTES de sequer começar a digitar (diferente da simulação de digitação
+// acima, que já depende do tamanho do texto) — deixa o robô com resposta
+// menos instantânea/robótica. Sem configurar (ou 0) = sem espera extra,
+// comportamento de sempre.
+async function obterDelayRespostaConfigurado() {
+    try {
+        const row = await db.get("SELECT valor FROM configuracoes WHERE chave = 'robo_delay_resposta_segundos'");
+        const segundos = parseInt(row?.valor, 10);
+        return segundos > 0 ? segundos : 0;
+    } catch (e) {
+        return 0;
+    }
+}
+
 // Mostra o "digitando..." de verdade no WhatsApp do contato. Isso já causou
 // travamento do Puppeteer no passado (commit 1099a86) porque era chamado sem
 // nenhuma proteção — aqui roda com timeout curto e nunca deixa o envio da
@@ -3593,6 +3610,8 @@ client.on('message_create', async (msg) => {
 // Wrapper de envio: tenta msg.reply(), se timeout reinicia o processo
 async function enviarResposta(msg, conteudo, opcoes = {}) {
     try {
+        const delayConfigurado = await obterDelayRespostaConfigurado();
+        if (delayConfigurado > 0) await delay(delayConfigurado * 1000);
         if (typeof conteudo === 'string') {
             await simularDigitando(msg.getChat());
             await delay(calcularDelayDigitacao(conteudo));

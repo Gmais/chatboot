@@ -844,6 +844,21 @@ Sempre tente agendar uma aula experimental."></textarea>
                                 <span style="color:var(--text-2);font-size:.8rem">Ícone de microfone azul, igual a uma voz real gravada</span>
                             </div>
                         </label>
+                        <div style="display:flex;align-items:center;gap:.8rem;flex-wrap:wrap">
+                            <div style="flex:1;min-width:220px">
+                                <strong style="font-size:.9rem">Delay</strong><br>
+                                <span style="color:var(--text-2);font-size:.8rem">Tempo que o robô espera antes de começar a responder (além da simulação de "digitando...")</span>
+                            </div>
+                            <select id="cfg-delay-resposta" style="background:var(--input-bg);border:1px solid rgba(255,255,255,0.1);border-radius:var(--radius-sm);padding:.5rem .8rem;color:var(--text-1);font-family:'Inter',sans-serif;font-size:.85rem">
+                                <option value="0">Sem atraso</option>
+                                <option value="5">5 segundos</option>
+                                <option value="10">10 segundos</option>
+                                <option value="20">20 segundos</option>
+                                <option value="30">30 segundos</option>
+                                <option value="45">45 segundos</option>
+                                <option value="60">60 segundos</option>
+                            </select>
+                        </div>
                     </div>
                 </div>
 
