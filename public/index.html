@@ -22,11 +22,11 @@
         </div>
 
         <nav class="menu">
-            <a href="#" class="nav-btn active" data-target="dashboard-section" title="Painel de Controle">
+            <a href="#" class="nav-btn" data-target="dashboard-section" title="Painel de Controle">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
                 <span class="nav-label">Painel de Controle</span>
             </a>
-            <a href="#" class="nav-btn" data-target="conversas-section" id="nav-conversas" title="Bate Papo ao Vivo">
+            <a href="#" class="nav-btn active" data-target="conversas-section" id="nav-conversas" title="Bate Papo ao Vivo">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 8h2a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2h-2v4l-4-4H9a1.994 1.994 0 0 1-1.414-.586"/><path d="M15 2H6a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h2v4l4-4h3a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2z"/></svg>
                 <span class="nav-label">Bate Papo ao Vivo</span>
                 <span id="badge-nao-lidas" style="display:none;background:var(--red);color:#fff;border-radius:50px;padding:0.1rem 0.45rem;font-size:0.7rem;font-weight:700;margin-left:auto;">0</span>
@@ -76,7 +76,7 @@
     <!-- MAIN CONTENT -->
     <main class="content">
         <header>
-            <h1 id="page-title">Painel de Controle</h1>
+            <h1 id="page-title">Bate Papo ao Vivo</h1>
             <div style="display: flex; align-items: center; gap: 1rem;">
                 <div id="robo-toggle-wrap" style="position:relative">
                     <button id="btn-robo-toggle" class="btn-primary" style="padding:.5rem 1rem;font-size:.85rem">🤖 Ativar Robô</button>
@@ -98,7 +98,7 @@
         </header>
 
         <!-- ===================== DASHBOARD ===================== -->
-        <div id="dashboard-section" class="page-section">
+        <div id="dashboard-section" class="page-section hidden">
 
             <!-- Métricas -->
             <div class="metric-grid">
@@ -370,7 +370,7 @@
         </div>
 
         <!-- ===================== CONVERSAS ===================== -->
-        <div id="conversas-section" class="page-section hidden">
+        <div id="conversas-section" class="page-section">
             <div class="chat-layout">
                 <!-- Lista de Conversas -->
                 <div class="chat-list-col">

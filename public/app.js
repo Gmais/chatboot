@@ -2470,8 +2470,11 @@ const CM = (() => {
     return { init, onEnterSection };
 })();
 
-// Inicializa o ConversationManager
+// Inicializa o ConversationManager — sistema abre direto em "Bate Papo ao
+// Vivo" (ver nav-btn "active" e page-section sem "hidden" em index.html),
+// então já carrega a lista de conversas na hora, sem esperar um clique.
 CM.init();
+CM.onEnterSection();
 
 
 // =====================================
