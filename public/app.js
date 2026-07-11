@@ -1364,7 +1364,7 @@ function renderContatos() {
             <input type="checkbox" class="contato-check" data-telefone="${c.telefone}" ${contatosSelecionados.has(c.telefone) ? 'checked' : ''} style="accent-color:var(--green);width:16px;height:16px;flex-shrink:0">
             <div style="flex:1;min-width:0">
                 <div style="font-size:.88rem;color:var(--text-1);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${c.nome} ${c.etiquetas.map(e => etiquetaChipHtml(e, false)).join(' ')}</div>
-                <div style="font-size:.75rem;color:var(--text-3)">${c.telefone}</div>
+                <div style="font-size:.75rem;color:var(--text-3)">${c.telefone}${c.matricula ? ` · Matrícula ${c.matricula}` : ''}</div>
             </div>
             <span style="font-size:.72rem;color:var(--text-3);flex-shrink:0">${c.mensagens_recebidas} msg${c.mensagens_recebidas !== 1 ? 's' : ''}</span>
         </label>
