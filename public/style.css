@@ -1154,6 +1154,13 @@ header h1 {
     transition: var(--transition);
 }
 .btn-campanha-rapida .campanha-icon { font-size: 2rem; line-height: 1; }
+.btn-campanha-rapida .campanha-freq {
+    font-size: .68rem;
+    font-weight: 600;
+    letter-spacing: .03em;
+    text-transform: uppercase;
+    color: var(--text-3);
+}
 .btn-campanha-rapida:disabled { opacity: .5; cursor: wait; transform: none; }
 .btn-campanha-rapida:hover {
     background: rgba(37,211,102,0.15);
