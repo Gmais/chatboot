@@ -339,6 +339,32 @@ async function initDB() {
             professor TEXT,
             atualizado_em DATETIME DEFAULT CURRENT_TIMESTAMP
         );
+        CREATE TABLE IF NOT EXISTS ia_uso_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            telefone TEXT,
+            provedor TEXT NOT NULL,
+            modelo TEXT NOT NULL,
+            prompt_tokens INTEGER DEFAULT 0,
+            completion_tokens INTEGER DEFAULT 0,
+            total_tokens INTEGER DEFAULT 0,
+            ts DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_ia_uso_log_ts ON ia_uso_log(ts);
+        CREATE TABLE IF NOT EXISTS conexao_eventos_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            tipo TEXT NOT NULL,
+            motivo TEXT,
+            ts DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_conexao_eventos_log_ts ON conexao_eventos_log(ts);
+        CREATE TABLE IF NOT EXISTS disparo_envios_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            telefone TEXT NOT NULL,
+            sucesso INTEGER NOT NULL,
+            erro TEXT,
+            enviado_em DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_disparo_envios_log_ts ON disparo_envios_log(enviado_em);
     `);
 
     // Adiciona colunas novas se migrando de versão anterior
@@ -951,6 +977,47 @@ app.get('/api/estatisticas', async (req, res) => {
             ORDER BY em_andamento DESC, a.criado_em DESC
         `);
 
+        // ---- IA: uso e custo estimado (custoEstimadoIA/PRECO_POR_1K_TOKENS) ----
+        const usoIaRows = await db.all('SELECT provedor, modelo, prompt_tokens, completion_tokens FROM ia_uso_log WHERE ts >= ?', desdeSql);
+        let iaChamadas = 0, iaTokensTotais = 0, iaCustoTotal = 0;
+        const porModeloMap = new Map();
+        usoIaRows.forEach(r => {
+            iaChamadas++;
+            iaTokensTotais += (r.prompt_tokens || 0) + (r.completion_tokens || 0);
+            const custo = custoEstimadoIA(r.provedor, r.modelo, r.prompt_tokens || 0, r.completion_tokens || 0);
+            iaCustoTotal += custo;
+            const chave = `${r.provedor}::${r.modelo}`;
+            if (!porModeloMap.has(chave)) porModeloMap.set(chave, { provedor: r.provedor, modelo: r.modelo, chamadas: 0, custo_estimado_usd: 0 });
+            const m = porModeloMap.get(chave);
+            m.chamadas++;
+            m.custo_estimado_usd += custo;
+        });
+        const iaPorModelo = [...porModeloMap.values()].map(m => ({ ...m, custo_estimado_usd: Math.round(m.custo_estimado_usd * 10000) / 10000 }));
+
+        // ---- Conexão: desconexões/crashes no período + última desconexão ----
+        const conexaoContagem = await db.all(`
+            SELECT tipo, COUNT(*) AS n FROM conexao_eventos_log
+            WHERE ts >= ? AND tipo IN ('desconectado', 'crash')
+            GROUP BY tipo
+        `, desdeSql);
+        const ultimaDesconexao = await db.get(`
+            SELECT tipo, motivo, ts FROM conexao_eventos_log
+            WHERE tipo IN ('desconectado', 'crash') ORDER BY ts DESC LIMIT 1
+        `);
+
+        // ---- Disparos: entrega/falha com motivo ----
+        const totaisDisparo = await db.get(`
+            SELECT
+                SUM(CASE WHEN sucesso = 1 THEN 1 ELSE 0 END) AS enviados,
+                SUM(CASE WHEN sucesso = 0 THEN 1 ELSE 0 END) AS falhas
+            FROM disparo_envios_log WHERE enviado_em >= ?
+        `, desdeSql);
+        const principaisErrosDisparo = await db.all(`
+            SELECT erro, COUNT(*) AS n FROM disparo_envios_log
+            WHERE sucesso = 0 AND enviado_em >= ? AND erro IS NOT NULL
+            GROUP BY erro ORDER BY n DESC LIMIT 5
+        `, desdeSql);
+
         res.json({
             periodo_dias: dias,
             mensagens: {
@@ -973,6 +1040,25 @@ app.get('/api/estatisticas', async (req, res) => {
                 por_etiqueta: porEtiqueta,
             },
             automacao: { fluxos },
+            ia: {
+                chamadas: iaChamadas,
+                tokens_totais: iaTokensTotais,
+                custo_estimado_usd: Math.round(iaCustoTotal * 10000) / 10000,
+                por_modelo: iaPorModelo,
+            },
+            conexao: {
+                desconexoes_periodo: conexaoContagem.find(c => c.tipo === 'desconectado')?.n || 0,
+                crashes_periodo: conexaoContagem.find(c => c.tipo === 'crash')?.n || 0,
+                ultima_desconexao: ultimaDesconexao ? { tipo: ultimaDesconexao.tipo, motivo: ultimaDesconexao.motivo, ts: sqliteTsParaIso(ultimaDesconexao.ts) } : null,
+            },
+            disparos: {
+                enviados_periodo: totaisDisparo.enviados || 0,
+                falhas_periodo: totaisDisparo.falhas || 0,
+                taxa_entrega_pct: (totaisDisparo.enviados || totaisDisparo.falhas)
+                    ? Math.round(((totaisDisparo.enviados || 0) / ((totaisDisparo.enviados || 0) + (totaisDisparo.falhas || 0))) * 100)
+                    : 100,
+                principais_erros: principaisErrosDisparo.map(e => ({ erro: e.erro, n: e.n })),
+            },
         });
     } catch (err) {
         console.error('Erro ao calcular estatísticas:', err.message);
@@ -2605,8 +2691,26 @@ app.post('/api/conversas/:telefone/enviar-arquivo', upload.single('arquivo'), as
 // =====================================
 let broadcastRunning = false;
 let broadcastProgress = { total: 0, sent: 0, failed: 0, running: false };
+let ultimoDisparoIniciadoEm = null; // 'YYYY-MM-DD HH:mm:ss' (mesmo formato do SQLite) — filtra /api/broadcast/falhas no disparo mais recente
 
 app.get('/api/broadcast/status', (req, res) => res.json(broadcastProgress));
+
+// Detalhe de falhas do disparo em massa mais recente — telefone + motivo,
+// pra quem acabou de rodar um disparo entender NA HORA quem falhou e por quê,
+// sem precisar caçar log de servidor. Some/reseta a cada novo disparo (filtra
+// por ultimoDisparoIniciadoEm), então só mostra a campanha mais recente.
+app.get('/api/broadcast/falhas', async (req, res) => {
+    if (!ultimoDisparoIniciadoEm) return res.json([]);
+    try {
+        const falhas = await db.all(
+            'SELECT telefone, erro, enviado_em FROM disparo_envios_log WHERE sucesso = 0 AND enviado_em >= ? ORDER BY enviado_em DESC LIMIT 200',
+            ultimoDisparoIniciadoEm
+        );
+        res.json(falhas);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
 
 app.post('/api/broadcast/start', upload.single('media'), async (req, res) => {
     if (broadcastRunning) return res.status(400).json({ error: 'Um disparo já está em andamento.' });
@@ -2631,6 +2735,7 @@ app.post('/api/broadcast/start', upload.single('media'), async (req, res) => {
 
     broadcastRunning = true;
     broadcastProgress = { total: listaNumeros.length, sent: 0, failed: 0, running: true };
+    ultimoDisparoIniciadoEm = moment.utc().format('YYYY-MM-DD HH:mm:ss');
     io.emit('broadcast_progress', broadcastProgress);
 
     res.json({ success: true, total: listaNumeros.length });
@@ -2650,9 +2755,11 @@ app.post('/api/broadcast/start', upload.single('media'), async (req, res) => {
                 }
 
                 broadcastProgress.sent++;
+                db.run('INSERT INTO disparo_envios_log (telefone, sucesso) VALUES (?, 1)', numero).catch(() => {});
             } catch (err) {
                 console.error(`❌ Falha ao enviar para ${numero}:`, err.message);
                 broadcastProgress.failed++;
+                db.run('INSERT INTO disparo_envios_log (telefone, sucesso, erro) VALUES (?, 0, ?)', [numero, err.message]).catch(() => {});
             }
             io.emit('broadcast_progress', broadcastProgress);
             await delay(proximoDelay());
@@ -3300,6 +3407,25 @@ async function limparMidiaAntigaConversas() {
 setInterval(limparMidiaAntigaConversas, 6 * 60 * 60 * 1000); // a cada 6h
 setTimeout(limparMidiaAntigaConversas, 3 * 60 * 1000);
 
+// Limpeza dos logs novos de estatísticas (custo de IA, eventos de conexão,
+// disparo) — mesmo padrão acima, só pra não crescer sem limite no volume.
+// Eventos de conexão são poucos (não crescem como mensagem), então a
+// retenção é bem mais longa (1 ano) só por higiene.
+async function limparLogsEstatisticasAntigos() {
+    if (!db) return;
+    try {
+        const r1 = await db.run("DELETE FROM ia_uso_log WHERE ts <= datetime('now', '-90 days')");
+        const r2 = await db.run("DELETE FROM disparo_envios_log WHERE enviado_em <= datetime('now', '-90 days')");
+        const r3 = await db.run("DELETE FROM conexao_eventos_log WHERE ts <= datetime('now', '-365 days')");
+        const total = (r1.changes || 0) + (r2.changes || 0) + (r3.changes || 0);
+        if (total > 0) console.log(`🧹 Limpeza de logs de estatísticas: ${total} linha(s) antiga(s) removida(s).`);
+    } catch (e) {
+        console.error('Erro na limpeza de logs de estatísticas:', e.message);
+    }
+}
+setInterval(limparLogsEstatisticasAntigos, 6 * 60 * 60 * 1000); // a cada 6h
+setTimeout(limparLogsEstatisticasAntigos, 3 * 60 * 1000);
+
 app.post('/api/disconnect', async (req, res) => {
     // Responde imediatamente para não travar o frontend
     res.json({ success: true });
@@ -3430,16 +3556,29 @@ client.on('qr', async (qr) => {
     } catch (err) { console.error('Erro ao gerar QR:', err); }
 });
 
+// Loga eventos de conexão pro Painel de Controle (uptime/desconexões) — só
+// guarda o fato, nunca deve derrubar o fluxo real de conexão do WhatsApp.
+async function registrarEventoConexao(tipo, motivo = null) {
+    if (!db) return;
+    try {
+        await db.run('INSERT INTO conexao_eventos_log (tipo, motivo) VALUES (?, ?)', [tipo, motivo]);
+    } catch (e) {
+        console.error('Erro ao registrar evento de conexão:', e.message);
+    }
+}
+
 client.on('authenticated', () => {
     console.log('🔐 WhatsApp autenticado — sessão estabelecida.');
 });
 
 client.on('auth_failure', (msg) => {
     console.error('❌ Falha de autenticação WhatsApp:', msg);
+    registrarEventoConexao('auth_failure', String(msg));
 });
 
 client.on('ready', async () => {
     console.log('✅ Tudo certo! WhatsApp conectado.');
+    registrarEventoConexao('conectado');
     try {
         const info = client.info;
         if (info) console.log(`📱 Número conectado: ${info.wid.user} (${info.pushname})`);
@@ -3470,6 +3609,7 @@ client.on('ready', async () => {
                 }
                 restartInProgress = true;
                 isConnected = false;
+                registrarEventoConexao('crash', String(err?.message || err));
                 io.emit('disconnected', 'Reconectando WhatsApp...');
                 console.log('🔄 Reiniciando cliente WhatsApp (servidor HTTP permanece no ar)...');
 
@@ -3498,6 +3638,7 @@ client.on('ready', async () => {
 client.on('disconnected', (reason) => {
     console.log('⚠️ Desconectado:', reason);
     isConnected = false;
+    registrarEventoConexao('desconectado', String(reason));
     io.emit('disconnected', reason);
 });
 
@@ -3755,6 +3896,23 @@ const FAIXAS_VELOCIDADE = {
     longo: [30000, 120000],
     muito_longo: [120000, 320000]
 };
+
+// Preço aproximado por 1.000 tokens (USD) — usado só pra ESTIMAR custo de IA
+// no Painel de Controle, não é a fatura real (a OpenAI cobra por uso exato;
+// confira em platform.openai.com/usage se precisar de exatidão). Groq nem
+// entra aqui: é o tier gratuito que o próprio painel já anuncia como
+// "Gratuito e Ultrarrápido", custo sempre 0. Atualize os valores abaixo se a
+// OpenAI mudar a tabela de preços.
+const PRECO_POR_1K_TOKENS = {
+    'gpt-3.5-turbo': { prompt: 0.0005, completion: 0.0015 },
+    'gpt-4o':        { prompt: 0.0025, completion: 0.01 },
+};
+function custoEstimadoIA(provedor, modelo, promptTokens, completionTokens) {
+    if (provedor === 'groq') return 0;
+    const preco = PRECO_POR_1K_TOKENS[modelo];
+    if (!preco) return 0;
+    return (promptTokens / 1000) * preco.prompt + (completionTokens / 1000) * preco.completion;
+}
 
 // Simula o tempo de "digitando...": resposta curta pausa pouco, resposta longa
 // pausa mais — enviar tudo instantâneo soa robótico demais.
@@ -4287,6 +4445,19 @@ client.on('message', async (msg) => {
 
                 try {
                     const completion = await chamarIA();
+
+                    // Loga tokens/custo da chamada — fire-and-forget, nunca pode
+                    // atrapalhar o envio da resposta real pro cliente (só console.error).
+                    try {
+                        const uso = completion.usage || {};
+                        await db.run(
+                            'INSERT INTO ia_uso_log (telefone, provedor, modelo, prompt_tokens, completion_tokens, total_tokens) VALUES (?, ?, ?, ?, ?, ?)',
+                            [numLimpo, provider, modelo, uso.prompt_tokens || 0, uso.completion_tokens || 0, uso.total_tokens || 0]
+                        );
+                    } catch (e) {
+                        console.error('Erro ao registrar uso de IA:', e.message);
+                    }
+
                     // Substitui placeholders de nome antes de enviar — caso o treinamento
                     // ou o modelo ainda use [nome] ou {nome}, o aluno vê o nome de verdade.
                     const nomeExibir = (nomeContato && nomeContato !== numLimpo)

@@ -436,6 +436,15 @@ async function carregarEstatisticas() {
     const statusLista = document.getElementById('stats-status-lista');
     const etiquetasLista = document.getElementById('stats-etiquetas-lista');
     const automacaoLista = document.getElementById('stats-automacao-lista');
+    const iaCustoEl = document.getElementById('stats-ia-custo');
+    const iaChamadasEl = document.getElementById('stats-ia-chamadas');
+    const iaModelosEl = document.getElementById('stats-ia-modelos');
+    const conexaoDesconexoesEl = document.getElementById('stats-conexao-desconexoes');
+    const conexaoCrashesEl = document.getElementById('stats-conexao-crashes');
+    const conexaoUltimaEl = document.getElementById('stats-conexao-ultima');
+    const disparosTaxaEl = document.getElementById('stats-disparos-taxa');
+    const disparosFalhasEl = document.getElementById('stats-disparos-falhas');
+    const disparosErrosEl = document.getElementById('stats-disparos-erros');
 
     try {
         const res = await fetch(`/api/estatisticas?dias=${periodo}`);
@@ -551,6 +560,47 @@ async function carregarEstatisticas() {
                     </div>
                 `).join('')
                 : '<p style="color:var(--text-3);font-size:.85rem;text-align:center;padding:1rem 0">Nenhuma automação criada ainda.</p>';
+        }
+
+        // ---- Custo de IA ----
+        if (iaCustoEl) iaCustoEl.textContent = `$${s.ia.custo_estimado_usd.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 4 })}`;
+        if (iaChamadasEl) iaChamadasEl.textContent = s.ia.chamadas;
+        if (iaModelosEl) {
+            iaModelosEl.innerHTML = s.ia.por_modelo.length
+                ? s.ia.por_modelo.map(m => `
+                    <div style="display:flex;justify-content:space-between;font-size:.8rem;padding:.3rem 0;border-bottom:1px solid rgba(255,255,255,0.05)">
+                        <span style="color:var(--text-2)">${m.provedor === 'groq' ? '⚡' : '🟢'} ${m.modelo}</span>
+                        <span style="color:var(--text-3)">${m.chamadas}x ${m.custo_estimado_usd > 0 ? `· $${m.custo_estimado_usd.toFixed(4)}` : '· grátis'}</span>
+                    </div>
+                `).join('')
+                : '<p style="color:var(--text-3);font-size:.85rem;text-align:center;padding:.5rem 0">Nenhuma resposta de IA no período.</p>';
+        }
+
+        // ---- Conexão ----
+        if (conexaoDesconexoesEl) conexaoDesconexoesEl.textContent = s.conexao.desconexoes_periodo;
+        if (conexaoCrashesEl) conexaoCrashesEl.textContent = s.conexao.crashes_periodo;
+        if (conexaoUltimaEl) {
+            const u = s.conexao.ultima_desconexao;
+            conexaoUltimaEl.textContent = u
+                ? `Última: ${u.tipo === 'crash' ? 'crash' : 'desconexão'} em ${new Date(u.ts).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}${u.motivo ? ` — ${u.motivo}` : ''}`
+                : 'Sem desconexões registradas.';
+        }
+
+        // ---- Disparos ----
+        if (disparosTaxaEl) {
+            disparosTaxaEl.textContent = `${s.disparos.taxa_entrega_pct}%`;
+            disparosTaxaEl.style.color = s.disparos.taxa_entrega_pct >= 90 ? 'var(--green)' : (s.disparos.taxa_entrega_pct >= 70 ? 'var(--amber)' : 'var(--red)');
+        }
+        if (disparosFalhasEl) disparosFalhasEl.textContent = s.disparos.falhas_periodo;
+        if (disparosErrosEl) {
+            disparosErrosEl.innerHTML = s.disparos.principais_erros.length
+                ? s.disparos.principais_erros.map(e => `
+                    <div style="display:flex;justify-content:space-between;font-size:.78rem;color:var(--text-2)">
+                        <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:75%">${e.erro}</span>
+                        <b style="color:var(--text-3)">${e.n}</b>
+                    </div>
+                `).join('')
+                : '<p style="color:var(--text-3);font-size:.85rem;text-align:center;padding:.5rem 0">Nenhuma falha no período.</p>';
         }
     } catch (e) {
         console.error('Erro ao carregar estatísticas', e);
@@ -1831,6 +1881,8 @@ const progFailed        = document.getElementById('prog-failed');
 const progPercent       = document.getElementById('prog-percent');
 const progBar           = document.getElementById('prog-bar');
 const broadcastStatusMsg= document.getElementById('broadcast-status-msg');
+const btnDisparoFalhasToggle = document.getElementById('btn-disparo-falhas-toggle');
+const disparoFalhasDetalhe   = document.getElementById('disparo-falhas-detalhe');
 const broadcastUpload   = document.getElementById('broadcast-upload-area');
 const broadcastFile     = document.getElementById('broadcast-file');
 const broadcastFileName = document.getElementById('broadcast-file-name');
@@ -1896,6 +1948,34 @@ socket.on('broadcast_done', (p) => {
     if (btnParar)    btnParar.style.display = 'none';
     showToast('Disparo Finalizado!', `${p.sent} enviados com sucesso.`, 'success', 6000);
     addActivity('🚀', `Disparo concluído: ${p.sent} msgs`, new Date().toLocaleString('pt-BR'));
+    if (btnDisparoFalhasToggle) btnDisparoFalhasToggle.style.display = p.failed > 0 ? 'block' : 'none';
+});
+
+// ---- Detalhe de falhas do disparo mais recente (telefone + motivo) ----
+btnDisparoFalhasToggle?.addEventListener('click', async () => {
+    const aberto = !disparoFalhasDetalhe.classList.contains('hidden');
+    if (aberto) {
+        disparoFalhasDetalhe.classList.add('hidden');
+        btnDisparoFalhasToggle.textContent = '▼ Ver detalhes das falhas';
+        return;
+    }
+    btnDisparoFalhasToggle.textContent = '▲ Esconder detalhes';
+    disparoFalhasDetalhe.classList.remove('hidden');
+    disparoFalhasDetalhe.innerHTML = '<p style="color:var(--text-3);font-size:.78rem;text-align:center;padding:.5rem 0">Carregando...</p>';
+    try {
+        const res = await fetch('/api/broadcast/falhas');
+        const falhas = await res.json();
+        disparoFalhasDetalhe.innerHTML = falhas.length
+            ? falhas.map(f => `
+                <div style="display:flex;justify-content:space-between;gap:.6rem;font-size:.78rem;padding:.3rem 0;border-bottom:1px solid rgba(255,255,255,0.05)">
+                    <span style="color:var(--text-2);white-space:nowrap">${f.telefone}</span>
+                    <span style="color:var(--text-3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:right">${f.erro || 'Erro desconhecido'}</span>
+                </div>
+            `).join('')
+            : '<p style="color:var(--text-3);font-size:.78rem;text-align:center;padding:.5rem 0">Nenhuma falha registrada.</p>';
+    } catch (e) {
+        disparoFalhasDetalhe.innerHTML = '<p style="color:var(--text-3);font-size:.78rem;text-align:center;padding:.5rem 0">Erro ao carregar detalhes.</p>';
+    }
 });
 
 const broadcastDelayModo   = document.getElementById('broadcast-delay-modo');
@@ -1931,6 +2011,8 @@ btnDisparar?.addEventListener('click', async () => {
     broadcastStatusMsg.textContent = `🚀 Iniciando disparo para ${data.total} números...`;
     broadcastStatusMsg.style.color = 'var(--green)';
     showToast('Disparo Iniciado!', `${data.total} números na fila`, 'success');
+    if (btnDisparoFalhasToggle) { btnDisparoFalhasToggle.style.display = 'none'; btnDisparoFalhasToggle.textContent = '▼ Ver detalhes das falhas'; }
+    if (disparoFalhasDetalhe) disparoFalhasDetalhe.classList.add('hidden');
 });
 
 btnParar?.addEventListener('click', async () => {

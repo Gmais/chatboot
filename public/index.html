@@ -227,6 +227,55 @@
                 </div>
             </div>
 
+            <div class="cards-grid" style="margin-top:1.5rem">
+                <div class="card glass">
+                    <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:.2rem">
+                        <h3 style="margin-bottom:0">🧠 Custo de IA <span style="color:var(--text-3);font-weight:400;font-size:.7rem">(estimado)</span></h3>
+                    </div>
+                    <div style="display:flex;gap:1.5rem;margin:1rem 0">
+                        <div>
+                            <div style="font-size:1.5rem;font-weight:800;color:var(--text-1)" id="stats-ia-custo">$0,00</div>
+                            <div style="font-size:.72rem;color:var(--text-3)">custo estimado no período</div>
+                        </div>
+                        <div>
+                            <div style="font-size:1.5rem;font-weight:800;color:var(--text-1)" id="stats-ia-chamadas">0</div>
+                            <div style="font-size:.72rem;color:var(--text-3)">respostas geradas por IA</div>
+                        </div>
+                    </div>
+                    <div id="stats-ia-modelos" style="display:flex;flex-direction:column;gap:.5rem"></div>
+                </div>
+
+                <div class="card glass">
+                    <h3>📶 Conexão WhatsApp</h3>
+                    <div style="display:flex;gap:1.5rem;margin:1rem 0">
+                        <div>
+                            <div style="font-size:1.5rem;font-weight:800;color:var(--text-1)" id="stats-conexao-desconexoes">0</div>
+                            <div style="color:var(--text-3);font-size:.72rem">desconexões no período</div>
+                        </div>
+                        <div>
+                            <div style="font-size:1.5rem;font-weight:800;color:var(--text-1)" id="stats-conexao-crashes">0</div>
+                            <div style="font-size:.72rem;color:var(--text-3)">crashes no período</div>
+                        </div>
+                    </div>
+                    <div id="stats-conexao-ultima" style="font-size:.8rem;color:var(--text-2)"></div>
+                </div>
+
+                <div class="card glass">
+                    <h3>📨 Entrega de Disparos</h3>
+                    <div style="display:flex;gap:1.5rem;margin:1rem 0">
+                        <div>
+                            <div style="font-size:1.5rem;font-weight:800;color:var(--green)" id="stats-disparos-taxa">100%</div>
+                            <div style="font-size:.72rem;color:var(--text-3)">taxa de entrega</div>
+                        </div>
+                        <div>
+                            <div style="font-size:1.5rem;font-weight:800;color:var(--text-1)" id="stats-disparos-falhas">0</div>
+                            <div style="font-size:.72rem;color:var(--text-3)">falhas no período</div>
+                        </div>
+                    </div>
+                    <div id="stats-disparos-erros" style="display:flex;flex-direction:column;gap:.4rem"></div>
+                </div>
+            </div>
+
         </div>
 
         <!-- ===================== MENSAGENS ===================== -->
@@ -689,6 +738,8 @@
                         <span style="color:var(--text-2)">Falhas</span>
                         <span id="prog-failed" class="prog-val" style="color:var(--red)">0</span>
                     </div>
+                    <button type="button" id="btn-disparo-falhas-toggle" class="btn-secondary" style="display:none;width:100%;margin-top:.4rem;padding:.4rem;font-size:.75rem">▼ Ver detalhes das falhas</button>
+                    <div id="disparo-falhas-detalhe" class="hidden" style="max-height:180px;overflow-y:auto;margin-top:.6rem;display:flex;flex-direction:column;gap:.3rem"></div>
                     <div style="margin-top:1.5rem">
                         <div style="display:flex;justify-content:space-between;margin-bottom:.4rem">
                             <span style="font-size:.8rem;color:var(--text-3)">Progresso</span>
