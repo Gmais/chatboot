@@ -291,6 +291,15 @@ header h1 {
 }
 
 /* ==========================================
+   ESTATÍSTICAS (PAINEL DE CONTROLE)
+   ========================================== */
+.stats-kpi-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 1rem;
+}
+
+/* ==========================================
    STAT CARDS (DASHBOARD)
    ========================================== */
 .metric-grid {
@@ -1289,6 +1298,7 @@ body.mobile-menu-open #sidebar-backdrop { display: block; }
     .metric-grid { grid-template-columns: repeat(2, 1fr); gap: .7rem; }
     .metric-card { padding: 1rem 1.1rem; }
     .metric-value { font-size: 1.5rem; }
+    .stats-kpi-grid { grid-template-columns: repeat(2, 1fr); gap: .7rem; }
 
     .disparo-config-grid { grid-template-columns: 1fr; }
 
@@ -1313,6 +1323,7 @@ body.mobile-menu-open #sidebar-backdrop { display: block; }
 
 @media (max-width: 480px) {
     .metric-grid { grid-template-columns: 1fr; }
+    .stats-kpi-grid { grid-template-columns: 1fr; }
     .content { padding: calc(56px + .8rem) .6rem .8rem; }
     .glass { padding: 1rem; }
 }

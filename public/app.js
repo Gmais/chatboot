@@ -425,6 +425,143 @@ async function loadNovosContatosChart() {
 loadNovosContatosChart();
 
 // =====================================
+// ESTATÍSTICAS (PAINEL DE CONTROLE)
+// =====================================
+async function carregarEstatisticas() {
+    const kpiGrid = document.getElementById('stats-kpi-grid');
+    if (!kpiGrid) return;
+    const periodo = document.getElementById('stats-periodo')?.value || 30;
+    const msgsChart = document.getElementById('stats-msgs-chart');
+    const msgsEixo = document.getElementById('stats-msgs-eixo');
+    const statusLista = document.getElementById('stats-status-lista');
+    const etiquetasLista = document.getElementById('stats-etiquetas-lista');
+    const automacaoLista = document.getElementById('stats-automacao-lista');
+
+    try {
+        const res = await fetch(`/api/estatisticas?dias=${periodo}`);
+        const s = await res.json();
+
+        // ---- KPIs ----
+        const tempoResp = s.atendimento.tempo_medio_resposta_min;
+        const tempoRespFmt = tempoResp < 60 ? `${tempoResp}min` : `${(tempoResp / 60).toFixed(1)}h`;
+        const kpis = [
+            ['📥', 'green', 'Recebidas no período', s.mensagens.recebidas],
+            ['📤', 'blue',  'Enviadas no período', s.mensagens.enviadas],
+            ['🤖', 'green', 'Respostas automáticas', s.mensagens.respostas_automaticas],
+            ['🙋', 'blue',  'Respostas manuais', s.mensagens.respostas_manuais],
+            ['⏱️', 'amber', 'Tempo médio de resposta', tempoRespFmt],
+            ['⚠️', 'amber', 'Ainda sem resposta', s.mensagens.nao_respondidas],
+            ['👥', 'green', 'Novos contatos', s.contatos.novos_periodo],
+            ['😴', 'amber', 'Inativos (30 dias)', s.contatos.inativos_30d],
+        ];
+        kpiGrid.innerHTML = kpis.map(([icone, cor, label, valor]) => `
+            <div class="metric-card">
+                <div class="metric-icon ${cor}">${icone}</div>
+                <div class="metric-info">
+                    <span class="metric-label">${label}</span>
+                    <span class="metric-value" style="font-size:1.4rem">${valor}</span>
+                </div>
+            </div>
+        `).join('');
+
+        // ---- Gráfico: mensagens por dia (recebidas x enviadas) ----
+        if (msgsChart) {
+            const max = Math.max(1, ...s.mensagens.por_dia.flatMap(d => [d.recebidas, d.enviadas]));
+            msgsChart.innerHTML = '';
+            s.mensagens.por_dia.forEach(d => {
+                const grupo = document.createElement('div');
+                grupo.style.cssText = 'flex:1;min-width:3px;display:flex;align-items:flex-end;gap:1px;height:100%;cursor:pointer';
+                grupo.tabIndex = 0;
+
+                const alturaRec = Math.max(2, Math.round((d.recebidas / max) * 100));
+                const alturaEnv = Math.max(2, Math.round((d.enviadas / max) * 100));
+                const barRec = document.createElement('div');
+                barRec.style.cssText = `flex:1;height:${alturaRec}%;background:var(--green);border-radius:2px 2px 0 0;min-width:1px`;
+                const barEnv = document.createElement('div');
+                barEnv.style.cssText = `flex:1;height:${alturaEnv}%;background:var(--blue);border-radius:2px 2px 0 0;min-width:1px`;
+                grupo.append(barRec, barEnv);
+
+                const dataFmt = new Date(d.data + 'T12:00:00').toLocaleDateString('pt-BR', { day: '2-digit', month: 'short' });
+                const rotulo = `${d.recebidas} recebida${d.recebidas !== 1 ? 's' : ''} · ${d.enviadas} enviada${d.enviadas !== 1 ? 's' : ''}`;
+                const mostrar = () => mostrarChartTooltip(grupo, rotulo, dataFmt);
+                grupo.addEventListener('mouseenter', mostrar);
+                grupo.addEventListener('focus', mostrar);
+                grupo.addEventListener('mouseleave', esconderChartTooltip);
+                grupo.addEventListener('blur', esconderChartTooltip);
+
+                msgsChart.appendChild(grupo);
+            });
+        }
+        if (msgsEixo) {
+            msgsEixo.innerHTML = '';
+            const total = s.mensagens.por_dia.length;
+            const passo = total > 14 ? Math.ceil(total / 10) : 1;
+            s.mensagens.por_dia.forEach((d, i) => {
+                const lbl = document.createElement('span');
+                lbl.style.cssText = 'flex:1;text-align:center;font-size:.63rem;color:var(--text-3);min-width:3px';
+                lbl.textContent = (i % passo === 0) ? d.diaMes : '';
+                msgsEixo.appendChild(lbl);
+            });
+        }
+
+        // ---- Conversas por status ----
+        if (statusLista) {
+            const rotulos = { aberta: '🟢 Abertas', fechada: '⚪ Fechadas', aguardando: '🟡 Aguardando' };
+            const maxStatus = Math.max(1, ...s.atendimento.por_status.map(x => x.total));
+            statusLista.innerHTML = s.atendimento.por_status.map(x => `
+                <div>
+                    <div style="display:flex;justify-content:space-between;font-size:.85rem;margin-bottom:.3rem">
+                        <span style="color:var(--text-2)">${rotulos[x.status] || x.status}</span>
+                        <b style="color:var(--text-1)">${x.total}</b>
+                    </div>
+                    <div class="progress-bar-track"><div class="progress-bar-fill" style="width:${(x.total / maxStatus) * 100}%"></div></div>
+                </div>
+            `).join('') + `
+                <div style="display:flex;justify-content:space-between;font-size:.8rem;color:var(--text-3);margin-top:.2rem;padding-top:.7rem;border-top:1px solid rgba(255,255,255,0.06)">
+                    <span>🙋 Aguardando humano agora</span><b style="color:var(--text-1)">${s.atendimento.aguardando_humano}</b>
+                </div>
+            `;
+        }
+
+        // ---- Contatos por etiqueta ----
+        if (etiquetasLista) {
+            const comEtiqueta = s.contatos.por_etiqueta.filter(e => e.total > 0);
+            const maxE = Math.max(1, ...comEtiqueta.map(e => e.total));
+            etiquetasLista.innerHTML = comEtiqueta.length
+                ? comEtiqueta.map(e => `
+                    <div style="display:flex;align-items:center;gap:.7rem">
+                        <span style="width:110px;font-size:.8rem;color:var(--text-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex-shrink:0">${e.nome}</span>
+                        <div class="progress-bar-track" style="flex:1"><div class="progress-bar-fill" style="width:${(e.total / maxE) * 100}%;background:${e.cor}"></div></div>
+                        <b style="width:28px;text-align:right;font-size:.8rem;flex-shrink:0">${e.total}</b>
+                    </div>
+                `).join('')
+                : '<p style="color:var(--text-3);font-size:.85rem;text-align:center;padding:1rem 0">Nenhum contato etiquetado ainda.</p>';
+        }
+
+        // ---- Automações ----
+        if (automacaoLista) {
+            automacaoLista.innerHTML = s.automacao.fluxos.length
+                ? s.automacao.fluxos.map(a => `
+                    <div style="display:flex;justify-content:space-between;align-items:center;padding:.5rem 0;border-bottom:1px solid rgba(255,255,255,0.05)">
+                        <div>
+                            <div style="font-size:.85rem;color:var(--text-1);font-weight:500">${a.nome}${!a.ativo ? ' <span style="color:var(--text-3);font-weight:400">(pausada)</span>' : ''}</div>
+                            <div style="font-size:.72rem;color:var(--text-3)">${a.em_andamento} em andamento</div>
+                        </div>
+                        <b style="color:var(--green);font-size:.9rem">${a.concluidos_total}</b>
+                    </div>
+                `).join('')
+                : '<p style="color:var(--text-3);font-size:.85rem;text-align:center;padding:1rem 0">Nenhuma automação criada ainda.</p>';
+        }
+    } catch (e) {
+        console.error('Erro ao carregar estatísticas', e);
+        kpiGrid.innerHTML = '<p style="color:var(--text-3);text-align:center;padding:1rem;grid-column:1/-1">Erro ao carregar estatísticas.</p>';
+    }
+}
+
+document.getElementById('stats-periodo')?.addEventListener('change', carregarEstatisticas);
+carregarEstatisticas();
+
+// =====================================
 // BOTÃO DESCONECTAR
 // =====================================
 if (btnDisconnect) {
@@ -486,6 +623,7 @@ navBtns.forEach(btn => {
         // Título limpo (sem emojis de SVG)
         const text = btn.textContent.trim().split('\n')[0].trim();
         pageTitle.textContent = text;
+        if (targetId === 'dashboard-section') carregarEstatisticas();
         if (targetId === 'mensagens-section') loadRegras();
         if (targetId === 'ia-section') loadIaConfig();
         if (targetId === 'configuracoes-section') { loadHorarioConfig(); loadDelayResposta(); }

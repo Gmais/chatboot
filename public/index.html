@@ -182,6 +182,51 @@
                 </div>
             </div>
 
+            <!-- Estatísticas -->
+            <div class="section-header" style="margin-top:1.5rem">
+                <h3>📊 Estatísticas</h3>
+                <select id="stats-periodo" style="background:var(--input-bg);border:1px solid rgba(255,255,255,0.1);border-radius:var(--radius-sm);padding:.4rem .7rem;color:var(--text-1);font-family:'Inter',sans-serif;font-size:.82rem">
+                    <option value="7">Últimos 7 dias</option>
+                    <option value="30" selected>Últimos 30 dias</option>
+                    <option value="90">Últimos 90 dias</option>
+                </select>
+            </div>
+
+            <div class="stats-kpi-grid" id="stats-kpi-grid">
+                <p style="color:var(--text-3);text-align:center;padding:1rem;grid-column:1/-1">Carregando...</p>
+            </div>
+
+            <div class="cards-grid" style="margin-top:1.5rem">
+                <div class="card glass">
+                    <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:.2rem">
+                        <h3 style="margin-bottom:0">💬 Mensagens por dia</h3>
+                        <div style="display:flex;gap:.9rem;font-size:.72rem;color:var(--text-3)">
+                            <span><span style="display:inline-block;width:8px;height:8px;border-radius:2px;background:var(--green);margin-right:.3rem"></span>Recebidas</span>
+                            <span><span style="display:inline-block;width:8px;height:8px;border-radius:2px;background:var(--blue);margin-right:.3rem"></span>Enviadas</span>
+                        </div>
+                    </div>
+                    <div id="stats-msgs-chart" style="display:flex;align-items:flex-end;gap:3px;height:130px;margin-top:1rem"></div>
+                    <div id="stats-msgs-eixo" style="display:flex;gap:3px;margin-top:.4rem"></div>
+                </div>
+
+                <div class="card glass">
+                    <h3>🎫 Conversas por status</h3>
+                    <div id="stats-status-lista" style="display:flex;flex-direction:column;gap:.7rem;margin-top:.8rem"></div>
+                </div>
+            </div>
+
+            <div class="cards-grid" style="margin-top:1.5rem">
+                <div class="card glass">
+                    <h3>🏷️ Contatos por etiqueta</h3>
+                    <div id="stats-etiquetas-lista" style="display:flex;flex-direction:column;gap:.6rem;margin-top:.8rem"></div>
+                </div>
+
+                <div class="card glass">
+                    <h3>🤖 Automações</h3>
+                    <div id="stats-automacao-lista" style="display:flex;flex-direction:column;gap:.2rem;margin-top:.6rem"></div>
+                </div>
+            </div>
+
         </div>
 
         <!-- ===================== MENSAGENS ===================== -->

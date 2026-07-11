@@ -853,6 +853,133 @@ app.get('/api/leads/por-dia', async (req, res) => {
     }
 });
 
+// Estatísticas agregadas pro Painel de Controle: mensagens, atendimento,
+// contatos e automações num período (7/30/90 dias). Período capado em 90 pra
+// não pesar a subquery correlacionada de tempo médio de resposta.
+app.get('/api/estatisticas', async (req, res) => {
+    const dias = Math.min(parseInt(req.query.dias) || 30, 90);
+    try {
+        const desdeMoment = moment.tz('America/Sao_Paulo').subtract(dias - 1, 'days').startOf('day');
+        const desdeSql = desdeMoment.utc().format('YYYY-MM-DD HH:mm:ss');
+
+        // ---- Mensagens ----
+        const totaisMsg = await db.get(`
+            SELECT
+                SUM(CASE WHEN direcao='in' THEN 1 ELSE 0 END) AS recebidas,
+                SUM(CASE WHEN direcao='out' AND manual=1 THEN 1 ELSE 0 END) AS manuais,
+                SUM(CASE WHEN direcao='out' AND manual=0 THEN 1 ELSE 0 END) AS automaticas
+            FROM conversas WHERE ts >= ?
+        `, desdeSql);
+
+        const naoRespondidas = await db.get(`
+            SELECT COUNT(*) AS n FROM (
+                SELECT telefone,
+                    MAX(CASE WHEN direcao='in' THEN ts END) AS ult_in,
+                    MAX(CASE WHEN direcao='out' THEN ts END) AS ult_out
+                FROM conversas WHERE ts >= ?
+                GROUP BY telefone
+            ) WHERE ult_in IS NOT NULL AND (ult_out IS NULL OR ult_out < ult_in)
+        `, desdeSql);
+
+        // Um ponto por dia — mesmo padrão de /api/leads/por-dia: agrupa em JS
+        // convertendo UTC → America/Sao_Paulo, pra não errar o dia por fuso.
+        const msgRows = await db.all('SELECT direcao, ts FROM conversas WHERE ts >= ?', desdeSql);
+        const porDiaMap = new Map();
+        msgRows.forEach(r => {
+            const dia = moment.utc(r.ts).tz('America/Sao_Paulo').format('YYYY-MM-DD');
+            if (!porDiaMap.has(dia)) porDiaMap.set(dia, { recebidas: 0, enviadas: 0 });
+            const b = porDiaMap.get(dia);
+            if (r.direcao === 'in') b.recebidas++;
+            else if (r.direcao === 'out') b.enviadas++;
+        });
+        const porDia = [];
+        for (let i = dias - 1; i >= 0; i--) {
+            const m = moment.tz('America/Sao_Paulo').subtract(i, 'days');
+            const chave = m.format('YYYY-MM-DD');
+            const b = porDiaMap.get(chave) || { recebidas: 0, enviadas: 0 };
+            porDia.push({ data: chave, diaMes: m.format('DD'), recebidas: b.recebidas, enviadas: b.enviadas });
+        }
+
+        // ---- Atendimento ----
+        const porStatusRaw = await db.all(`
+            SELECT COALESCE(cs.status, 'aberta') AS status, COUNT(*) AS n
+            FROM (SELECT DISTINCT telefone FROM conversas) c
+            LEFT JOIN conversas_status cs ON cs.telefone = c.telefone
+            GROUP BY COALESCE(cs.status, 'aberta')
+        `);
+        const aguardandoHumano = await db.get('SELECT COUNT(*) AS n FROM conversas_humano');
+
+        // Tempo médio de resposta: primeira mensagem "out" depois de cada "in"
+        // dentro do período. idx_conversas_tel(telefone, ts) cobre a subquery.
+        const tempoResp = await db.get(`
+            SELECT AVG(diff) AS segundos FROM (
+                SELECT (julianday(m2.ts) - julianday(m1.ts)) * 86400 AS diff
+                FROM conversas m1
+                JOIN conversas m2 ON m2.telefone = m1.telefone AND m2.direcao = 'out'
+                    AND m2.ts = (
+                        SELECT MIN(ts) FROM conversas x
+                        WHERE x.telefone = m1.telefone AND x.direcao = 'out' AND x.ts > m1.ts
+                    )
+                WHERE m1.direcao = 'in' AND m1.ts >= ?
+            ) WHERE diff BETWEEN 0 AND 86400
+        `, desdeSql);
+
+        // ---- Contatos ----
+        const totalContatos = await db.get('SELECT COUNT(*) AS n FROM leads');
+        const novosContatos = await db.get('SELECT COUNT(*) AS n FROM leads WHERE data_captura >= ?', desdeSql);
+        const inativos = await db.get(`
+            SELECT COUNT(*) AS n FROM leads l
+            WHERE NOT EXISTS (
+                SELECT 1 FROM conversas c WHERE c.telefone = l.telefone AND c.ts >= datetime('now', '-30 days')
+            )
+        `);
+        const porEtiqueta = await db.all(`
+            SELECT e.nome, e.cor, COUNT(ce.telefone) AS total
+            FROM etiquetas e
+            LEFT JOIN contato_etiquetas ce ON ce.etiqueta_id = e.id
+            GROUP BY e.id
+            ORDER BY total DESC
+        `);
+
+        // ---- Automação (mesmos campos de /api/automacoes) ----
+        const fluxos = await db.all(`
+            SELECT a.nome, a.ativo, e.nome AS etiqueta_nome, e.cor AS etiqueta_cor,
+                   a.total_concluidos AS concluidos_total,
+                   (SELECT COUNT(*) FROM contato_automacao_estado WHERE automacao_id = a.id) AS em_andamento
+            FROM automacoes a
+            LEFT JOIN etiquetas e ON e.id = a.etiqueta_id
+            ORDER BY em_andamento DESC, a.criado_em DESC
+        `);
+
+        res.json({
+            periodo_dias: dias,
+            mensagens: {
+                recebidas: totaisMsg.recebidas || 0,
+                enviadas: (totaisMsg.manuais || 0) + (totaisMsg.automaticas || 0),
+                respostas_automaticas: totaisMsg.automaticas || 0,
+                respostas_manuais: totaisMsg.manuais || 0,
+                nao_respondidas: naoRespondidas.n || 0,
+                por_dia: porDia,
+            },
+            atendimento: {
+                por_status: porStatusRaw.map(r => ({ status: r.status, total: r.n })),
+                aguardando_humano: aguardandoHumano.n || 0,
+                tempo_medio_resposta_min: tempoResp.segundos ? Math.round(tempoResp.segundos / 60) : 0,
+            },
+            contatos: {
+                total: totalContatos.n || 0,
+                novos_periodo: novosContatos.n || 0,
+                inativos_30d: inativos.n || 0,
+                por_etiqueta: porEtiqueta,
+            },
+            automacao: { fluxos },
+        });
+    } catch (err) {
+        console.error('Erro ao calcular estatísticas:', err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
 // Export Leads como CSV
 app.get('/api/leads/export', async (req, res) => {
     const leads = await db.all('SELECT telefone, data_captura, mensagens_recebidas FROM leads ORDER BY data_captura DESC');
