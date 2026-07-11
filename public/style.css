@@ -465,6 +465,24 @@ header h1 {
 
 .contato-row:hover { background: rgba(255,255,255,0.04); }
 
+.btn-nova-conversa {
+    width: 30px; height: 30px;
+    border-radius: 50%;
+    background: var(--green);
+    color: #000;
+    border: none;
+    display: flex; align-items: center; justify-content: center;
+    cursor: pointer;
+    flex-shrink: 0;
+    box-shadow: 0 0 10px var(--green-glow), 0 0 4px rgba(37,211,102,0.6);
+    transition: var(--transition);
+}
+.btn-nova-conversa:hover {
+    background: var(--green-dark);
+    box-shadow: 0 0 16px rgba(37,211,102,0.7), 0 0 6px rgba(37,211,102,0.85);
+    transform: translateY(-1px) scale(1.06);
+}
+
 .etiqueta-chip {
     display: inline-flex;
     align-items: center;

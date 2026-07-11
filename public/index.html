@@ -393,7 +393,9 @@
                             <h3 style="margin-bottom:0">💬 Bate Papo ao Vivo</h3>
                             <div style="display:flex;gap:.3rem;align-items:center">
                                 <button type="button" id="btn-chat-volume" class="btn-secondary" style="padding:.35rem .5rem;font-size:.85rem;line-height:1" title="Volume das notificações">🔔</button>
-                                <button type="button" id="btn-chat-nova-conversa" class="btn-secondary" style="padding:.35rem .5rem;font-size:.85rem;line-height:1" title="Iniciar nova conversa">✏️</button>
+                                <button type="button" id="btn-chat-nova-conversa" class="btn-nova-conversa" title="Iniciar nova conversa">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round" width="16" height="16"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                                </button>
                             </div>
                         </div>
                         <div class="chat-search-wrap">
@@ -1101,7 +1103,7 @@ Sempre tente agendar uma aula experimental."></textarea>
         <div class="modal">
             <h3>✏️ Iniciar Nova Conversa</h3>
             <p style="color:var(--text-3);font-size:.85rem;margin:.5rem 0 1rem">Escolha um contato já cadastrado ou digite um número de WhatsApp.</p>
-            <input type="text" id="nova-conversa-busca" placeholder="Buscar contato por nome ou telefone..." style="width:100%;background:var(--input-bg);border:1px solid rgba(255,255,255,0.1);border-radius:var(--radius-sm);padding:.6rem .8rem;color:var(--text-1);font-size:.85rem;margin-bottom:.8rem">
+            <input type="text" id="nova-conversa-busca" placeholder="Buscar contato por nome, telefone ou matrícula..." style="width:100%;background:var(--input-bg);border:1px solid rgba(255,255,255,0.1);border-radius:var(--radius-sm);padding:.6rem .8rem;color:var(--text-1);font-size:.85rem;margin-bottom:.8rem">
             <div id="nova-conversa-lista" style="max-height:220px;overflow-y:auto;display:flex;flex-direction:column;gap:.3rem;margin-bottom:1rem"></div>
             <div class="modal-footer">
                 <button class="btn-cancel" id="modal-nova-conversa-fechar">Fechar</button>

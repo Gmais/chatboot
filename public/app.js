@@ -2324,14 +2324,14 @@ const CM = (() => {
         try {
             const res = await fetch('/api/contatos');
             const todos = await res.json();
-            const filtrados = todos.filter(c => !termo || c.nome.toLowerCase().includes(termo) || c.telefone.includes(termo.replace(/\D/g, '') || termo)).slice(0, 50);
+            const filtrados = todos.filter(c => !termo || c.nome.toLowerCase().includes(termo) || c.telefone.includes(termo.replace(/\D/g, '') || termo) || (c.matricula || '').toLowerCase().includes(termo)).slice(0, 50);
 
             let html = filtrados.map(c => `
                 <div class="chat-contact-item nova-conversa-item" data-telefone="${c.telefone}" style="border-radius:8px;cursor:pointer">
                     <div class="chat-contact-avatar">${avatarLetter(c.nome)}</div>
                     <div class="chat-contact-body">
                         <div class="chat-contact-name">${c.nome}</div>
-                        <div class="chat-contact-preview">${c.telefone}</div>
+                        <div class="chat-contact-preview">${c.telefone}${c.matricula ? ` · Matrícula ${c.matricula}` : ''}</div>
                     </div>
                 </div>
             `).join('');
