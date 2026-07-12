@@ -383,6 +383,13 @@ async function initDB() {
             ordem INTEGER DEFAULT 0
         );
         CREATE INDEX IF NOT EXISTS idx_programacao_acoes_prog ON programacao_acoes(programacao_id);
+        CREATE TABLE IF NOT EXISTS relatorio_dispensados (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            tipo TEXT NOT NULL,
+            telefone TEXT NOT NULL,
+            dispensado_em DATETIME DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(tipo, telefone)
+        );
     `);
     try { await db.exec(`ALTER TABLE programacao_acoes ADD COLUMN intervalo_depois_segundos INTEGER DEFAULT 60`); } catch (e) { }
     // "automacao" = roda Importar Lista (sincroniza a fila com quem tem a
@@ -420,6 +427,7 @@ async function initDB() {
     // do servidor, staff não tinha como saber por que um contato específico
     // nunca recebe a mensagem sem pedir pra checar o Railway.
     try { await db.exec(`ALTER TABLE contato_automacao_estado ADD COLUMN ultimo_erro TEXT DEFAULT NULL`); } catch (e) { }
+    try { await db.exec(`ALTER TABLE contato_automacao_estado ADD COLUMN ultimo_erro_em DATETIME DEFAULT NULL`); } catch (e) { }
     // Janela de horário permitida pra automação mandar mensagem (HH:mm) — vazio = sem restrição
     try { await db.exec(`ALTER TABLE automacoes ADD COLUMN horario_inicio TEXT DEFAULT NULL`); } catch (e) { }
     try { await db.exec(`ALTER TABLE automacoes ADD COLUMN horario_fim TEXT DEFAULT NULL`); } catch (e) { }
@@ -1161,6 +1169,137 @@ app.get('/api/contatos', async (req, res) => {
         res.json(contatos);
     } catch (err) {
         console.error('Erro /api/contatos:', err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// =====================================
+// API REST — RELATÓRIO (erros de WhatsApp + cadastro incompleto)
+// =====================================
+// Une as duas fontes de erro de envio que já existem no sistema — fila de
+// automação (contato_automacao_estado.ultimo_erro) e disparo em massa
+// (disparo_envios_log) — numa lista só, com quem tem o erro mais recente.
+// "Corrigido" (relatorio_dispensados) só esconde da lista, não mexe no
+// histórico real; se o MESMO contato falhar de novo depois de já ter sido
+// marcado corrigido, ele reaparece (compara o timestamp da dispensa com o do
+// erro mais recente).
+app.get('/api/relatorio/erros-whatsapp', async (req, res) => {
+    try {
+        const errosAutomacao = await db.all(`
+            SELECT telefone, ultimo_erro AS erro, ultimo_erro_em AS ocorrido_em
+            FROM contato_automacao_estado WHERE ultimo_erro IS NOT NULL
+        `);
+        const errosDisparo = await db.all(`
+            SELECT telefone, erro, enviado_em AS ocorrido_em
+            FROM disparo_envios_log WHERE sucesso = 0
+        `);
+
+        // Uma linha por telefone — fica só com a ocorrência mais recente entre
+        // as duas fontes (comparação lexicográfica funciona porque as duas
+        // colunas de origem são DATETIME no mesmo formato 'YYYY-MM-DD HH:MM:SS').
+        const porTelefone = new Map();
+        [...errosAutomacao, ...errosDisparo].forEach(e => {
+            if (!e.telefone) return;
+            const telefoneLimpo = e.telefone.replace('@c.us', '').replace('@lid', '');
+            const ocorridoEm = e.ocorrido_em || '';
+            const atual = porTelefone.get(telefoneLimpo);
+            if (!atual || ocorridoEm > atual.ocorrido_em) {
+                porTelefone.set(telefoneLimpo, { telefone: telefoneLimpo, erro: e.erro, ocorrido_em: ocorridoEm });
+            }
+        });
+
+        const nomes = await db.all(`
+            SELECT c.telefone, c.nome FROM conversas c
+            INNER JOIN (SELECT telefone, MAX(ts) AS max_ts FROM conversas GROUP BY telefone) latest
+                ON c.telefone = latest.telefone AND c.ts = latest.max_ts
+        `);
+        const nomePorTelefone = new Map(nomes.map(n => [n.telefone, n.nome]));
+        const leadsRows = await db.all('SELECT telefone, nome, matricula FROM leads');
+        const leadPorTelefone = new Map(leadsRows.map(l => [l.telefone.replace('@c.us', '').replace('@lid', ''), l]));
+        const vinculos = await db.all('SELECT telefone, matricula FROM vinculo_pacto WHERE matricula IS NOT NULL');
+        function matriculaDoTelefone(telefoneLimpo) {
+            const v = vinculos.find(v => v.telefone.includes(telefoneLimpo) || telefoneLimpo.includes(v.telefone));
+            return v?.matricula || null;
+        }
+
+        const dispensados = await db.all("SELECT telefone, dispensado_em FROM relatorio_dispensados WHERE tipo = 'erro_whatsapp'");
+        const dispensadoEmPorTelefone = new Map(dispensados.map(d => [d.telefone, d.dispensado_em]));
+
+        const resultado = [...porTelefone.values()]
+            .filter(e => {
+                const dispensadoEm = dispensadoEmPorTelefone.get(e.telefone);
+                return !dispensadoEm || dispensadoEm < e.ocorrido_em;
+            })
+            .map(e => {
+                const lead = leadPorTelefone.get(e.telefone);
+                return {
+                    telefone: e.telefone,
+                    nome: lead?.nome || nomePorTelefone.get(e.telefone) || e.telefone,
+                    matricula: lead?.matricula || matriculaDoTelefone(e.telefone),
+                    erro: e.erro,
+                    ocorrido_em: sqliteTsParaIso(e.ocorrido_em),
+                };
+            })
+            .sort((a, b) => (b.ocorrido_em || '').localeCompare(a.ocorrido_em || ''));
+        res.json(resultado);
+    } catch (err) {
+        console.error('Erro /api/relatorio/erros-whatsapp:', err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Contatos sem matrícula OU sem data de nascimento (falta qualquer uma das
+// duas já entra na lista) — mesma resolução de matrícula usada em
+// /api/contatos (prioriza leads.matricula, cai pro vínculo Pacto).
+app.get('/api/relatorio/sem-cadastro', async (req, res) => {
+    try {
+        const leads = await db.all('SELECT telefone, nome, matricula, data_nascimento FROM leads');
+        const nomes = await db.all(`
+            SELECT c.telefone, c.nome FROM conversas c
+            INNER JOIN (SELECT telefone, MAX(ts) AS max_ts FROM conversas GROUP BY telefone) latest
+                ON c.telefone = latest.telefone AND c.ts = latest.max_ts
+        `);
+        const nomePorTelefone = new Map(nomes.map(n => [n.telefone, n.nome]));
+        const vinculos = await db.all('SELECT telefone, matricula FROM vinculo_pacto WHERE matricula IS NOT NULL');
+        function matriculaDoTelefone(telefoneLimpo) {
+            const v = vinculos.find(v => v.telefone.includes(telefoneLimpo) || telefoneLimpo.includes(v.telefone));
+            return v?.matricula || null;
+        }
+        const dispensados = await db.all("SELECT telefone FROM relatorio_dispensados WHERE tipo = 'sem_cadastro'");
+        const dispensadosSet = new Set(dispensados.map(d => d.telefone));
+
+        const resultado = leads
+            .map(l => {
+                const telefone = l.telefone.replace('@c.us', '').replace('@lid', '');
+                const matricula = l.matricula || matriculaDoTelefone(telefone);
+                return {
+                    telefone,
+                    nome: l.nome || nomePorTelefone.get(telefone) || telefone,
+                    falta_matricula: !matricula,
+                    falta_nascimento: !l.data_nascimento,
+                };
+            })
+            .filter(c => (c.falta_matricula || c.falta_nascimento) && !dispensadosSet.has(c.telefone));
+        res.json(resultado);
+    } catch (err) {
+        console.error('Erro /api/relatorio/sem-cadastro:', err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.post('/api/relatorio/dispensar', async (req, res) => {
+    const { tipo, telefone } = req.body;
+    if (!['erro_whatsapp', 'sem_cadastro'].includes(tipo) || !telefone) {
+        return res.status(400).json({ error: 'tipo/telefone inválidos.' });
+    }
+    try {
+        await db.run(
+            `INSERT INTO relatorio_dispensados (tipo, telefone) VALUES (?, ?)
+             ON CONFLICT(tipo, telefone) DO UPDATE SET dispensado_em = CURRENT_TIMESTAMP`,
+            [tipo, telefone]
+        );
+        res.json({ success: true });
+    } catch (err) {
         res.status(500).json({ error: err.message });
     }
 });
@@ -1907,7 +2046,7 @@ async function dispararMensagensDaAutomacao(automacaoId) {
         } catch (e) {
             console.error(`Erro ao disparar mensagem da automação #${automacaoId} pra ${estado.telefone}:`, e.message);
             await db.run(
-                'UPDATE contato_automacao_estado SET ultimo_erro = ? WHERE telefone = ? AND automacao_id = ?',
+                'UPDATE contato_automacao_estado SET ultimo_erro = ?, ultimo_erro_em = CURRENT_TIMESTAMP WHERE telefone = ? AND automacao_id = ?',
                 [e.message, estado.telefone, automacaoId]
             );
         }
@@ -2475,7 +2614,7 @@ app.get('/api/automacoes/:id/progresso', async (req, res) => {
         // de repetir uma média fixa — no modo aleatório, a lista de horários
         // previstos varia contato a contato, igual o envio de verdade vai variar.
         const contatos = estados.map((e, i) => {
-            if (i > 0) acumuladoMs += calcularDelayAutomacao(configDelay);
+            if (disparoAtivo && i > 0) acumuladoMs += calcularDelayAutomacao(configDelay);
             return {
                 telefone: e.telefone,
                 nome: nomePorTelefone.get(e.telefone) || e.telefone,

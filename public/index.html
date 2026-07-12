@@ -51,6 +51,10 @@
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
                 <span class="nav-label">Disparos</span>
             </a>
+            <a href="#" class="nav-btn" data-target="relatorio-section" title="Relatório">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 17H7A2 2 0 0 1 5 15V5A2 2 0 0 1 7 3H17A2 2 0 0 1 19 5V15A2 2 0 0 1 17 17H15"/><path d="M9 12l2 2 4-4"/><path d="M9 21H15"/></svg>
+                <span class="nav-label">Relatório</span>
+            </a>
             <a href="#" class="nav-btn" data-target="automacoes-section" title="Automação">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M3 12h3m12 0h3M12 3v3m0 12v3M5.6 5.6l2.1 2.1m8.6 8.6 2.1 2.1M5.6 18.4l2.1-2.1m8.6-8.6 2.1-2.1"/></svg>
                 <span class="nav-label">Automação</span>
@@ -784,6 +788,29 @@
                 </div>
 
                 <div id="acompanhamento-automacoes-lista" style="display:flex;flex-direction:column;gap:.8rem">
+                    <div style="padding:1.5rem;text-align:center;color:var(--text-3)">Carregando...</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ===================== RELATÓRIO ===================== -->
+        <div id="relatorio-section" class="page-section hidden">
+            <div class="card glass" style="margin-bottom:1.5rem">
+                <div class="section-header">
+                    <h3>⚠️ Erros de Número de WhatsApp</h3>
+                </div>
+                <p style="color:var(--text-3);font-size:.8rem;margin:-.6rem 0 1rem">Contatos que tiveram falha no envio de mensagem (número inválido, sem WhatsApp, etc). Marque "Corrigido" depois de acertar o cadastro — se falhar de novo, volta a aparecer aqui.</p>
+                <div id="relatorio-erros-lista" style="display:flex;flex-direction:column;gap:.4rem">
+                    <div style="padding:1.5rem;text-align:center;color:var(--text-3)">Carregando...</div>
+                </div>
+            </div>
+
+            <div class="card glass">
+                <div class="section-header">
+                    <h3>📋 Sem Matrícula e Data de Nascimento</h3>
+                </div>
+                <p style="color:var(--text-3);font-size:.8rem;margin:-.6rem 0 1rem">Contatos sem matrícula ou sem data de nascimento cadastrada. Clique no nome pra editar o contato.</p>
+                <div id="relatorio-sem-cadastro-lista" style="display:flex;flex-direction:column;gap:.4rem">
                     <div style="padding:1.5rem;text-align:center;color:var(--text-3)">Carregando...</div>
                 </div>
             </div>

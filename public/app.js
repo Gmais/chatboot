@@ -683,6 +683,7 @@ navBtns.forEach(btn => {
         if (targetId === 'automacoes-section') { loadEtiquetas().then(() => loadAutomacoes()); }
         if (targetId === 'mensagens-personalizadas-section') loadMensagensPersonalizadas();
         if (targetId === 'disparos-section') { loadAcompanhamentoAutomacoes(); loadAutomacaoDelayConfig(); carregarMensagensPersonalizadasParaDisparo(); }
+        if (targetId === 'relatorio-section') { loadRelatorioErrosWhatsapp(); loadRelatorioSemCadastro(); }
     });
 });
 
@@ -1950,6 +1951,97 @@ function fecharEditarContato() {
     contatoEditandoTelefone = null;
     modalEditarContatoOverlay?.classList.remove('open');
 }
+
+// =====================================
+// RELATÓRIO — erros de WhatsApp + cadastro incompleto
+// =====================================
+const relatorioErrosLista = document.getElementById('relatorio-erros-lista');
+const relatorioSemCadastroLista = document.getElementById('relatorio-sem-cadastro-lista');
+
+async function marcarRelatorioCorrigido(tipo, telefone, linhaEl) {
+    try {
+        await fetch('/api/relatorio/dispensar', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ tipo, telefone })
+        });
+        linhaEl?.remove();
+        showToast('Marcado como corrigido', '', 'success', 2000);
+    } catch (e) {
+        showToast('Erro', 'Não foi possível marcar como corrigido', 'error');
+    }
+}
+
+async function loadRelatorioErrosWhatsapp() {
+    if (!relatorioErrosLista) return;
+    try {
+        const res = await fetch('/api/relatorio/erros-whatsapp');
+        const lista = await res.json();
+        relatorioErrosLista.innerHTML = lista.length
+            ? lista.map(c => `
+                <div class="contato-row" data-telefone="${c.telefone}" style="display:flex;align-items:center;gap:.8rem;padding:.6rem .7rem;border-radius:8px">
+                    <div style="flex:1;min-width:0">
+                        <div style="font-size:.88rem;color:var(--text-1);font-weight:500">${c.nome}</div>
+                        <div style="font-size:.75rem;color:var(--text-3)">${c.telefone}${c.matricula ? ` · Matrícula ${c.matricula}` : ''}</div>
+                        <div style="font-size:.75rem;color:var(--red);margin-top:.2rem">⚠️ ${c.erro}</div>
+                    </div>
+                    <label style="display:flex;align-items:center;gap:.4rem;font-size:.78rem;color:var(--text-3);cursor:pointer;white-space:nowrap">
+                        <input type="checkbox" class="relatorio-erro-corrigido" data-telefone="${c.telefone}" style="accent-color:var(--green);width:16px;height:16px">
+                        Corrigido
+                    </label>
+                </div>
+            `).join('')
+            : '<p style="color:var(--text-3);text-align:center;padding:1.5rem">Nenhum erro de envio pendente. 🎉</p>';
+    } catch (e) {
+        relatorioErrosLista.innerHTML = '<p style="color:var(--text-3);text-align:center;padding:1.5rem">Erro ao carregar.</p>';
+    }
+}
+
+relatorioErrosLista?.addEventListener('change', (e) => {
+    const chk = e.target.closest('.relatorio-erro-corrigido');
+    if (!chk) return;
+    marcarRelatorioCorrigido('erro_whatsapp', chk.dataset.telefone, chk.closest('.contato-row'));
+});
+
+async function loadRelatorioSemCadastro() {
+    if (!relatorioSemCadastroLista) return;
+    try {
+        const res = await fetch('/api/relatorio/sem-cadastro');
+        const lista = await res.json();
+        relatorioSemCadastroLista.innerHTML = lista.length
+            ? lista.map(c => {
+                const faltando = [c.falta_matricula ? 'matrícula' : null, c.falta_nascimento ? 'data de nascimento' : null].filter(Boolean).join(' e ');
+                return `
+                    <div class="contato-row" data-telefone="${c.telefone}" style="display:flex;align-items:center;gap:.8rem;padding:.6rem .7rem;border-radius:8px">
+                        <div class="relatorio-sem-cadastro-nome" data-telefone="${c.telefone}" style="flex:1;min-width:0;cursor:pointer">
+                            <div style="font-size:.88rem;color:var(--text-1);font-weight:500;text-decoration:underline;text-decoration-style:dotted">${c.nome}</div>
+                            <div style="font-size:.75rem;color:var(--text-3)">${c.telefone} · falta ${faltando}</div>
+                        </div>
+                        <label style="display:flex;align-items:center;gap:.4rem;font-size:.78rem;color:var(--text-3);cursor:pointer;white-space:nowrap">
+                            <input type="checkbox" class="relatorio-cadastro-corrigido" data-telefone="${c.telefone}" style="accent-color:var(--green);width:16px;height:16px">
+                            Corrigido
+                        </label>
+                    </div>
+                `;
+            }).join('')
+            : '<p style="color:var(--text-3);text-align:center;padding:1.5rem">Nenhum cadastro incompleto pendente. 🎉</p>';
+    } catch (e) {
+        relatorioSemCadastroLista.innerHTML = '<p style="color:var(--text-3);text-align:center;padding:1.5rem">Erro ao carregar.</p>';
+    }
+}
+
+relatorioSemCadastroLista?.addEventListener('change', (e) => {
+    const chk = e.target.closest('.relatorio-cadastro-corrigido');
+    if (!chk) return;
+    marcarRelatorioCorrigido('sem_cadastro', chk.dataset.telefone, chk.closest('.contato-row'));
+});
+
+relatorioSemCadastroLista?.addEventListener('click', async (e) => {
+    const nomeEl = e.target.closest('.relatorio-sem-cadastro-nome');
+    if (!nomeEl) return;
+    if (todosContatos.length === 0) await loadContatos();
+    abrirEditarContato(nomeEl.dataset.telefone);
+});
 
 contatosPageTableBody?.addEventListener('click', async (e) => {
     const btnExcluir = e.target.closest('.btn-excluir-contato');
