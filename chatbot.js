@@ -1721,27 +1721,25 @@ function janelaFechouHoje(automacao) {
 // entre envios") usada na tela de Disparos. Evita que N contatos que vencem a
 // etapa ao mesmo tempo (ex: todos fazem aniversário no mesmo dia) recebam a
 // mensagem em rajada simultânea — risco real de bloqueio da conta no WhatsApp.
-async function obterProximoDelayAutomacao() {
+async function obterConfigDelayAutomacao() {
     const configRows = await db.all(
         "SELECT chave, valor FROM configuracoes WHERE chave IN ('automacao_delay_segundos', 'automacao_delay_modo', 'automacao_delay_velocidade')"
     );
-    const configMap = Object.fromEntries(configRows.map(r => [r.chave, r.valor]));
+    return Object.fromEntries(configRows.map(r => [r.chave, r.valor]));
+}
+// Um delay por chamada — no modo aleatório, sorteia de novo a cada contato
+// (não reaproveita o mesmo valor). Usada tanto pro envio de verdade quanto
+// pra estimativa de "horário previsto" (calcularDelayAutomacao abaixo), que
+// antes usava a MÉDIA fixa da faixa pra todo mundo — dava uma lista de
+// horários previstos com o mesmíssimo intervalo entre cada contato, parecendo
+// "programado demais" mesmo com o modo aleatório configurado.
+function calcularDelayAutomacao(configMap) {
     if (configMap.automacao_delay_modo !== 'aleatorio') return (parseInt(configMap.automacao_delay_segundos) || 5) * 1000;
     const [min, max] = FAIXAS_VELOCIDADE[configMap.automacao_delay_velocidade] || FAIXAS_VELOCIDADE.medio;
     return Math.floor(min + Math.random() * (max - min));
 }
-
-// Mesma config do delay real, mas devolve a MÉDIA da faixa em vez de um valor
-// aleatório — usada só pra estimar "horário previsto" na tela de acompanhamento
-// (o envio de verdade continua usando obterProximoDelayAutomacao, aleatório).
-async function estimarDelayMedioAutomacao() {
-    const configRows = await db.all(
-        "SELECT chave, valor FROM configuracoes WHERE chave IN ('automacao_delay_segundos', 'automacao_delay_modo', 'automacao_delay_velocidade')"
-    );
-    const configMap = Object.fromEntries(configRows.map(r => [r.chave, r.valor]));
-    if (configMap.automacao_delay_modo !== 'aleatorio') return (parseInt(configMap.automacao_delay_segundos) || 5) * 1000;
-    const [min, max] = FAIXAS_VELOCIDADE[configMap.automacao_delay_velocidade] || FAIXAS_VELOCIDADE.medio;
-    return (min + max) / 2;
+async function obterProximoDelayAutomacao() {
+    return calcularDelayAutomacao(await obterConfigDelayAutomacao());
 }
 
 // Envia o conteúdo de uma etapa e decide o que vem a seguir: agenda a próxima
@@ -2467,14 +2465,17 @@ app.get('/api/automacoes/:id/progresso', async (req, res) => {
         // verdade — sem isso, a fila pode ficar parada por dias esperando alguém
         // clicar em "Disparar Mensagens", e prever um horário seria enganoso.
         const disparoAtivo = !!automacaoDisparoRodando[id];
-        const delayMedioMs = disparoAtivo ? await estimarDelayMedioAutomacao() : 0;
+        const configDelay = disparoAtivo ? await obterConfigDelayAutomacao() : null;
         let acumuladoMs = 0;
 
         // Primeiro da fila é enviado quase na hora (o disparo real só espera
         // ANTES do 2º em diante — ver "if (!primeiro) await delay(...)" em
         // dispararMensagensDaAutomacao) — daí o acúmulo começar depois do 1º.
+        // Sorteia um delay NOVO a cada contato (calcularDelayAutomacao) em vez
+        // de repetir uma média fixa — no modo aleatório, a lista de horários
+        // previstos varia contato a contato, igual o envio de verdade vai variar.
         const contatos = estados.map((e, i) => {
-            if (i > 0) acumuladoMs += delayMedioMs;
+            if (i > 0) acumuladoMs += calcularDelayAutomacao(configDelay);
             return {
                 telefone: e.telefone,
                 nome: nomePorTelefone.get(e.telefone) || e.telefone,
