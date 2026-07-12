@@ -1958,20 +1958,22 @@ function fecharEditarContato() {
 const relatorioErrosLista = document.getElementById('relatorio-erros-lista');
 const relatorioSemCadastroLista = document.getElementById('relatorio-sem-cadastro-lista');
 
-async function marcarRelatorioCorrigido(tipo, telefone, linhaEl) {
+async function marcarRelatorioDispensa(tipo, telefone, motivo, checked) {
     try {
         await fetch('/api/relatorio/dispensar', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ tipo, telefone })
+            body: JSON.stringify({ tipo, telefone, motivo, checked })
         });
-        linhaEl?.remove();
-        showToast('Marcado como corrigido', '', 'success', 2000);
     } catch (e) {
-        showToast('Erro', 'Não foi possível marcar como corrigido', 'error');
+        showToast('Erro', 'Não foi possível salvar a marcação', 'error');
     }
 }
 
+// Erros de WhatsApp precisa dos DOIS checkboxes marcados (BotPro + Pacto) pra
+// sumir da lista — cada motivo é corrigido em sistema diferente (o cadastro
+// aqui no BotPro e o cadastro no CRM Pacto), então só considera resolvido
+// quando os dois lados confirmarem.
 async function loadRelatorioErrosWhatsapp() {
     if (!relatorioErrosLista) return;
     try {
@@ -1986,8 +1988,12 @@ async function loadRelatorioErrosWhatsapp() {
                         <div style="font-size:.75rem;color:var(--red);margin-top:.2rem">⚠️ ${c.erro}</div>
                     </div>
                     <label style="display:flex;align-items:center;gap:.4rem;font-size:.78rem;color:var(--text-3);cursor:pointer;white-space:nowrap">
-                        <input type="checkbox" class="relatorio-erro-corrigido" data-telefone="${c.telefone}" style="accent-color:var(--green);width:16px;height:16px">
-                        Corrigido
+                        <input type="checkbox" class="relatorio-erro-motivo" data-telefone="${c.telefone}" data-motivo="botpro" ${c.corrigido_botpro ? 'checked' : ''} style="accent-color:var(--green);width:16px;height:16px">
+                        Corrigido BotPro
+                    </label>
+                    <label style="display:flex;align-items:center;gap:.4rem;font-size:.78rem;color:var(--text-3);cursor:pointer;white-space:nowrap">
+                        <input type="checkbox" class="relatorio-erro-motivo" data-telefone="${c.telefone}" data-motivo="pacto" ${c.corrigido_pacto ? 'checked' : ''} style="accent-color:var(--green);width:16px;height:16px">
+                        Corrigido Pacto
                     </label>
                 </div>
             `).join('')
@@ -1997,12 +2003,21 @@ async function loadRelatorioErrosWhatsapp() {
     }
 }
 
-relatorioErrosLista?.addEventListener('change', (e) => {
-    const chk = e.target.closest('.relatorio-erro-corrigido');
+relatorioErrosLista?.addEventListener('change', async (e) => {
+    const chk = e.target.closest('.relatorio-erro-motivo');
     if (!chk) return;
-    marcarRelatorioCorrigido('erro_whatsapp', chk.dataset.telefone, chk.closest('.contato-row'));
+    const linha = chk.closest('.contato-row');
+    await marcarRelatorioDispensa('erro_whatsapp', chk.dataset.telefone, chk.dataset.motivo, chk.checked);
+    // Só sai da lista quando as DUAS caixinhas dessa linha estiverem marcadas.
+    const marcados = linha.querySelectorAll('.relatorio-erro-motivo:checked').length;
+    if (marcados === 2) {
+        linha.remove();
+        showToast('Marcado como corrigido', '', 'success', 2000);
+    }
 });
 
+// Sem Matrícula/Nascimento: os dois checkboxes são alternativos — marcar
+// QUALQUER um dos dois ("Corrigido" ou "Não é aluno") já tira da lista.
 async function loadRelatorioSemCadastro() {
     if (!relatorioSemCadastroLista) return;
     try {
@@ -2018,8 +2033,12 @@ async function loadRelatorioSemCadastro() {
                             <div style="font-size:.75rem;color:var(--text-3)">${c.telefone} · falta ${faltando}</div>
                         </div>
                         <label style="display:flex;align-items:center;gap:.4rem;font-size:.78rem;color:var(--text-3);cursor:pointer;white-space:nowrap">
-                            <input type="checkbox" class="relatorio-cadastro-corrigido" data-telefone="${c.telefone}" style="accent-color:var(--green);width:16px;height:16px">
+                            <input type="checkbox" class="relatorio-cadastro-motivo" data-telefone="${c.telefone}" data-motivo="corrigido" style="accent-color:var(--green);width:16px;height:16px">
                             Corrigido
+                        </label>
+                        <label style="display:flex;align-items:center;gap:.4rem;font-size:.78rem;color:var(--text-3);cursor:pointer;white-space:nowrap">
+                            <input type="checkbox" class="relatorio-cadastro-motivo" data-telefone="${c.telefone}" data-motivo="nao_aluno" style="accent-color:var(--amber);width:16px;height:16px">
+                            Não é aluno
                         </label>
                     </div>
                 `;
@@ -2030,10 +2049,14 @@ async function loadRelatorioSemCadastro() {
     }
 }
 
-relatorioSemCadastroLista?.addEventListener('change', (e) => {
-    const chk = e.target.closest('.relatorio-cadastro-corrigido');
+relatorioSemCadastroLista?.addEventListener('change', async (e) => {
+    const chk = e.target.closest('.relatorio-cadastro-motivo');
     if (!chk) return;
-    marcarRelatorioCorrigido('sem_cadastro', chk.dataset.telefone, chk.closest('.contato-row'));
+    if (!chk.checked) return; // aqui não tem estado intermediário pra desmarcar — a linha já some no primeiro clique
+    const linha = chk.closest('.contato-row');
+    await marcarRelatorioDispensa('sem_cadastro', chk.dataset.telefone, chk.dataset.motivo, true);
+    linha.remove();
+    showToast('Marcado', '', 'success', 2000);
 });
 
 relatorioSemCadastroLista?.addEventListener('click', async (e) => {

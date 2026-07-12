@@ -402,6 +402,30 @@ async function initDB() {
     // editar; a automação-alvo em si já está resolvida em automacao_id.
     try { await db.exec(`ALTER TABLE programacao_acoes ADD COLUMN campanha_chave TEXT DEFAULT NULL`); } catch (e) { }
 
+    // relatorio_dispensados ganhou uma coluna "motivo" (cada relatório passou
+    // a ter 2 checkboxes independentes em vez de 1) — SQLite não deixa alterar
+    // UNIQUE via ALTER TABLE, então recria a tabela (rename → cria nova →
+    // copia o que já existia como motivo 'corrigido' → apaga a antiga).
+    try {
+        const colsRelatorio = await db.all("PRAGMA table_info(relatorio_dispensados)");
+        const jaTemMotivo = colsRelatorio.some(c => c.name === 'motivo');
+        if (!jaTemMotivo) {
+            await db.exec(`ALTER TABLE relatorio_dispensados RENAME TO relatorio_dispensados_old`);
+            await db.exec(`
+                CREATE TABLE relatorio_dispensados (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    tipo TEXT NOT NULL,
+                    motivo TEXT NOT NULL,
+                    telefone TEXT NOT NULL,
+                    dispensado_em DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(tipo, motivo, telefone)
+                )
+            `);
+            await db.run(`INSERT INTO relatorio_dispensados (tipo, motivo, telefone, dispensado_em) SELECT tipo, 'corrigido', telefone, dispensado_em FROM relatorio_dispensados_old`);
+            await db.exec(`DROP TABLE relatorio_dispensados_old`);
+        }
+    } catch (e) { console.error('Erro na migração de relatorio_dispensados:', e.message); }
+
     // Adiciona colunas novas se migrando de versão anterior
     try { await db.exec(`ALTER TABLE respostas ADD COLUMN media_path TEXT DEFAULT NULL`); } catch (e) { }
     try { await db.exec(`ALTER TABLE respostas ADD COLUMN media_tipo TEXT DEFAULT NULL`); } catch (e) { }
@@ -1222,15 +1246,22 @@ app.get('/api/relatorio/erros-whatsapp', async (req, res) => {
             return v?.matricula || null;
         }
 
-        const dispensados = await db.all("SELECT telefone, dispensado_em FROM relatorio_dispensados WHERE tipo = 'erro_whatsapp'");
-        const dispensadoEmPorTelefone = new Map(dispensados.map(d => [d.telefone, d.dispensado_em]));
+        // Dois checkboxes independentes ("Corrigido BotPro" e "Corrigido Pacto")
+        // — só sai da lista quando os DOIS estiverem marcados. Cada um só conta
+        // como válido se for mais recente que o erro (mesma regra de sempre: um
+        // erro novo depois de marcado derruba a validade da marcação antiga).
+        const dispensados = await db.all("SELECT telefone, motivo, dispensado_em FROM relatorio_dispensados WHERE tipo = 'erro_whatsapp'");
+        const dispensadosPorTelefone = new Map();
+        dispensados.forEach(d => {
+            if (!dispensadosPorTelefone.has(d.telefone)) dispensadosPorTelefone.set(d.telefone, {});
+            dispensadosPorTelefone.get(d.telefone)[d.motivo] = d.dispensado_em;
+        });
 
         const resultado = [...porTelefone.values()]
-            .filter(e => {
-                const dispensadoEm = dispensadoEmPorTelefone.get(e.telefone);
-                return !dispensadoEm || dispensadoEm < e.ocorrido_em;
-            })
             .map(e => {
+                const dispensas = dispensadosPorTelefone.get(e.telefone) || {};
+                const corrigidoBotpro = !!dispensas.botpro && dispensas.botpro >= e.ocorrido_em;
+                const corrigidoPacto = !!dispensas.pacto && dispensas.pacto >= e.ocorrido_em;
                 const lead = leadPorTelefone.get(e.telefone);
                 return {
                     telefone: e.telefone,
@@ -1238,8 +1269,11 @@ app.get('/api/relatorio/erros-whatsapp', async (req, res) => {
                     matricula: lead?.matricula || matriculaDoTelefone(e.telefone),
                     erro: e.erro,
                     ocorrido_em: sqliteTsParaIso(e.ocorrido_em),
+                    corrigido_botpro: corrigidoBotpro,
+                    corrigido_pacto: corrigidoPacto,
                 };
             })
+            .filter(c => !(c.corrigido_botpro && c.corrigido_pacto))
             .sort((a, b) => (b.ocorrido_em || '').localeCompare(a.ocorrido_em || ''));
         res.json(resultado);
     } catch (err) {
@@ -1265,6 +1299,8 @@ app.get('/api/relatorio/sem-cadastro', async (req, res) => {
             const v = vinculos.find(v => v.telefone.includes(telefoneLimpo) || telefoneLimpo.includes(v.telefone));
             return v?.matricula || null;
         }
+        // Aqui os dois checkboxes ("Corrigido" e "Não é aluno") são alternativos —
+        // marcar QUALQUER um dos dois já tira da lista (não precisa dos dois).
         const dispensados = await db.all("SELECT telefone FROM relatorio_dispensados WHERE tipo = 'sem_cadastro'");
         const dispensadosSet = new Set(dispensados.map(d => d.telefone));
 
@@ -1287,17 +1323,29 @@ app.get('/api/relatorio/sem-cadastro', async (req, res) => {
     }
 });
 
+// Motivos válidos por tipo de relatório — Erros de WhatsApp precisa dos DOIS
+// marcados (botpro + pacto) pra sair da lista; Sem Cadastro sai com QUALQUER
+// um dos dois (corrigido OU não é aluno). `checked: false` desmarca (apaga a
+// dispensa), pro usuário poder desfazer um clique errado.
+const RELATORIO_MOTIVOS_VALIDOS = {
+    erro_whatsapp: ['botpro', 'pacto'],
+    sem_cadastro: ['corrigido', 'nao_aluno'],
+};
 app.post('/api/relatorio/dispensar', async (req, res) => {
-    const { tipo, telefone } = req.body;
-    if (!['erro_whatsapp', 'sem_cadastro'].includes(tipo) || !telefone) {
-        return res.status(400).json({ error: 'tipo/telefone inválidos.' });
+    const { tipo, telefone, motivo, checked } = req.body;
+    if (!RELATORIO_MOTIVOS_VALIDOS[tipo]?.includes(motivo) || !telefone) {
+        return res.status(400).json({ error: 'tipo/motivo/telefone inválidos.' });
     }
     try {
-        await db.run(
-            `INSERT INTO relatorio_dispensados (tipo, telefone) VALUES (?, ?)
-             ON CONFLICT(tipo, telefone) DO UPDATE SET dispensado_em = CURRENT_TIMESTAMP`,
-            [tipo, telefone]
-        );
+        if (checked === false) {
+            await db.run('DELETE FROM relatorio_dispensados WHERE tipo = ? AND motivo = ? AND telefone = ?', [tipo, motivo, telefone]);
+        } else {
+            await db.run(
+                `INSERT INTO relatorio_dispensados (tipo, motivo, telefone) VALUES (?, ?, ?)
+                 ON CONFLICT(tipo, motivo, telefone) DO UPDATE SET dispensado_em = CURRENT_TIMESTAMP`,
+                [tipo, motivo, telefone]
+            );
+        }
         res.json({ success: true });
     } catch (err) {
         res.status(500).json({ error: err.message });
