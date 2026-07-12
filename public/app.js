@@ -1048,12 +1048,13 @@ programacaoDiasDiv?.addEventListener('change', (e) => {
     else programacaoDiasSelecionados = programacaoDiasSelecionados.filter(d => d !== dia);
 });
 
-// Cada ação escolhe primeiro um TIPO — "Automação" (qualquer uma da lista
-// completa) ou "Disparo" (as mesmas Campanhas Rápidas já usadas em Disparos,
-// ver CAMPANHAS_INFO). Nos dois casos o resultado final é sempre um
-// automacao_id — "Disparo" só resolve a campanha pra automação certa na hora
-// de salvar (mesma lógica de encontrarAutomacaoDaCampanha), é um atalho de
-// UI, não um tipo de dado diferente no banco.
+// Cada ação escolhe primeiro um TIPO — e o tipo decide qual AÇÃO roda de
+// verdade no horário agendado (ver checarProgramacoes no backend):
+// "Automação" (escolhe da lista completa) roda Importar Lista — sincroniza a
+// fila da automação com quem tem a etiqueta agora. "Disparo" (escolhe pela
+// Campanha Rápida, ver CAMPANHAS_INFO) roda Disparar Mensagens — manda pra
+// quem já está na fila. Por isso costuma fazer sentido encadear os dois na
+// mesma automação: 1ª ação "Automação" importa, 2ª ação "Disparo" dispara.
 function renderProgramacaoAcoesForm() {
     if (!programacaoAcoesListaDiv) return;
     if (programacaoAcoesForm.length === 0) {
@@ -1141,10 +1142,15 @@ async function abrirModalProgramacao(prog = null) {
     if (programacaoNomeInput) programacaoNomeInput.value = prog?.nome || '';
     if (programacaoHorarioInput) programacaoHorarioInput.value = prog?.horario || '08:00';
     programacaoDiasSelecionados = prog ? [...prog.dias] : [1, 2, 3, 4, 5];
-    // Ao editar, toda ação salva já existente mostra como "Automação" com o
-    // item certo pré-selecionado — "Disparo" é só um atalho de escolha na
-    // criação, o banco sempre guarda o automacao_id final (ver btnProgramacaoSalvar).
-    programacaoAcoesForm = prog ? prog.acoes.map(a => ({ tipo: 'automacao', valor: a.automacao_id, intervaloDepoisSegundos: a.intervalo_depois_segundos || 60 })) : [];
+    // "Automação" = roda Importar Lista (sincroniza fila); "Disparo" = roda
+    // Disparar Mensagens (manda pra fila). Ao editar, uma ação "Disparo" volta
+    // a mostrar a Campanha Rápida certa (campanha_chave) — se não tiver (ação
+    // criada antes dessa distinção existir), abre vazia pra escolher de novo.
+    programacaoAcoesForm = prog ? prog.acoes.map(a => ({
+        tipo: a.tipo === 'automacao' ? 'automacao' : 'disparo',
+        valor: a.tipo === 'automacao' ? a.automacao_id : (a.campanha_chave || ''),
+        intervaloDepoisSegundos: a.intervalo_depois_segundos || 60,
+    })) : [];
     renderProgramacaoDias();
     renderProgramacaoAcoesForm();
     modalProgramacao?.classList.add('open');
@@ -1162,10 +1168,11 @@ btnProgramacaoSalvar?.addEventListener('click', async () => {
     if (!horario) { showToast('Erro', 'Escolha um horário.', 'error'); return; }
     if (programacaoAcoesForm.length === 0) { showToast('Erro', 'Adicione pelo menos uma ação.', 'error'); return; }
 
-    // Resolve cada ação pro automacao_id de verdade — "Disparo" escolhe pelo
-    // nome da campanha, então precisa achar a automação correspondente
-    // (mesma lógica de encontrarAutomacaoDaCampanha, usada pelas Campanhas
-    // Rápidas em Disparos); "Automação" já É o id direto.
+    // "Automação" roda Importar Lista (gera a fila a partir da etiqueta);
+    // "Disparo" roda Disparar Mensagens (manda pra quem já está na fila) —
+    // resolve a campanha escolhida pra automação correspondente (mesma
+    // lógica de encontrarAutomacaoDaCampanha, usada pelas Campanhas Rápidas
+    // em Disparos).
     if (automacoesGlobais.length === 0) await loadAutomacoes();
     const acoes = [];
     for (const acao of programacaoAcoesForm) {
@@ -1176,9 +1183,9 @@ btnProgramacaoSalvar?.addEventListener('click', async () => {
                 showToast('Erro', `Nenhuma automação encontrada pra "${CAMPANHAS_INFO[acao.valor]?.label || acao.valor}". Crie ou renomeie uma automação com um nome parecido.`, 'error', 6000);
                 return;
             }
-            acoes.push({ automacao_id: automacao.id, intervalo_depois_segundos: acao.intervaloDepoisSegundos || 60 });
+            acoes.push({ automacao_id: automacao.id, tipo: 'disparo', campanha_chave: acao.valor, intervalo_depois_segundos: acao.intervaloDepoisSegundos || 60 });
         } else {
-            acoes.push({ automacao_id: Number(acao.valor), intervalo_depois_segundos: acao.intervaloDepoisSegundos || 60 });
+            acoes.push({ automacao_id: Number(acao.valor), tipo: 'automacao', campanha_chave: null, intervalo_depois_segundos: acao.intervaloDepoisSegundos || 60 });
         }
     }
 
@@ -1208,7 +1215,10 @@ function renderProgramacoes(lista) {
     }
     programacoesLista.innerHTML = lista.map(p => {
         const diasTxt = p.dias.length === 7 ? 'Todos os dias' : p.dias.sort().map(d => DIAS_SEMANA[d]).join(', ');
-        const acoesTxt = p.acoes.map(a => `<span class="etiqueta-chip" style="background:${a.etiqueta_cor || '#25D366'}22;color:${a.etiqueta_cor || '#25D366'};border:1px solid ${a.etiqueta_cor || '#25D366'}55">${a.nome}${!a.ativo ? ' ⏸️' : ''}</span>`).join(' ');
+        const acoesTxt = p.acoes.map(a => {
+            const rotulo = a.tipo === 'automacao' ? '📥 Importar' : '🚀 Disparar';
+            return `<span class="etiqueta-chip" style="background:${a.etiqueta_cor || '#25D366'}22;color:${a.etiqueta_cor || '#25D366'};border:1px solid ${a.etiqueta_cor || '#25D366'}55">${rotulo} · ${a.nome}${!a.ativo ? ' ⏸️' : ''}</span>`;
+        }).join(' ');
         return `
             <div class="card glass" style="padding:1rem 1.2rem" data-programacao-id="${p.id}">
                 <div style="display:flex;align-items:center;gap:1rem;flex-wrap:wrap">

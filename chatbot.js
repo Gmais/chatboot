@@ -385,6 +385,15 @@ async function initDB() {
         CREATE INDEX IF NOT EXISTS idx_programacao_acoes_prog ON programacao_acoes(programacao_id);
     `);
     try { await db.exec(`ALTER TABLE programacao_acoes ADD COLUMN intervalo_depois_segundos INTEGER DEFAULT 60`); } catch (e) { }
+    // "automacao" = roda Importar Lista (sincroniza a fila com quem tem a
+    // etiqueta agora); "disparo" = roda Disparar Mensagens (manda pra quem já
+    // está na fila). Default 'disparo' preserva o comportamento das
+    // programações criadas antes dessa distinção existir (só disparavam).
+    try { await db.exec(`ALTER TABLE programacao_acoes ADD COLUMN tipo TEXT DEFAULT 'disparo'`); } catch (e) { }
+    // Chave da Campanha Rápida (ex: 'aniversariantes') quando a ação foi
+    // escolhida pelo atalho "Disparo" — só pra reabrir o seletor certo ao
+    // editar; a automação-alvo em si já está resolvida em automacao_id.
+    try { await db.exec(`ALTER TABLE programacao_acoes ADD COLUMN campanha_chave TEXT DEFAULT NULL`); } catch (e) { }
 
     // Adiciona colunas novas se migrando de versão anterior
     try { await db.exec(`ALTER TABLE respostas ADD COLUMN media_path TEXT DEFAULT NULL`); } catch (e) { }
@@ -2270,8 +2279,8 @@ app.get('/api/programacoes', async (req, res) => {
     try {
         const programacoes = await db.all('SELECT * FROM programacoes ORDER BY criado_em DESC');
         const acoesRows = await db.all(`
-            SELECT pa.programacao_id, pa.automacao_id, pa.ordem, pa.intervalo_depois_segundos, a.nome, a.ativo AS automacao_ativa,
-                   e.nome AS etiqueta_nome, e.cor AS etiqueta_cor
+            SELECT pa.programacao_id, pa.automacao_id, pa.ordem, pa.intervalo_depois_segundos, pa.tipo, pa.campanha_chave,
+                   a.nome, a.ativo AS automacao_ativa, e.nome AS etiqueta_nome, e.cor AS etiqueta_cor
             FROM programacao_acoes pa
             INNER JOIN automacoes a ON a.id = pa.automacao_id
             LEFT JOIN etiquetas e ON e.id = a.etiqueta_id
@@ -2286,7 +2295,12 @@ app.get('/api/programacoes', async (req, res) => {
             ultima_execucao_em: p.ultima_execucao_em,
             acoes: acoesRows
                 .filter(a => a.programacao_id === p.id)
-                .map(a => ({ automacao_id: a.automacao_id, nome: a.nome, ativo: !!a.automacao_ativa, etiqueta_nome: a.etiqueta_nome, etiqueta_cor: a.etiqueta_cor, intervalo_depois_segundos: a.intervalo_depois_segundos ?? 60 })),
+                .map(a => ({
+                    automacao_id: a.automacao_id, nome: a.nome, ativo: !!a.automacao_ativa,
+                    etiqueta_nome: a.etiqueta_nome, etiqueta_cor: a.etiqueta_cor,
+                    intervalo_depois_segundos: a.intervalo_depois_segundos ?? 60,
+                    tipo: a.tipo || 'disparo', campanha_chave: a.campanha_chave || null,
+                })),
         }));
         res.json(resultado);
     } catch (err) {
@@ -2316,8 +2330,8 @@ app.post('/api/programacoes', async (req, res) => {
         let ordem = 0;
         for (const acao of acoes) {
             await db.run(
-                'INSERT INTO programacao_acoes (programacao_id, automacao_id, ordem, intervalo_depois_segundos) VALUES (?, ?, ?, ?)',
-                [programacaoId, acao.automacao_id, ordem++, parseInt(acao.intervalo_depois_segundos) || 60]
+                'INSERT INTO programacao_acoes (programacao_id, automacao_id, ordem, intervalo_depois_segundos, tipo, campanha_chave) VALUES (?, ?, ?, ?, ?, ?)',
+                [programacaoId, acao.automacao_id, ordem++, parseInt(acao.intervalo_depois_segundos) || 60, acao.tipo === 'automacao' ? 'automacao' : 'disparo', acao.campanha_chave || null]
             );
         }
         res.json({ success: true, id: programacaoId });
@@ -2351,8 +2365,8 @@ app.put('/api/programacoes/:id', async (req, res) => {
             let ordem = 0;
             for (const acao of acoes) {
                 await db.run(
-                    'INSERT INTO programacao_acoes (programacao_id, automacao_id, ordem, intervalo_depois_segundos) VALUES (?, ?, ?, ?)',
-                    [id, acao.automacao_id, ordem++, parseInt(acao.intervalo_depois_segundos) || 60]
+                    'INSERT INTO programacao_acoes (programacao_id, automacao_id, ordem, intervalo_depois_segundos, tipo, campanha_chave) VALUES (?, ?, ?, ?, ?, ?)',
+                    [id, acao.automacao_id, ordem++, parseInt(acao.intervalo_depois_segundos) || 60, acao.tipo === 'automacao' ? 'automacao' : 'disparo', acao.campanha_chave || null]
                 );
             }
         }
@@ -3506,15 +3520,29 @@ async function checarProgramacoes() {
             if (minutoAtual < h * 60 + m) continue; // ainda não chegou o horário
             await db.run('UPDATE programacoes SET ultima_execucao_em = ? WHERE id = ?', [hojeYMD, prog.id]);
             console.log(`🗓️ Programação "${prog.nome}": disparando...`);
-            const acoes = await db.all('SELECT automacao_id, intervalo_depois_segundos FROM programacao_acoes WHERE programacao_id = ? ORDER BY ordem ASC', prog.id);
+            const acoes = await db.all('SELECT automacao_id, intervalo_depois_segundos, tipo FROM programacao_acoes WHERE programacao_id = ? ORDER BY ordem ASC', prog.id);
             for (let i = 0; i < acoes.length; i++) {
                 const acao = acoes[i];
-                const resultado = await dispararAutomacaoComGuardas(acao.automacao_id, `Programação "${prog.nome}"`);
-                if (!resultado.ok) console.log(`⚠️ Programação "${prog.nome}": automação #${acao.automacao_id} não disparou — ${resultado.error}`);
+                if (acao.tipo === 'automacao') {
+                    // "Automação" = Importar Lista: sincroniza a fila da automação
+                    // com quem tem a etiqueta agora (mesmo que o botão manual faz).
+                    try {
+                        const r = await importarContatosParaAutomacao(acao.automacao_id);
+                        console.log(`📥 Programação "${prog.nome}": lista importada pra automação #${acao.automacao_id} (${r.importados} novo(s), ${r.removidos} removido(s))`);
+                        io.emit('automacoes_atualizadas');
+                    } catch (e) {
+                        console.log(`⚠️ Programação "${prog.nome}": erro ao importar lista da automação #${acao.automacao_id} — ${e.message}`);
+                    }
+                } else {
+                    // "Disparo" = Disparar Mensagens: manda pra quem já está na fila.
+                    const resultado = await dispararAutomacaoComGuardas(acao.automacao_id, `Programação "${prog.nome}"`);
+                    if (!resultado.ok) console.log(`⚠️ Programação "${prog.nome}": automação #${acao.automacao_id} não disparou — ${resultado.error}`);
+                }
                 // Espera o intervalo configurado ANTES da próxima ação da mesma
-                // programação — não espera o disparo atual terminar de enviar
-                // (isso roda em background e pode levar minutos sozinho), só
-                // espaça o INÍCIO de uma ação e da próxima.
+                // programação — não espera a ação atual terminar (o disparo roda
+                // em background e pode levar minutos sozinho), só espaça o
+                // INÍCIO de uma ação e da próxima (ex: dar tempo do import
+                // acontecer antes do disparo seguinte tentar mandar mensagem).
                 if (i < acoes.length - 1) await delay((acao.intervalo_depois_segundos || 60) * 1000);
             }
         }
