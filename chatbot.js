@@ -496,6 +496,17 @@ async function initDB() {
         }
     } catch (e) { console.error('Erro na migração de agenda_avaliacoes_hoje:', e.message); }
 
+    // Rede de segurança do Horário de Funcionamento (robô assume depois de N
+    // segundos sem resposta humana): liga por padrão com 180s na primeira vez
+    // que o servidor sobe com essa feature — pedido explícito do usuário pra
+    // já valer sem precisar abrir Configurações e marcar o checkbox à toa.
+    // INSERT OR IGNORE: só define o padrão se a chave nunca existiu; depois
+    // disso, quem decide é o usuário salvando o formulário normalmente.
+    try {
+        await db.run("INSERT OR IGNORE INTO configuracoes (chave, valor) VALUES ('horario_fallback_ativo', 'true')");
+        await db.run("INSERT OR IGNORE INTO configuracoes (chave, valor) VALUES ('horario_fallback_segundos', '180')");
+    } catch (e) { console.error('Erro ao definir padrão da rede de segurança de horário:', e.message); }
+
     // Adiciona colunas novas se migrando de versão anterior
     try { await db.exec(`ALTER TABLE respostas ADD COLUMN media_path TEXT DEFAULT NULL`); } catch (e) { }
     try { await db.exec(`ALTER TABLE respostas ADD COLUMN media_tipo TEXT DEFAULT NULL`); } catch (e) { }
@@ -1128,6 +1139,8 @@ app.get('/api/horarios', async (req, res) => {
         ativo: config.horario_ativo === 'true',
         modo_padrao: config.horario_modo_padrao === 'humano' ? 'humano' : 'robo',
         mensagem_humano: config.horario_mensagem_humano || '',
+        fallback_ativo: config.horario_fallback_ativo === 'true',
+        fallback_segundos: config.horario_fallback_segundos ? Number(config.horario_fallback_segundos) : 180,
         faixas: faixas.map(f => ({
             id: f.id,
             dias: f.dias.split(',').filter(Boolean).map(Number),
@@ -1139,10 +1152,13 @@ app.get('/api/horarios', async (req, res) => {
 });
 
 app.put('/api/horarios', async (req, res) => {
-    const { ativo, modo_padrao, mensagem_humano, faixas } = req.body;
+    const { ativo, modo_padrao, mensagem_humano, fallback_ativo, fallback_segundos, faixas } = req.body;
     await db.run('INSERT OR REPLACE INTO configuracoes (chave, valor) VALUES (?, ?)', ['horario_ativo', ativo ? 'true' : 'false']);
     await db.run('INSERT OR REPLACE INTO configuracoes (chave, valor) VALUES (?, ?)', ['horario_modo_padrao', modo_padrao === 'humano' ? 'humano' : 'robo']);
     await db.run('INSERT OR REPLACE INTO configuracoes (chave, valor) VALUES (?, ?)', ['horario_mensagem_humano', mensagem_humano || '']);
+    await db.run('INSERT OR REPLACE INTO configuracoes (chave, valor) VALUES (?, ?)', ['horario_fallback_ativo', fallback_ativo ? 'true' : 'false']);
+    const segundosNum = parseInt(fallback_segundos, 10);
+    await db.run('INSERT OR REPLACE INTO configuracoes (chave, valor) VALUES (?, ?)', ['horario_fallback_segundos', String(segundosNum > 0 ? segundosNum : 180)]);
 
     await db.run('DELETE FROM horarios_atendimento');
     for (const f of (Array.isArray(faixas) ? faixas : [])) {
@@ -5116,6 +5132,270 @@ async function encaminharParaHumanoSeEncerrou(texto, numLimpo) {
     }
 }
 
+// Fluxo normal do robô: fluxo de cadastro/Pacto, regras de palavra-chave, e IA
+// como fallback. Extraído do handler de 'message' pra poder ser chamado tanto
+// na hora (modo robô) quanto adiado (rede de segurança de horário, ver
+// agendarFallbackHumano) sem duplicar a lógica.
+async function processarComoRobo(msg, numLimpo, texto, telefoneReal, nomeContato) {
+    // Sinaliza que o bot está processando ("digitando...")
+    io.emit('bot_digitando', { telefone: numLimpo, ativo: true });
+
+    // numLimpo (já resolvido via resolveJid), não replyTo (chat id cru do
+    // WhatsApp) — ver comentário em enviarEregistrar sobre o bug de contato
+    // fantasma que isso causava em contas migradas pro sistema @lid.
+    if (await handleCadastroFlow(numLimpo, texto, msg.body || '')) { io.emit('bot_digitando', { telefone: numLimpo, ativo: false }); return; }
+
+    if (await handlePactoFlow(numLimpo, texto)) { io.emit('bot_digitando', { telefone: numLimpo, ativo: false }); return; }
+
+    const regras = await db.all('SELECT * FROM respostas WHERE ativo = 1 ORDER BY ordem ASC');
+    let regraAtiva = null;
+    for (const regra of regras) {
+        const keywords = regra.keywords.split(',').map(k => k.trim().toLowerCase());
+        // Palavra-chave puramente numérica (ex: opção "1" do menu) só ativa a regra se
+        // for a mensagem inteira — senão qualquer número (horário, telefone, preço) ativaria à toa.
+        const matched = keywords.some(kw => /^\d+$/.test(kw) ? texto === kw : texto.includes(kw));
+        if (matched) { regraAtiva = regra; break; }
+    }
+
+    if (!regraAtiva && ehMensagemTrivial(texto)) {
+        io.emit('bot_digitando', { telefone: numLimpo, ativo: false });
+        return;
+    }
+
+    if (!regraAtiva) {
+        const confRows = await db.all('SELECT * FROM configuracoes');
+        const config = {};
+        confRows.forEach(r => config[r.chave] = r.valor);
+
+        const provider = config.ia_provider || 'openai';
+        const iaAtiva = config.openai_status === 'true';
+        const apiKey = provider === 'groq' ? config.groq_api_key : config.openai_api_key;
+        const modelo = provider === 'groq'
+            ? (config.groq_modelo || 'llama-3.3-70b-versatile')
+            : (config.openai_modelo || 'gpt-3.5-turbo');
+
+        if (iaAtiva && apiKey) {
+
+
+            if (!global.chatHistory) global.chatHistory = new Map();
+            const history = global.chatHistory.get(telefoneReal) || [];
+
+            if (history.length === 0) {
+                // Monta o prompt de sistema combinando o treinamento configurado
+                // com o nome real do contato — assim a IA nunca precisa usar [nome].
+                const nomeParaIA = nomeContato && nomeContato !== numLimpo
+                    ? nomeContato.split(' ')[0]  // usa só o primeiro nome
+                    : null;
+                let systemContent = config.openai_treinamento || '';
+                if (config.ia_campanha_mes) {
+                    systemContent = systemContent
+                        ? `${systemContent}\n\n# CAMPANHA DO MÊS (promoção vigente)\n${config.ia_campanha_mes}`
+                        : `# CAMPANHA DO MÊS (promoção vigente)\n${config.ia_campanha_mes}`;
+                }
+                if (nomeParaIA) {
+                    systemContent = systemContent
+                        ? `${systemContent}\n\nVocê está conversando com ${nomeParaIA}. Ao personalizar a mensagem, use esse nome diretamente — nunca use [nome] ou {nome} como placeholder.`
+                        : `Você está conversando com ${nomeParaIA}.`;
+                }
+                if (systemContent) history.push({ role: 'system', content: systemContent });
+            }
+
+            // Exemplos reais de consultoras parecidos com a mensagem ATUAL — busca
+            // de novo a cada turno (não só na primeira mensagem), porque a pergunta
+            // muda de turno a turno. Entra como mensagem de sistema à parte, não
+            // misturada no systemContent fixo acima.
+            const exemplosConsultoras = await buscarExemplosRelevantes(texto);
+            if (exemplosConsultoras.length > 0) {
+                const textoExemplos = 'Exemplos reais de como nossas consultoras já responderam perguntas parecidas com essa — use como referência de tom e estilo, sem copiar literalmente se não fizer sentido pro contexto atual:\n\n' +
+                    exemplosConsultoras.map(e => `Cliente: ${e.pergunta_cliente}\nConsultora: ${e.resposta_consultora}`).join('\n\n');
+                history.push({ role: 'system', content: textoExemplos });
+            }
+
+            history.push({ role: 'user', content: texto });
+
+            // Tenta com retry automático em caso de rate limit (429)
+            const chamarIA = async (tentativa = 1) => {
+                try {
+                    const openai = new OpenAI({
+                        apiKey,
+                        ...(provider === 'groq' && { baseURL: 'https://api.groq.com/openai/v1' })
+                    });
+                    return await openai.chat.completions.create({
+                        messages: history,
+                        model: modelo,
+                        max_tokens: 300
+                    });
+                } catch (e) {
+                    if (e.status === 429 && tentativa < 3) {
+                        const espera = tentativa * 15000; // 15s, 30s
+                        console.log(`⏳ Rate limit (${provider}), tentativa ${tentativa}/3 — aguardando ${espera / 1000}s...`);
+                        await new Promise(r => setTimeout(r, espera));
+                        return chamarIA(tentativa + 1);
+                    }
+                    throw e;
+                }
+            };
+
+            try {
+                const completion = await chamarIA();
+
+                // Loga tokens/custo da chamada — fire-and-forget, nunca pode
+                // atrapalhar o envio da resposta real pro cliente (só console.error).
+                try {
+                    const uso = completion.usage || {};
+                    await db.run(
+                        'INSERT INTO ia_uso_log (telefone, provedor, modelo, prompt_tokens, completion_tokens, total_tokens) VALUES (?, ?, ?, ?, ?, ?)',
+                        [numLimpo, provider, modelo, uso.prompt_tokens || 0, uso.completion_tokens || 0, uso.total_tokens || 0]
+                    );
+                } catch (e) {
+                    console.error('Erro ao registrar uso de IA:', e.message);
+                }
+
+                // Substitui placeholders de nome antes de enviar — caso o treinamento
+                // ou o modelo ainda use [nome] ou {nome}, o aluno vê o nome de verdade.
+                const nomeExibir = (nomeContato && nomeContato !== numLimpo)
+                    ? nomeContato.split(' ')[0]
+                    : '';
+                const respostaIARaw = completion.choices[0].message.content;
+                const respostaIA = nomeExibir
+                    ? respostaIARaw
+                        .replace(/\[nome\]/gi, nomeExibir)
+                        .replace(/\{nome\}/gi, nomeExibir)
+                    : respostaIARaw;
+
+                // Sanity-check: se a resposta parecer vazamento de meta-instrução
+                // (ex: "vamos criar uma conversa... mensagem do Fulano:") em vez de
+                // uma resposta de verdade pro cliente, descarta — não põe no
+                // histórico (senão o próximo turno herda a bagunça) nem manda.
+                if (respostaIAParecevazamento(respostaIA)) {
+                    console.error(`🧨 IA (${provider}/${modelo}) gerou resposta com cara de vazamento de prompt pra ${numLimpo} — descartada, nada enviado. Trecho: "${respostaIA.slice(0, 120)}..."`);
+                    io.emit('bot_digitando', { telefone: numLimpo, ativo: false });
+                    return;
+                }
+
+                history.push({ role: 'assistant', content: respostaIA });
+
+                if (history.length > 7) {
+                    const sys = history.shift();
+                    history.shift();
+                    history.shift();
+                    history.unshift(sys);
+                }
+                global.chatHistory.set(telefoneReal, history);
+
+                console.log(`🤖 IA respondendo para ${numLimpo}`);
+                const sentIA = await enviarResposta(msg, respostaIA);
+                io.emit('bot_digitando', { telefone: numLimpo, ativo: false });
+                if (sentIA) {
+                    await registrarMensagemEnviada(telefoneReal, respostaIA, nomeContato, sentIA.id?._serialized);
+                    await encaminharParaHumanoSeEncerrou(respostaIA, numLimpo);
+                }
+            } catch (e) {
+                io.emit('bot_digitando', { telefone: numLimpo, ativo: false });
+                console.error(`❌ Erro na API da IA (${provider}):`, e.message);
+            }
+        }
+        return;
+    }
+
+    // Usa moment-timezone para garantir o horário de Brasília
+    // — o servidor (Railway) roda em UTC, então new Date().getHours() daria errado.
+    const hora = moment.tz('America/Sao_Paulo').hours();
+    let saudacao = 'Olá';
+    if (hora >= 5 && hora < 12) saudacao = 'Bom dia';
+    else if (hora >= 12 && hora < 18) saudacao = 'Boa tarde';
+    else saudacao = 'Boa noite';
+
+    // Substitui placeholders na resposta da regra
+    const nomeExibir = (nomeContato && nomeContato !== numLimpo)
+        ? nomeContato.split(' ')[0]
+        : '';
+    const nomeCompletoExibir = (nomeContato && nomeContato !== numLimpo) ? nomeContato : '';
+    const matriculaExibir = await resolverMatriculaContato(numLimpo);
+    const textoFinal = regraAtiva.resposta
+        .replace(/{saudacao}/g, saudacao)
+        .replace(/\[nome\]/gi, nomeExibir || '')
+        .replace(/{nome}/gi, nomeExibir || '')
+        .replace(/\[nome_completo\]/gi, nomeCompletoExibir || '')
+        .replace(/{nome_completo}/gi, nomeCompletoExibir || '')
+        .replace(/\[matricula\]/gi, matriculaExibir || '')
+        .replace(/{matricula}/gi, matriculaExibir || '');
+    console.log(`📤 Regra #${regraAtiva.id} ativada → respondendo para ${numLimpo}`);
+
+    // Aplica automaticamente a etiqueta configurada nesta regra (se houver)
+    if (regraAtiva.etiqueta_id) {
+        await aplicarEtiquetaContato(numLimpo, regraAtiva.etiqueta_id);
+    }
+
+    const sent = await enviarResposta(msg, textoFinal);
+    io.emit('bot_digitando', { telefone: numLimpo, ativo: false });
+    if (sent) {
+        await registrarMensagemEnviada(telefoneReal, textoFinal, nomeContato, sent.id?._serialized);
+        await encaminharParaHumanoSeEncerrou(textoFinal, numLimpo);
+    }
+
+    // Áudio temporariamente desativado (causa timeout no Puppeteer)
+    // if (regraAtiva.enviar_audio) { ... }
+
+    if (regraAtiva.media_path) {
+        const mediaFullPath = path.join(__dirname, 'public', regraAtiva.media_path.replace(/^\//, ''));
+        if (fs.existsSync(mediaFullPath)) {
+            await delay(500);
+            const media = MessageMedia.fromFilePath(mediaFullPath);
+            const sentMedia = await enviarResposta(msg, media);
+            if (sentMedia) {
+                const tipoMedia = regraAtiva.media_tipo === 'file' ? 'document' : (regraAtiva.media_tipo || 'document');
+                await registrarMensagemEnviada(telefoneReal, '[mídia enviada]', nomeContato, sentMedia.id?._serialized, false, tipoMedia, regraAtiva.media_path);
+            }
+        }
+    }
+}
+
+// Rede de segurança do Horário de Funcionamento: se ninguém (humano) responder
+// dentro do prazo configurado (padrão 180s), o robô assume mesmo fora da
+// janela dele — evita cliente esperando indefinidamente se o atendente da vez
+// está sobrecarregado. NÃO se aplica a conversa assumida manualmente (ver
+// client.on('message')) — só à janela de horário "Humano".
+// Reinicia o timer a cada nova mensagem do cliente sem resposta (debounce):
+// só dispara N segundos depois da ÚLTIMA mensagem sem resposta, não da primeira.
+const pendingFallbackTimers = new Map();
+async function agendarFallbackHumano(msg, numLimpo, texto, telefoneReal, nomeContato) {
+    const [ativoRow, segRow, agoraRow] = await Promise.all([
+        db.get("SELECT valor FROM configuracoes WHERE chave = 'horario_fallback_ativo'"),
+        db.get("SELECT valor FROM configuracoes WHERE chave = 'horario_fallback_segundos'"),
+        db.get("SELECT datetime('now') AS agora"),
+    ]);
+    if (ativoRow?.valor !== 'true') return;
+    const segundos = parseInt(segRow?.valor, 10) || 180;
+    const marcadorTs = agoraRow.agora;
+
+    const timerAnterior = pendingFallbackTimers.get(numLimpo);
+    if (timerAnterior) clearTimeout(timerAnterior);
+
+    const timer = setTimeout(async () => {
+        pendingFallbackTimers.delete(numLimpo);
+        try {
+            // Recheca tudo na hora de disparar, não na hora de agendar — muita
+            // coisa pode ter mudado nesses N segundos.
+            const assumida = await db.get('SELECT 1 FROM conversas_humano WHERE telefone = ?', numLimpo);
+            if (assumida) return; // alguém assumiu de propósito nesse meio tempo — não atravessa
+            // >= (não só >): datetime('now') do SQLite só tem precisão de
+            // segundo — uma resposta humana que caia no MESMO segundo do
+            // marcador seria perdida com ">" estrito.
+            const jaRespondida = await db.get(
+                `SELECT 1 FROM conversas WHERE telefone = ? AND direcao = 'out' AND ts >= ? LIMIT 1`,
+                [numLimpo, marcadorTs]
+            );
+            if (jaRespondida) return; // atendente respondeu a tempo
+            console.log(`⏱️ ${segundos}s sem resposta humana pra ${numLimpo} — robô assume como rede de segurança.`);
+            await processarComoRobo(msg, numLimpo, texto, telefoneReal, nomeContato);
+        } catch (e) {
+            console.error('Erro no fallback de robô por timeout de horário:', e.message);
+        }
+    }, segundos * 1000);
+    pendingFallbackTimers.set(numLimpo, timer);
+}
+
 client.on('message', async (msg) => {
     try {
         if (!msg.from || msg.from.endsWith('@g.us') || msg.from.endsWith('@broadcast')) return;
@@ -5234,12 +5514,17 @@ client.on('message', async (msg) => {
         // Conversa assumida manualmente por um humano (botão "Assumir Conversa"
         // em Conversas): tem prioridade sobre horário e sobre o override global
         // "Ativar Robô" — enquanto assumida, o robô nunca responde esse contato.
+        // NÃO entra na rede de segurança de 180s abaixo de propósito: quem clicou
+        // "Assumir Conversa" fica com controle total — foi exatamente um robô
+        // atravessando uma conversa assim que motivou essa distinção.
         const assumidaPorHumano = await db.get('SELECT 1 FROM conversas_humano WHERE telefone = ?', numLimpo);
         if (assumidaPorHumano) return;
 
-        // Modo Humano: a mensagem já foi salva em "conversas" (o operador pode
-        // responder manualmente pelo painel), mas o robô não dispara regras
-        // automáticas nem a IA.
+        // Modo Humano (Horário de Funcionamento): a mensagem já foi salva em
+        // "conversas" (o operador pode responder manualmente pelo painel), e o
+        // robô não dispara regras/IA na hora — MAS agenda uma rede de segurança:
+        // se ninguém responder dentro do prazo configurado, o robô assume mesmo
+        // fora da janela dele (ver agendarFallbackHumano).
         const { modo, mensagemHumano, timezone } = await obterModoAtual();
         if (modo === 'humano') {
             const hoje = moment.tz(timezone || 'America/Sao_Paulo').format('YYYY-MM-DD');
@@ -5250,221 +5535,11 @@ client.on('message', async (msg) => {
                     await registrarMensagemEnviada(telefoneReal, mensagemHumano, nomeContato, sentHumano.id?._serialized);
                 }
             }
+            await agendarFallbackHumano(msg, numLimpo, texto, telefoneReal, nomeContato);
             return;
         }
 
-        // Sinaliza que o bot está processando ("digitando...")
-        io.emit('bot_digitando', { telefone: numLimpo, ativo: true });
-
-        // numLimpo (já resolvido via resolveJid), não replyTo (chat id cru do
-        // WhatsApp) — ver comentário em enviarEregistrar sobre o bug de contato
-        // fantasma que isso causava em contas migradas pro sistema @lid.
-        if (await handleCadastroFlow(numLimpo, texto, msg.body || '')) { io.emit('bot_digitando', { telefone: numLimpo, ativo: false }); return; }
-
-        if (await handlePactoFlow(numLimpo, texto)) { io.emit('bot_digitando', { telefone: numLimpo, ativo: false }); return; }
-
-        const regras = await db.all('SELECT * FROM respostas WHERE ativo = 1 ORDER BY ordem ASC');
-        let regraAtiva = null;
-        for (const regra of regras) {
-            const keywords = regra.keywords.split(',').map(k => k.trim().toLowerCase());
-            // Palavra-chave puramente numérica (ex: opção "1" do menu) só ativa a regra se
-            // for a mensagem inteira — senão qualquer número (horário, telefone, preço) ativaria à toa.
-            const matched = keywords.some(kw => /^\d+$/.test(kw) ? texto === kw : texto.includes(kw));
-            if (matched) { regraAtiva = regra; break; }
-        }
-
-        if (!regraAtiva && ehMensagemTrivial(texto)) {
-            io.emit('bot_digitando', { telefone: numLimpo, ativo: false });
-            return;
-        }
-
-        if (!regraAtiva) {
-            const confRows = await db.all('SELECT * FROM configuracoes');
-            const config = {};
-            confRows.forEach(r => config[r.chave] = r.valor);
-
-            const provider = config.ia_provider || 'openai';
-            const iaAtiva = config.openai_status === 'true';
-            const apiKey = provider === 'groq' ? config.groq_api_key : config.openai_api_key;
-            const modelo = provider === 'groq'
-                ? (config.groq_modelo || 'llama-3.3-70b-versatile')
-                : (config.openai_modelo || 'gpt-3.5-turbo');
-
-            if (iaAtiva && apiKey) {
-
-
-                if (!global.chatHistory) global.chatHistory = new Map();
-                const history = global.chatHistory.get(telefoneReal) || [];
-
-                if (history.length === 0) {
-                    // Monta o prompt de sistema combinando o treinamento configurado
-                    // com o nome real do contato — assim a IA nunca precisa usar [nome].
-                    const nomeParaIA = nomeContato && nomeContato !== numLimpo
-                        ? nomeContato.split(' ')[0]  // usa só o primeiro nome
-                        : null;
-                    let systemContent = config.openai_treinamento || '';
-                    if (config.ia_campanha_mes) {
-                        systemContent = systemContent
-                            ? `${systemContent}\n\n# CAMPANHA DO MÊS (promoção vigente)\n${config.ia_campanha_mes}`
-                            : `# CAMPANHA DO MÊS (promoção vigente)\n${config.ia_campanha_mes}`;
-                    }
-                    if (nomeParaIA) {
-                        systemContent = systemContent
-                            ? `${systemContent}\n\nVocê está conversando com ${nomeParaIA}. Ao personalizar a mensagem, use esse nome diretamente — nunca use [nome] ou {nome} como placeholder.`
-                            : `Você está conversando com ${nomeParaIA}.`;
-                    }
-                    if (systemContent) history.push({ role: 'system', content: systemContent });
-                }
-
-                // Exemplos reais de consultoras parecidos com a mensagem ATUAL — busca
-                // de novo a cada turno (não só na primeira mensagem), porque a pergunta
-                // muda de turno a turno. Entra como mensagem de sistema à parte, não
-                // misturada no systemContent fixo acima.
-                const exemplosConsultoras = await buscarExemplosRelevantes(texto);
-                if (exemplosConsultoras.length > 0) {
-                    const textoExemplos = 'Exemplos reais de como nossas consultoras já responderam perguntas parecidas com essa — use como referência de tom e estilo, sem copiar literalmente se não fizer sentido pro contexto atual:\n\n' +
-                        exemplosConsultoras.map(e => `Cliente: ${e.pergunta_cliente}\nConsultora: ${e.resposta_consultora}`).join('\n\n');
-                    history.push({ role: 'system', content: textoExemplos });
-                }
-
-                history.push({ role: 'user', content: texto });
-
-                // Tenta com retry automático em caso de rate limit (429)
-                const chamarIA = async (tentativa = 1) => {
-                    try {
-                        const openai = new OpenAI({
-                            apiKey,
-                            ...(provider === 'groq' && { baseURL: 'https://api.groq.com/openai/v1' })
-                        });
-                        return await openai.chat.completions.create({
-                            messages: history,
-                            model: modelo,
-                            max_tokens: 300
-                        });
-                    } catch (e) {
-                        if (e.status === 429 && tentativa < 3) {
-                            const espera = tentativa * 15000; // 15s, 30s
-                            console.log(`⏳ Rate limit (${provider}), tentativa ${tentativa}/3 — aguardando ${espera / 1000}s...`);
-                            await new Promise(r => setTimeout(r, espera));
-                            return chamarIA(tentativa + 1);
-                        }
-                        throw e;
-                    }
-                };
-
-                try {
-                    const completion = await chamarIA();
-
-                    // Loga tokens/custo da chamada — fire-and-forget, nunca pode
-                    // atrapalhar o envio da resposta real pro cliente (só console.error).
-                    try {
-                        const uso = completion.usage || {};
-                        await db.run(
-                            'INSERT INTO ia_uso_log (telefone, provedor, modelo, prompt_tokens, completion_tokens, total_tokens) VALUES (?, ?, ?, ?, ?, ?)',
-                            [numLimpo, provider, modelo, uso.prompt_tokens || 0, uso.completion_tokens || 0, uso.total_tokens || 0]
-                        );
-                    } catch (e) {
-                        console.error('Erro ao registrar uso de IA:', e.message);
-                    }
-
-                    // Substitui placeholders de nome antes de enviar — caso o treinamento
-                    // ou o modelo ainda use [nome] ou {nome}, o aluno vê o nome de verdade.
-                    const nomeExibir = (nomeContato && nomeContato !== numLimpo)
-                        ? nomeContato.split(' ')[0]
-                        : '';
-                    const respostaIARaw = completion.choices[0].message.content;
-                    const respostaIA = nomeExibir
-                        ? respostaIARaw
-                            .replace(/\[nome\]/gi, nomeExibir)
-                            .replace(/\{nome\}/gi, nomeExibir)
-                        : respostaIARaw;
-
-                    // Sanity-check: se a resposta parecer vazamento de meta-instrução
-                    // (ex: "vamos criar uma conversa... mensagem do Fulano:") em vez de
-                    // uma resposta de verdade pro cliente, descarta — não põe no
-                    // histórico (senão o próximo turno herda a bagunça) nem manda.
-                    if (respostaIAParecevazamento(respostaIA)) {
-                        console.error(`🧨 IA (${provider}/${modelo}) gerou resposta com cara de vazamento de prompt pra ${numLimpo} — descartada, nada enviado. Trecho: "${respostaIA.slice(0, 120)}..."`);
-                        io.emit('bot_digitando', { telefone: numLimpo, ativo: false });
-                        return;
-                    }
-
-                    history.push({ role: 'assistant', content: respostaIA });
-
-                    if (history.length > 7) {
-                        const sys = history.shift();
-                        history.shift();
-                        history.shift();
-                        history.unshift(sys);
-                    }
-                    global.chatHistory.set(telefoneReal, history);
-
-                    console.log(`🤖 IA respondendo para ${numLimpo}`);
-                    const sentIA = await enviarResposta(msg, respostaIA);
-                    io.emit('bot_digitando', { telefone: numLimpo, ativo: false });
-                    if (sentIA) {
-                        await registrarMensagemEnviada(telefoneReal, respostaIA, nomeContato, sentIA.id?._serialized);
-                        await encaminharParaHumanoSeEncerrou(respostaIA, numLimpo);
-                    }
-                } catch (e) {
-                    io.emit('bot_digitando', { telefone: numLimpo, ativo: false });
-                    console.error(`❌ Erro na API da IA (${provider}):`, e.message);
-                }
-            }
-            return;
-        }
-
-        // Usa moment-timezone para garantir o horário de Brasília
-        // — o servidor (Railway) roda em UTC, então new Date().getHours() daria errado.
-        const hora = moment.tz('America/Sao_Paulo').hours();
-        let saudacao = 'Olá';
-        if (hora >= 5 && hora < 12) saudacao = 'Bom dia';
-        else if (hora >= 12 && hora < 18) saudacao = 'Boa tarde';
-        else saudacao = 'Boa noite';
-
-        // Substitui placeholders na resposta da regra
-        const nomeExibir = (nomeContato && nomeContato !== numLimpo)
-            ? nomeContato.split(' ')[0]
-            : '';
-        const nomeCompletoExibir = (nomeContato && nomeContato !== numLimpo) ? nomeContato : '';
-        const matriculaExibir = await resolverMatriculaContato(numLimpo);
-        const textoFinal = regraAtiva.resposta
-            .replace(/{saudacao}/g, saudacao)
-            .replace(/\[nome\]/gi, nomeExibir || '')
-            .replace(/{nome}/gi, nomeExibir || '')
-            .replace(/\[nome_completo\]/gi, nomeCompletoExibir || '')
-            .replace(/{nome_completo}/gi, nomeCompletoExibir || '')
-            .replace(/\[matricula\]/gi, matriculaExibir || '')
-            .replace(/{matricula}/gi, matriculaExibir || '');
-        console.log(`📤 Regra #${regraAtiva.id} ativada → respondendo para ${numLimpo}`);
-
-        // Aplica automaticamente a etiqueta configurada nesta regra (se houver)
-        if (regraAtiva.etiqueta_id) {
-            await aplicarEtiquetaContato(numLimpo, regraAtiva.etiqueta_id);
-        }
-
-        const sent = await enviarResposta(msg, textoFinal);
-        io.emit('bot_digitando', { telefone: numLimpo, ativo: false });
-        if (sent) {
-            await registrarMensagemEnviada(telefoneReal, textoFinal, nomeContato, sent.id?._serialized);
-            await encaminharParaHumanoSeEncerrou(textoFinal, numLimpo);
-        }
-
-        // Áudio temporariamente desativado (causa timeout no Puppeteer)
-        // if (regraAtiva.enviar_audio) { ... }
-
-        if (regraAtiva.media_path) {
-            const mediaFullPath = path.join(__dirname, 'public', regraAtiva.media_path.replace(/^\//, ''));
-            if (fs.existsSync(mediaFullPath)) {
-                await delay(500);
-                const media = MessageMedia.fromFilePath(mediaFullPath);
-                const sentMedia = await enviarResposta(msg, media);
-                if (sentMedia) {
-                    const tipoMedia = regraAtiva.media_tipo === 'file' ? 'document' : (regraAtiva.media_tipo || 'document');
-                    await registrarMensagemEnviada(telefoneReal, '[mídia enviada]', nomeContato, sentMedia.id?._serialized, false, tipoMedia, regraAtiva.media_path);
-                }
-            }
-        }
+        await processarComoRobo(msg, numLimpo, texto, telefoneReal, nomeContato);
     } catch (error) {
         console.error('❌ Erro no processamento da mensagem:', error);
     }

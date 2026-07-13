@@ -1007,6 +1007,8 @@ cfgDelayResposta?.addEventListener('change', async () => {
 const horarioAtivo          = document.getElementById('horario-ativo');
 const horarioModoPadrao     = document.getElementById('horario-modo-padrao');
 const horarioMensagemHumano = document.getElementById('horario-mensagem-humano');
+const horarioFallbackAtivo    = document.getElementById('horario-fallback-ativo');
+const horarioFallbackSegundos = document.getElementById('horario-fallback-segundos');
 const btnSalvarHorario      = document.getElementById('btn-salvar-horario');
 const horarioFaixasList     = document.getElementById('horario-faixas-list');
 const btnAddFaixa           = document.getElementById('btn-add-faixa');
@@ -1076,6 +1078,8 @@ async function loadHorarioConfig() {
         if (horarioAtivo) horarioAtivo.checked = !!data.ativo;
         if (horarioModoPadrao) horarioModoPadrao.value = data.modo_padrao || 'robo';
         if (horarioMensagemHumano) horarioMensagemHumano.value = data.mensagem_humano || '';
+        if (horarioFallbackAtivo) horarioFallbackAtivo.checked = !!data.fallback_ativo;
+        if (horarioFallbackSegundos) horarioFallbackSegundos.value = data.fallback_segundos || 180;
         horarioFaixas = (data.faixas || []).map(f => ({ dias: f.dias, inicio: f.inicio, fim: f.fim, modo: f.modo }));
         renderFaixas();
     } catch (e) {
@@ -1089,6 +1093,8 @@ btnSalvarHorario?.addEventListener('click', async () => {
         ativo: !!horarioAtivo?.checked,
         modo_padrao: horarioModoPadrao?.value || 'robo',
         mensagem_humano: (horarioMensagemHumano?.value || '').trim(),
+        fallback_ativo: !!horarioFallbackAtivo?.checked,
+        fallback_segundos: Number(horarioFallbackSegundos?.value) || 180,
         faixas: horarioFaixas.filter(f => f.dias.length > 0)
     };
     try {
