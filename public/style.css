@@ -879,6 +879,10 @@ header h1 {
     color: var(--text-1);
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
+.chat-contact-matricula {
+    font-size: 0.75rem; font-weight: 400;
+    color: var(--text-3);
+}
 .chat-contact-preview {
     font-size: 0.75rem;
     color: var(--text-3);

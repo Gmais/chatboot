@@ -2710,7 +2710,7 @@ const CM = (() => {
             item.innerHTML = `
                 <div class="chat-contact-avatar">${avatarLetter(c.nome)}</div>
                 <div class="chat-contact-body">
-                    <div class="chat-contact-name">${c.nome}${c.assumida_humano ? ' 🙋' : ''}</div>
+                    <div class="chat-contact-name">${c.nome}${c.matricula ? ` <span class="chat-contact-matricula">#${c.matricula}</span>` : ''}${c.assumida_humano ? ' 🙋' : ''}</div>
                     <div class="${previewClass}">${previewPrefix}${previewText}</div>
                 </div>
                 <div class="chat-contact-meta">

@@ -3234,7 +3234,14 @@ async function listarConversasComEtiquetas() {
         etiquetasPorTelefone.get(r.telefone).push({ id: r.id, nome: r.nome, cor: r.cor });
     });
 
-    return conversas.map(c => ({ ...c, etiquetas: etiquetasPorTelefone.get(c.telefone) || [] }));
+    // Matrícula pra mostrar do lado do nome na lista — mesma fonte/prioridade
+    // já usada em Regras/Automação (resolverMatriculaContato, com cache).
+    const comMatricula = await Promise.all(conversas.map(async c => ({
+        ...c,
+        matricula: await resolverMatriculaContato(c.telefone),
+        etiquetas: etiquetasPorTelefone.get(c.telefone) || [],
+    })));
+    return comMatricula;
 }
 
 // Lista todas as conversas (uma por contato, com o último texto e count de não lidas)
