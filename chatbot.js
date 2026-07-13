@@ -641,6 +641,29 @@ async function resolverMatriculaContato(telefone) {
     } catch (_) { return ''; }
 }
 
+// Substitui {nome}/{nome_completo}/{matricula}/{saudacao} (e a forma com
+// colchetes) por dados reais do contato — usado tanto quando o ROBÔ dispara
+// uma regra automaticamente quanto no envio manual pelo Bate Papo ao Vivo.
+// Sem isso no envio manual, digitar {nome} na caixa de texto manda a chave
+// crua pro cliente em vez do nome dele (foi exatamente o bug relatado).
+async function substituirPlaceholdersPessoais(texto, telefone) {
+    const hora = moment.tz('America/Sao_Paulo').hours();
+    const saudacao = hora >= 5 && hora < 12 ? 'Bom dia' : hora >= 12 && hora < 18 ? 'Boa tarde' : 'Boa noite';
+    const num = telefone.replace('@c.us', '').replace('@lid', '');
+    const nomeContato = await resolverNomeContato(num);
+    const nomeExibir = (nomeContato && nomeContato !== num) ? nomeContato.split(' ')[0] : '';
+    const nomeCompletoExibir = (nomeContato && nomeContato !== num) ? nomeContato : '';
+    const matriculaExibir = await resolverMatriculaContato(num);
+    return texto
+        .replace(/{saudacao}/gi, saudacao)
+        .replace(/\[nome\]/gi, nomeExibir || '')
+        .replace(/{nome}/gi, nomeExibir || '')
+        .replace(/\[nome_completo\]/gi, nomeCompletoExibir || '')
+        .replace(/{nome_completo}/gi, nomeCompletoExibir || '')
+        .replace(/\[matricula\]/gi, matriculaExibir || '')
+        .replace(/{matricula}/gi, matriculaExibir || '');
+}
+
 // SQLite CURRENT_TIMESTAMP grava 'YYYY-MM-DD HH:MM:SS' em UTC mas sem indicador
 // de fuso — se mandar essa string crua pro navegador, o JS interpreta como hora
 // LOCAL (não UTC) e o horário mostrado fica adiantado (no Brasil, 3h a mais).
@@ -3318,10 +3341,14 @@ app.post('/api/conversas/:telefone/enviar', async (req, res) => {
     if (!texto || !texto.trim()) return res.status(400).json({ error: 'Texto obrigatório.' });
     if (!isConnected) return res.status(400).json({ error: 'WhatsApp não está conectado.' });
     try {
+        // Mesma substituição de {nome}/{nome_completo}/{matricula}/{saudacao}
+        // que já existe pra Regras/Automação — sem isso, digitar {nome} na
+        // caixa de texto manual manda a chave crua pro cliente em vez do nome dele.
+        const textoFinal = await substituirPlaceholdersPessoais(texto.trim(), telefone);
         const chatId = telefone.includes('@') ? telefone : await resolverChatId(telefone);
-        const sentMsg = await client.sendMessage(chatId, texto.trim());
+        const sentMsg = await client.sendMessage(chatId, textoFinal);
         const nome = await resolverNomeContato(telefone);
-        await registrarMensagemEnviada(telefone, texto.trim(), nome, sentMsg.id?._serialized, true);
+        await registrarMensagemEnviada(telefone, textoFinal, nome, sentMsg.id?._serialized, true);
         res.json({ success: true });
     } catch (err) {
         console.error('Erro envio manual:', err.message);
