@@ -1751,6 +1751,23 @@ async function moverMensagemPersonalizadaEnviada(de, para) {
     }
 }
 
+// relatorio_dispensados tem UNIQUE de 3 colunas (tipo, motivo, telefone) —
+// mesmo caso especial de mensagem_personalizada_enviada acima.
+async function moverRelatorioDispensado(de, para) {
+    const linhas = await db.all('SELECT tipo, motivo FROM relatorio_dispensados WHERE telefone = ?', de);
+    for (const { tipo, motivo } of linhas) {
+        const jaExiste = await db.get(
+            'SELECT 1 FROM relatorio_dispensados WHERE telefone = ? AND tipo = ? AND motivo = ?',
+            [para, tipo, motivo]
+        );
+        if (jaExiste) {
+            await db.run('DELETE FROM relatorio_dispensados WHERE telefone = ? AND tipo = ? AND motivo = ?', [de, tipo, motivo]);
+        } else {
+            await db.run('UPDATE relatorio_dispensados SET telefone = ? WHERE telefone = ? AND tipo = ? AND motivo = ?', [para, de, tipo, motivo]);
+        }
+    }
+}
+
 // Migra TODAS as tabelas de um grupo de telefones-duplicados pro telefone
 // canônico (normalizado), preservando o máximo de dado possível e nunca
 // duplicando linha em tabela nenhuma.
@@ -1768,12 +1785,19 @@ async function mesclarGrupoDeTelefones(canonico, leadsGrupo) {
         await moverLinhaSimples('conversas', de, canonico);
         await moverLinhaSimples('mensagens_enviadas', de, canonico);
         await moverLinhaSimples('automacao_envios_log', de, canonico);
+        await moverLinhaSimples('automacao_envios_erros_log', de, canonico);
+        await moverLinhaSimples('agenda_avaliacoes_hoje', de, canonico);
+        await moverLinhaSimples('ia_uso_log', de, canonico);
+        await moverLinhaSimples('disparo_envios_log', de, canonico);
+        await moverLinhaSimples('ia_exemplos_consultoras', de, canonico);
         await moverLinhaPkTelefone('vinculo_pacto', de, canonico);
         await moverLinhaPkTelefone('conversas_humano', de, canonico);
         await moverLinhaPkTelefone('conversas_status', de, canonico);
         await moverLinhaPkTelefone('pacto_inadimplentes', de, canonico);
+        await moverLinhaPkTelefone('pacto_vencem_hoje', de, canonico);
         await moverLinhasChaveComposta('contato_etiquetas', 'etiqueta_id', de, canonico);
         await moverLinhasChaveComposta('contato_automacao_estado', 'automacao_id', de, canonico);
+        await moverRelatorioDispensado(de, canonico);
         await moverMensagemPersonalizadaEnviada(de, canonico);
         await db.run('DELETE FROM leads WHERE telefone = ?', de);
     }
@@ -1822,7 +1846,12 @@ app.post('/api/contatos/mesclar-duplicados', async (req, res) => {
             if (!grupos.has(canonico)) grupos.set(canonico, []);
             grupos.get(canonico).push(l);
         });
-        const gruposDuplicados = [...grupos.entries()].filter(([, ls]) => ls.length > 1);
+        // Também processa grupo de 1 lead só cujo telefone não bate com o
+        // canônico — não é uma "duplicata" (nada pra mesclar), mas ainda tem
+        // formato errado (ex: falta o 9º dígito) e precisa corrigir sozinho.
+        // Sem isso, contato SEM duplicata nenhuma jamais tinha o telefone
+        // corrigido — só quem tinha 2+ registros conflitantes era tratado.
+        const gruposDuplicados = [...grupos.entries()].filter(([canonico, ls]) => ls.length > 1 || ls[0].telefone !== canonico);
 
         // Achado em produção: telefone compartilhado por FAMÍLIA (pai/mãe + filho,
         // irmãos) é comum nessa academia — cada um com matrícula própria e data de
@@ -2081,7 +2110,12 @@ app.delete('/api/etiquetas/:id', async (req, res) => {
 // etiqueta no sistema (regras automáticas, import de planilha e aplicação
 // manual).
 async function aplicarEtiquetaContato(telefone, etiquetaId) {
-    const numLimpo = telefone.replace('@c.us', '').replace('@lid', '');
+    // normalizarTelefoneBR além de tirar @c.us/@lid — é o ponto mais usado do
+    // sistema pra aplicar etiqueta; se algum chamador passar um número sem o
+    // 9º dígito (import antigo, ver mesclarGrupoDeTelefones), aqui é onde
+    // isso mais provavelmente criaria uma etiqueta/conversa fantasma separada
+    // da conversa real do contato. Idempotente: número já certo não muda.
+    const numLimpo = normalizarTelefoneBR(telefone.replace('@c.us', '').replace('@lid', ''));
     const etiqueta = await db.get('SELECT duracao_dias FROM etiquetas WHERE id = ?', etiquetaId);
     const expiraEm = etiqueta?.duracao_dias
         ? new Date(Date.now() + etiqueta.duracao_dias * 86400000).toISOString()
@@ -2102,7 +2136,7 @@ async function aplicarEtiquetaContato(telefone, etiquetaId) {
 // Remove uma etiqueta de um contato e cancela qualquer automação em andamento
 // vinculada a ela — a etapa que ainda não foi cumprida não faz mais sentido.
 async function removerEtiquetaContato(telefone, etiquetaId) {
-    const numLimpo = telefone.replace('@c.us', '').replace('@lid', '');
+    const numLimpo = normalizarTelefoneBR(telefone.replace('@c.us', '').replace('@lid', ''));
     await db.run('DELETE FROM contato_etiquetas WHERE telefone = ? AND etiqueta_id = ?', [numLimpo, etiquetaId]);
     io.emit('etiqueta_atualizada', { telefone: numLimpo });
     const automacoesLigadas = await db.all('SELECT id FROM automacoes WHERE etiqueta_id = ?', etiquetaId);
@@ -3622,7 +3656,12 @@ async function processarInadimplentesPacto() {
     let indice = 0;
 
     async function processarContato(contato) {
-        const numLimpo = contato.telefone.replace('@c.us', '').replace('@lid', '');
+        // normalizarTelefoneBR (não só tirar @c.us/@lid) — leads.telefone pode
+        // estar salvo sem o 9º dígito (import antigo do Pacto, ver migração de
+        // mesclarGrupoDeTelefones); sem isso, essa varredura cria/atualiza a
+        // etiqueta num telefone diferente do que o contato realmente conversa,
+        // gerando uma conversa fantasma separada da real.
+        const numLimpo = normalizarTelefoneBR(contato.telefone.replace('@c.us', '').replace('@lid', ''));
         try {
             const aluno = await buscarAlunoPorMatricula(contato.matricula);
             const estaAtivo = aluno?.situacao?.codigo === 'AT';
@@ -3928,7 +3967,10 @@ async function processarAgendaAvaliacao() {
             let numLimpo = null;
             if (matricula) {
                 const contato = await db.get('SELECT telefone FROM leads WHERE TRIM(matricula) = ?', matricula);
-                if (contato?.telefone) numLimpo = contato.telefone.replace('@c.us', '').replace('@lid', '');
+                // normalizarTelefoneBR — leads.telefone pode estar sem o 9º dígito
+                // (import antigo do Pacto); sem isso a etiqueta vai pro telefone
+                // errado e cria uma conversa fantasma separada da real.
+                if (contato?.telefone) numLimpo = normalizarTelefoneBR(contato.telefone.replace('@c.us', '').replace('@lid', ''));
             }
             // Sem contato correlacionado: a linha AINDA é salva (aparece na tela
             // pra alguém corrigir o WhatsApp manualmente antes de automatizar) —
