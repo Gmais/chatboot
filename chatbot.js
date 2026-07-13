@@ -297,6 +297,14 @@ async function initDB() {
             enviado_em DATETIME DEFAULT CURRENT_TIMESTAMP
         );
         CREATE INDEX IF NOT EXISTS idx_automacao_envios_log_automacao ON automacao_envios_log(automacao_id, enviado_em);
+        CREATE TABLE IF NOT EXISTS automacao_envios_erros_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            automacao_id INTEGER NOT NULL,
+            telefone TEXT NOT NULL,
+            erro TEXT NOT NULL,
+            ocorrido_em DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_automacao_envios_erros_log_telefone ON automacao_envios_erros_log(telefone);
         CREATE TABLE IF NOT EXISTS mensagens_personalizadas (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             nome TEXT NOT NULL,
@@ -441,6 +449,23 @@ async function initDB() {
             await db.exec(`DROP TABLE relatorio_dispensados_old`);
         }
     } catch (e) { console.error('Erro na migração de relatorio_dispensados:', e.message); }
+
+    // Migração única: contato_automacao_estado.ultimo_erro é apagado sempre que
+    // o contato sai da fila (sucesso no reenvio, automação pausada, etiqueta
+    // removida etc) — não serve de histórico permanente. Copia os erros que
+    // estão na fila HOJE pro log persistente (automacao_envios_erros_log) uma
+    // única vez, pra quem já aparece no Relatório de Erros não sumir da lista
+    // quando o relatório passar a ler só do log novo.
+    try {
+        const jaMigrouErros = await db.get("SELECT valor FROM configuracoes WHERE chave = 'automacao_erros_log_migrado'");
+        if (!jaMigrouErros) {
+            await db.run(`
+                INSERT INTO automacao_envios_erros_log (automacao_id, telefone, erro, ocorrido_em)
+                SELECT automacao_id, telefone, ultimo_erro, ultimo_erro_em FROM contato_automacao_estado WHERE ultimo_erro IS NOT NULL
+            `);
+            await db.run('INSERT OR REPLACE INTO configuracoes (chave, valor) VALUES (?, ?)', ['automacao_erros_log_migrado', 'true']);
+        }
+    } catch (e) { console.error('Erro ao migrar erros de automação existentes pro log persistente:', e.message); }
 
     // Adiciona colunas novas se migrando de versão anterior
     try { await db.exec(`ALTER TABLE respostas ADD COLUMN media_path TEXT DEFAULT NULL`); } catch (e) { }
@@ -1423,8 +1448,10 @@ app.get('/api/contatos', async (req, res) => {
 // =====================================
 // API REST — RELATÓRIO (erros de WhatsApp + cadastro incompleto)
 // =====================================
-// Une as duas fontes de erro de envio que já existem no sistema — fila de
-// automação (contato_automacao_estado.ultimo_erro) e disparo em massa
+// Une as duas fontes de erro de envio que já existem no sistema — automação
+// (automacao_envios_erros_log, log permanente — NUNCA ler de
+// contato_automacao_estado.ultimo_erro aqui, esse campo é apagado assim que o
+// contato sai da fila e faria o relatório zerar sozinho) e disparo em massa
 // (disparo_envios_log) — numa lista só, com quem tem o erro mais recente.
 // "Corrigido" (relatorio_dispensados) só esconde da lista, não mexe no
 // histórico real; se o MESMO contato falhar de novo depois de já ter sido
@@ -1433,8 +1460,8 @@ app.get('/api/contatos', async (req, res) => {
 app.get('/api/relatorio/erros-whatsapp', async (req, res) => {
     try {
         const errosAutomacao = await db.all(`
-            SELECT telefone, ultimo_erro AS erro, ultimo_erro_em AS ocorrido_em
-            FROM contato_automacao_estado WHERE ultimo_erro IS NOT NULL
+            SELECT telefone, erro, ocorrido_em
+            FROM automacao_envios_erros_log
         `);
         const errosDisparo = await db.all(`
             SELECT telefone, erro, enviado_em AS ocorrido_em
@@ -2319,6 +2346,14 @@ async function dispararMensagensDaAutomacao(automacaoId) {
             await db.run(
                 'UPDATE contato_automacao_estado SET ultimo_erro = ?, ultimo_erro_em = CURRENT_TIMESTAMP WHERE telefone = ? AND automacao_id = ?',
                 [e.message, estado.telefone, automacaoId]
+            );
+            // Log permanente, independente da fila — contato_automacao_estado.ultimo_erro
+            // é apagado assim que o contato sai da fila (reenvio deu certo, automação
+            // pausada, etiqueta removida), o que fazia o Relatório de Erros zerar sozinho
+            // sem ninguém marcar "Corrigido". Esse log só é limpo pelo próprio Relatório.
+            await db.run(
+                'INSERT INTO automacao_envios_erros_log (automacao_id, telefone, erro) VALUES (?, ?, ?)',
+                [automacaoId, estado.telefone, e.message]
             );
         }
         io.emit('automacoes_atualizadas');
