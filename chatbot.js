@@ -3806,6 +3806,27 @@ app.delete('/api/agenda-avaliacao/:telefone', async (req, res) => {
     }
 });
 
+// Corrige nome/matrícula/horário/professor ANTES de disparar a confirmação —
+// esses 4 campos alimentam direto os placeholders {nome}/{matricula}/{horario}/
+// {professor} da automação "Agendamento Avaliação". O telefone não é editável
+// aqui (é a chave da linha e da etiqueta); se o WhatsApp estiver errado, a
+// correção é no cadastro de origem (Pacto), não nessa lista do dia.
+app.put('/api/agenda-avaliacao/:telefone', async (req, res) => {
+    const { telefone } = req.params;
+    const { nome, matricula, horario, professor } = req.body;
+    try {
+        const existe = await db.get('SELECT 1 FROM agenda_avaliacoes_hoje WHERE telefone = ?', telefone);
+        if (!existe) return res.status(404).json({ error: 'Agendamento não encontrado.' });
+        await db.run(
+            'UPDATE agenda_avaliacoes_hoje SET nome = ?, matricula = ?, horario = ?, professor = ? WHERE telefone = ?',
+            [(nome || '').trim() || null, (matricula || '').trim() || null, (horario || '').trim() || null, (professor || '').trim() || null, telefone]
+        );
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
 // Varre a agenda de avaliação física do dia (via Supabase da Planeta Corpo) e
 // etiqueta cada aluno com WhatsApp válido como "Agendamento AF" — NÃO manda
 // mensagem nenhuma sozinha. A automação "Agendamento Avaliação" (já

@@ -3508,6 +3508,42 @@ const btnAgendaAvaliacao = document.getElementById('btn-agenda-avaliacao');
 const agendaAvaliacaoResultado = document.getElementById('agenda-avaliacao-resultado');
 const agendaAvaliacaoUltimaAtualizacaoEl = document.getElementById('agenda-avaliacao-ultima-atualizacao');
 const agendaAvaliacaoBody = document.getElementById('agenda-avaliacao-lista');
+const modalEditarAgendaAvaliacaoOverlay = document.getElementById('modal-editar-agenda-avaliacao-overlay');
+const editarAgendaAvaliacaoTelefone = document.getElementById('editar-agenda-avaliacao-telefone');
+const editarAgendaAvaliacaoNome = document.getElementById('editar-agenda-avaliacao-nome');
+const editarAgendaAvaliacaoMatricula = document.getElementById('editar-agenda-avaliacao-matricula');
+const editarAgendaAvaliacaoHorario = document.getElementById('editar-agenda-avaliacao-horario');
+const editarAgendaAvaliacaoProfessor = document.getElementById('editar-agenda-avaliacao-professor');
+const btnEditarAgendaAvaliacaoSalvar = document.getElementById('btn-editar-agenda-avaliacao-salvar');
+let agendaAvaliacaoEditandoTelefone = null;
+
+function fecharEditarAgendaAvaliacao() {
+    agendaAvaliacaoEditandoTelefone = null;
+    modalEditarAgendaAvaliacaoOverlay?.classList.remove('open');
+}
+document.getElementById('modal-editar-agenda-avaliacao-fechar')?.addEventListener('click', fecharEditarAgendaAvaliacao);
+
+btnEditarAgendaAvaliacaoSalvar?.addEventListener('click', async () => {
+    if (!agendaAvaliacaoEditandoTelefone) return;
+    try {
+        const res = await fetch(`/api/agenda-avaliacao/${encodeURIComponent(agendaAvaliacaoEditandoTelefone)}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                nome: editarAgendaAvaliacaoNome.value,
+                matricula: editarAgendaAvaliacaoMatricula.value,
+                horario: editarAgendaAvaliacaoHorario.value,
+                professor: editarAgendaAvaliacaoProfessor.value,
+            })
+        });
+        if (!res.ok) throw new Error('Falha ao salvar');
+        showToast('Salvo', '', 'success', 2000);
+        fecharEditarAgendaAvaliacao();
+        loadAgendaAvaliacao();
+    } catch (err) {
+        showToast('Erro', 'Não foi possível salvar', 'error');
+    }
+});
 
 function formatarUltimaAtualizacaoAgenda(iso) {
     if (!agendaAvaliacaoUltimaAtualizacaoEl) return;
@@ -3557,7 +3593,8 @@ async function loadAgendaAvaliacao() {
                     <td style="color:var(--text-2);font-size:.85rem">${i.matricula || '-'}</td>
                     <td style="color:var(--text-2);font-size:.85rem">${i.horario || '-'}</td>
                     <td style="color:var(--text-2);font-size:.85rem">${i.professor || '-'}</td>
-                    <td style="text-align:right">
+                    <td style="text-align:right;white-space:nowrap">
+                        <button type="button" class="btn-secondary btn-editar-agenda-avaliacao" data-telefone="${i.telefone}" data-nome="${i.nome || ''}" data-matricula="${i.matricula || ''}" data-horario="${i.horario || ''}" data-professor="${i.professor || ''}" style="padding:.35rem .6rem;font-size:.75rem" title="Editar antes de disparar">✏️</button>
                         <button type="button" class="btn-danger btn-excluir-agenda-avaliacao" data-telefone="${i.telefone}" data-nome="${i.nome || i.telefone}" style="padding:.35rem .6rem;font-size:.75rem" title="Excluir da lista e remover a etiqueta Agendamento AF">🗑️</button>
                     </td>
                 </tr>
@@ -3569,6 +3606,18 @@ async function loadAgendaAvaliacao() {
 }
 
 agendaAvaliacaoBody?.addEventListener('click', async (e) => {
+    const btnEditar = e.target.closest('.btn-editar-agenda-avaliacao');
+    if (btnEditar) {
+        agendaAvaliacaoEditandoTelefone = btnEditar.dataset.telefone;
+        if (editarAgendaAvaliacaoTelefone) editarAgendaAvaliacaoTelefone.textContent = btnEditar.dataset.telefone;
+        if (editarAgendaAvaliacaoNome) editarAgendaAvaliacaoNome.value = btnEditar.dataset.nome || '';
+        if (editarAgendaAvaliacaoMatricula) editarAgendaAvaliacaoMatricula.value = btnEditar.dataset.matricula || '';
+        if (editarAgendaAvaliacaoHorario) editarAgendaAvaliacaoHorario.value = btnEditar.dataset.horario || '';
+        if (editarAgendaAvaliacaoProfessor) editarAgendaAvaliacaoProfessor.value = btnEditar.dataset.professor || '';
+        modalEditarAgendaAvaliacaoOverlay?.classList.add('open');
+        return;
+    }
+
     const btn = e.target.closest('.btn-excluir-agenda-avaliacao');
     if (!btn) return;
     if (!confirm(`Excluir "${btn.dataset.nome}" da lista e remover a etiqueta "Agendamento AF"?`)) return;
