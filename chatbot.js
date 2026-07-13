@@ -2469,6 +2469,11 @@ app.get('/api/automacoes', async (req, res) => {
         LEFT JOIN etiquetas e ON e.id = a.etiqueta_id
         ORDER BY a.criado_em DESC
     `);
+    // disparo_ativo vem do estado em memória (automacaoDisparoRodando), não do
+    // banco — é o mesmo flag que /progresso usa, só que aqui pra TODAS de uma
+    // vez, pra dar pra filtrar "só disparando agora" na lista sem uma chamada
+    // por automação.
+    automacoes.forEach(a => { a.disparo_ativo = !!automacaoDisparoRodando[a.id]; });
     res.json(automacoes);
 });
 

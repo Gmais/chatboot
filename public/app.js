@@ -4392,6 +4392,9 @@ btnMensagemPersonalizadaSalvar?.addEventListener('click', async () => {
 // ACOMPANHAMENTO DE AUTOMAÇÕES (tela de Disparos)
 // =====================================
 const acompanhamentoAutomacoesLista = document.getElementById('acompanhamento-automacoes-lista');
+const acompanhamentoOrdenarAz = document.getElementById('acompanhamento-ordenar-az');
+const acompanhamentoFiltroAtivas = document.getElementById('acompanhamento-filtro-ativas');
+let ultimasAutomacoesCarregadas = [];
 const automacaoDelayModo = document.getElementById('automacao-delay-modo');
 const automacaoDelaySegundos = document.getElementById('automacao-delay-segundos');
 const automacaoDelayVelocidade = document.getElementById('automacao-delay-velocidade');
@@ -4446,16 +4449,23 @@ async function loadAcompanhamentoAutomacoes() {
     try {
         const res = await fetch('/api/automacoes');
         const automacoes = await res.json();
+        ultimasAutomacoesCarregadas = automacoes;
         renderAcompanhamentoAutomacoes(automacoes);
     } catch (e) {
         acompanhamentoAutomacoesLista.innerHTML = '<div style="padding:1.5rem;text-align:center;color:var(--text-3)">Erro ao carregar automações.</div>';
     }
 }
 
-function renderAcompanhamentoAutomacoes(automacoes) {
+acompanhamentoOrdenarAz?.addEventListener('change', () => renderAcompanhamentoAutomacoes(ultimasAutomacoesCarregadas));
+acompanhamentoFiltroAtivas?.addEventListener('change', () => renderAcompanhamentoAutomacoes(ultimasAutomacoesCarregadas));
+
+function renderAcompanhamentoAutomacoes(automacoesOriginal) {
     if (!acompanhamentoAutomacoesLista) return;
+    let automacoes = automacoesOriginal;
+    if (acompanhamentoFiltroAtivas?.checked) automacoes = automacoes.filter(a => a.disparo_ativo);
+    if (acompanhamentoOrdenarAz?.checked) automacoes = [...automacoes].sort((a, b) => a.nome.localeCompare(b.nome, 'pt-BR'));
     if (automacoes.length === 0) {
-        acompanhamentoAutomacoesLista.innerHTML = '<div style="padding:1.5rem;text-align:center;color:var(--text-3)">Nenhuma automação criada ainda.</div>';
+        acompanhamentoAutomacoesLista.innerHTML = `<div style="padding:1.5rem;text-align:center;color:var(--text-3)">${acompanhamentoFiltroAtivas?.checked ? 'Nenhuma automação disparando agora.' : 'Nenhuma automação criada ainda.'}</div>`;
         return;
     }
     acompanhamentoAutomacoesLista.innerHTML = automacoes.map(a => {
@@ -4467,7 +4477,7 @@ function renderAcompanhamentoAutomacoes(automacoes) {
             <div class="card glass" style="padding:1rem 1.2rem" data-acompanhar-id="${a.id}">
                 <div style="display:flex;align-items:center;gap:1rem;flex-wrap:wrap">
                     <div style="flex:1;min-width:180px">
-                        <div style="font-weight:600;color:var(--text-1);font-size:.9rem;margin-bottom:.25rem">${a.nome}</div>
+                        <div style="font-weight:600;color:var(--text-1);font-size:.9rem;margin-bottom:.25rem">${a.nome}${a.disparo_ativo ? ' <span style="color:var(--red);font-size:.72rem;font-weight:600">🔴 disparando agora</span>' : ''}</div>
                         <div style="display:flex;align-items:center;gap:.5rem;flex-wrap:wrap">${etiquetaChip}</div>
                     </div>
                     <div style="text-align:center">
