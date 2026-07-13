@@ -3509,7 +3509,11 @@ app.post('/api/broadcast/start', upload.single('media'), async (req, res) => {
             try {
                 const numeroCompleto = numero.startsWith('55') ? numero : `55${numero}`;
                 const chatId = await resolverChatId(numeroCompleto);
-                await client.sendMessage(chatId, mensagem);
+                // Cada número da lista tem seu próprio nome/matrícula — substitui
+                // {nome}/{matricula}/{saudacao} POR DESTINATÁRIO (mesmo texto
+                // "mensagem" cru, mas personalizado a cada envio do laço).
+                const textoPersonalizado = await substituirPlaceholdersPessoais(mensagem, numeroCompleto);
+                await client.sendMessage(chatId, textoPersonalizado);
 
                 if (mediaFile) {
                     const media = MessageMedia.fromFilePath(mediaFile.path);
