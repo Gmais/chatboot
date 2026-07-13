@@ -2743,7 +2743,7 @@ const CM = (() => {
         if (chatHeader)         chatHeader.style.display = 'flex';
         if (chatPlaceholder)    chatPlaceholder.style.display = 'none';
         if (chatHeaderAvatar)   chatHeaderAvatar.textContent = avatarLetter(nome);
-        if (chatHeaderName)     chatHeaderName.textContent = nome;
+        if (chatHeaderName)     chatHeaderName.innerHTML = `${escapeHtml(nome)}${c?.matricula ? ` <span class="chat-contact-matricula">#${escapeHtml(c.matricula)}</span>` : ''}`;
         if (chatHeaderStatus)   chatHeaderStatus.textContent = telefone;
         renderChatHeaderTags(telefone);
         renderChatAssumirButton();
