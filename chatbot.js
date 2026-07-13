@@ -675,11 +675,15 @@ function redigirPII(texto) {
 }
 
 // Embeddings SEMPRE usam a API da OpenAI (Groq não tem endpoint de
-// embeddings) — reaproveita a mesma chave já configurada na tela de IA,
-// independente de qual provider está ativo pro chat.
+// embeddings) — chave PRÓPRIA e separada (ia_embeddings_api_key), não
+// reaproveita openai_api_key: esse campo só é editável na tela quando o
+// provider de chat está em "OpenAI", então se o provider está em "Groq" (como
+// neste projeto) o campo openai_api_key pode estar com um valor antigo/errado
+// sem ninguém perceber — foi exatamente o que aconteceu aqui (tinha uma
+// chave do Groq salva nesse campo por engano).
 async function gerarEmbeddingsEmLote(textos) {
     if (!Array.isArray(textos) || textos.length === 0) return [];
-    const row = await db.get("SELECT valor FROM configuracoes WHERE chave = 'openai_api_key'");
+    const row = await db.get("SELECT valor FROM configuracoes WHERE chave = 'ia_embeddings_api_key'");
     const apiKey = row?.valor;
     if (!apiKey) return [];
     const openai = new OpenAI({ apiKey });
@@ -703,7 +707,14 @@ function similaridadeCosseno(a, b) {
     return dot / (Math.sqrt(normA) * Math.sqrt(normB));
 }
 
-const IA_EXEMPLO_TAMANHO_MINIMO = 15; // caracteres — descarta "ok", "👍", "blz" etc.
+// O filtro de tamanho só vale pra RESPOSTA da consultora (é o que a IA vai
+// imitar — "ok"/"👍"/"de nada" não ensinam nada de tom/estilo). A pergunta do
+// cliente serve só de contexto e em conversa real é comum ser curta ("4170",
+// "sim", um emoji) — exigir 15 caracteres nela também descartava quase tudo
+// (confirmado ao vivo: 217 conversas revisadas, 0 indexadas, porque a
+// pergunta anterior era um número de matrícula ou um "obrigada" curto).
+const IA_EXEMPLO_RESPOSTA_TAMANHO_MINIMO = 15;
+const IA_EXEMPLO_PERGUNTA_TAMANHO_MINIMO = 2;
 
 // Fire-and-forget: chamada dentro de registrarMensagemEnviada quando
 // manual===true. Nunca deve derrubar o envio real da mensagem — qualquer
@@ -712,14 +723,14 @@ async function indexarExemploConsultora(telefone, respostaTexto) {
     try {
         const configRow = await db.get("SELECT valor FROM configuracoes WHERE chave = 'ia_aprender_com_consultoras'");
         if (configRow?.valor !== 'true') return;
-        if (!respostaTexto || respostaTexto.trim().length < IA_EXEMPLO_TAMANHO_MINIMO) return;
+        if (!respostaTexto || respostaTexto.trim().length < IA_EXEMPLO_RESPOSTA_TAMANHO_MINIMO) return;
 
         const numLimpo = telefone.replace('@c.us', '').replace('@lid', '');
         const ultimaPergunta = await db.get(
             "SELECT texto FROM conversas WHERE telefone = ? AND direcao = 'in' ORDER BY ts DESC LIMIT 1",
             numLimpo
         );
-        if (!ultimaPergunta?.texto || ultimaPergunta.texto.trim().length < IA_EXEMPLO_TAMANHO_MINIMO) return;
+        if (!ultimaPergunta?.texto || ultimaPergunta.texto.trim().length < IA_EXEMPLO_PERGUNTA_TAMANHO_MINIMO) return;
 
         const perguntaLimpa = redigirPII(ultimaPergunta.texto.trim());
         const respostaLimpa = redigirPII(respostaTexto.trim());
@@ -975,13 +986,13 @@ async function importarHistoricoExemplosConsultoras() {
             const paresValidos = [];
             for (const r of lote) {
                 iaExemplosImportacaoProgress.processados++;
-                if (!r.texto || r.texto.trim().length < IA_EXEMPLO_TAMANHO_MINIMO) continue;
+                if (!r.texto || r.texto.trim().length < IA_EXEMPLO_RESPOSTA_TAMANHO_MINIMO) continue;
                 const numLimpo = r.telefone.replace('@c.us', '').replace('@lid', '');
                 const perguntaRow = await db.get(
                     "SELECT texto FROM conversas WHERE telefone = ? AND direcao = 'in' AND ts < ? ORDER BY ts DESC LIMIT 1",
                     [numLimpo, r.ts]
                 );
-                if (!perguntaRow?.texto || perguntaRow.texto.trim().length < IA_EXEMPLO_TAMANHO_MINIMO) continue;
+                if (!perguntaRow?.texto || perguntaRow.texto.trim().length < IA_EXEMPLO_PERGUNTA_TAMANHO_MINIMO) continue;
                 paresValidos.push({
                     conversaId: r.id,
                     telefone: numLimpo,
@@ -1018,8 +1029,8 @@ async function importarHistoricoExemplosConsultoras() {
 
 app.post('/api/ia/exemplos/importar-historico', async (req, res) => {
     if (iaExemplosImportacaoRunning) return res.status(400).json({ error: 'Já tem uma importação em andamento.' });
-    const row = await db.get("SELECT valor FROM configuracoes WHERE chave = 'openai_api_key'");
-    if (!row?.valor) return res.status(400).json({ error: 'Configure a chave da OpenAI na tela de IA antes de importar.' });
+    const row = await db.get("SELECT valor FROM configuracoes WHERE chave = 'ia_embeddings_api_key'");
+    if (!row?.valor) return res.status(400).json({ error: 'Configure a chave da OpenAI pra embeddings (campo dedicado, abaixo de "Aprender com Consultoras") antes de importar.' });
     iaExemplosImportacaoRunning = true;
     iaExemplosImportacaoProgress = { total: 0, processados: 0, indexados: 0, running: true };
     res.json({ success: true });

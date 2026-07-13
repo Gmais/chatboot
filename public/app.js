@@ -745,6 +745,7 @@ async function loadIaConfig() {
         if (iaTreinamento) iaTreinamento.value = config.openai_treinamento || '';
         if (iaCampanhaMes) iaCampanhaMes.value = config.ia_campanha_mes || '';
         if (iaAprenderConsultoras) iaAprenderConsultoras.checked = config.ia_aprender_com_consultoras === 'true';
+        if (iaEmbeddingsApikey) iaEmbeddingsApikey.value = config.ia_embeddings_api_key || '';
         if (provider === 'groq') {
             if (iaApikey) iaApikey.value = config.groq_api_key || '';
             if (iaModelo) iaModelo.value = config.groq_modelo || 'llama-3.1-8b-instant';
@@ -790,6 +791,48 @@ const iaAprenderConsultoras   = document.getElementById('ia-aprender-consultoras
 const iaExemplosContagemEl    = document.getElementById('ia-exemplos-contagem');
 const btnIaImportarHistorico  = document.getElementById('btn-ia-importar-historico');
 const iaExemplosProgressoEl   = document.getElementById('ia-exemplos-progresso');
+const iaEmbeddingsApikey      = document.getElementById('ia-embeddings-apikey');
+const btnIaEmbeddingsApikeySalvar = document.getElementById('btn-ia-embeddings-apikey-salvar');
+
+// Chave separada da usada pro chat — embeddings sempre passam pela OpenAI,
+// mesmo com o provider de chat em Groq (é exatamente essa mistura que causou
+// o bug real: um valor de chave do Groq acabou salvo no campo de chave da
+// OpenAI, e como o campo só aparece na tela quando o provider é "OpenAI",
+// ninguém percebeu até o backfill falhar com 401).
+btnIaEmbeddingsApikeySalvar?.addEventListener('click', async () => {
+    const valor = (iaEmbeddingsApikey?.value || '').trim();
+    if (valor && !valor.startsWith('sk-')) {
+        if (!confirm('Essa chave não começa com "sk-", que é o formato padrão das chaves da OpenAI — parece ser de outro provider (Groq, por exemplo). Salvar mesmo assim?')) return;
+    }
+    try {
+        await fetch('/api/configuracoes', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ia_embeddings_api_key: valor })
+        });
+        showToast('Chave salva!', '', 'success', 2000);
+    } catch (e) {
+        showToast('Erro', 'Não foi possível salvar a chave', 'error');
+    }
+});
+
+// Esse checkbox fica longe do botão "Salvar Configurações da IA" (outro
+// card, lá em cima) — salva sozinho ao clicar, mesmo padrão dos outros
+// toggles independentes do sistema (Automação, Programação), senão a pessoa
+// marca, sai da tela sem lembrar de clicar em Salvar lá em cima, e ao voltar
+// parece que "não salvou".
+iaAprenderConsultoras?.addEventListener('change', async () => {
+    try {
+        await fetch('/api/configuracoes', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ia_aprender_com_consultoras: iaAprenderConsultoras.checked ? 'true' : 'false' })
+        });
+        showToast(iaAprenderConsultoras.checked ? 'Ativado' : 'Desativado', '', 'success', 2000);
+    } catch (e) {
+        showToast('Erro', 'Não foi possível salvar', 'error');
+    }
+});
 
 async function loadIaExemplosContagem() {
     if (!iaExemplosContagemEl) return;

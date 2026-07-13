@@ -879,7 +879,15 @@ Sempre tente agendar uma aula experimental."></textarea>
                             <strong style="color:var(--text-1)">Ativar</strong>
                         </label>
                     </div>
-                    <p style="color:var(--text-2);font-size:.85rem;margin-bottom:1rem">Quando ativado, a IA busca respostas reais que suas consultoras já deram pra perguntas parecidas e usa como referência de tom e estilo — sem retreinar nenhum modelo, aprende sozinho a cada resposta manual nova pelo Bate Papo ao Vivo. Usa a chave da OpenAI configurada acima (só pra gerar os embeddings), mesmo que o provider de chat esteja em Groq.</p>
+                    <p style="color:var(--text-2);font-size:.85rem;margin-bottom:1rem">Quando ativado, a IA busca respostas reais que suas consultoras já deram pra perguntas parecidas e usa como referência de tom e estilo — sem retreinar nenhum modelo, aprende sozinho a cada resposta manual nova pelo Bate Papo ao Vivo.</p>
+                    <div class="form-group">
+                        <label>Chave da OpenAI (só pra gerar os embeddings)</label>
+                        <div style="display:flex;gap:.6rem">
+                            <input type="password" id="ia-embeddings-apikey" placeholder="sk-proj-xxxxxxxxxxxxxxxxxxxxxxxxx" style="flex:1">
+                            <button type="button" class="btn-secondary" id="btn-ia-embeddings-apikey-salvar" style="padding:.6rem 1.1rem;font-size:.85rem;white-space:nowrap">💾 Salvar chave</button>
+                        </div>
+                        <span class="hint">Embeddings sempre usam a API da OpenAI (o Groq não tem esse recurso) — por isso é uma chave separada da que você usa pro chat, mesmo que o provider ali em cima esteja em Groq. Precisa começar com "sk-".</span>
+                    </div>
                     <div style="display:flex;align-items:center;gap:1rem;flex-wrap:wrap;margin-bottom:.8rem">
                         <span style="font-size:.85rem;color:var(--text-2)">📚 <strong id="ia-exemplos-contagem">0</strong> exemplo(s) já aprendido(s)</span>
                         <button type="button" class="btn-secondary" id="btn-ia-importar-historico" style="padding:.5rem 1rem;font-size:.85rem">🔄 Importar Histórico de Conversas</button>
