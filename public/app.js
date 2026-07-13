@@ -682,7 +682,18 @@ navBtns.forEach(btn => {
         if (targetId === 'integracoes-section') { loadPactoInadimplentes(); loadPactoVencemHoje(); loadAgendaAvaliacao(); }
         if (targetId === 'automacoes-section') { loadEtiquetas().then(() => loadAutomacoes()); }
         if (targetId === 'mensagens-personalizadas-section') loadMensagensPersonalizadas();
-        if (targetId === 'disparos-section') { loadAcompanhamentoAutomacoes(); loadAutomacaoDelayConfig(); carregarMensagensPersonalizadasParaDisparo(); }
+        if (targetId === 'disparos-section') {
+            loadAcompanhamentoAutomacoes();
+            loadAutomacaoDelayConfig();
+            carregarMensagensPersonalizadasParaDisparo();
+            // Limpa o formulário de Disparo em massa toda vez que a tela é
+            // aberta — antes só limpava quando um disparo terminava
+            // (broadcast_done), então reload/navegação/cache do navegador
+            // ainda podiam trazer de volta números/mensagem do disparo
+            // anterior. Sem efeito nenhum se um disparo estiver rodando —
+            // ele usa o estado do servidor, não o valor local do campo.
+            resetarFormularioDisparo();
+        }
         if (targetId === 'relatorio-section') { loadRelatorioErrosWhatsapp(); loadRelatorioSemCadastro(); }
     });
 });
