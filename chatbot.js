@@ -4297,11 +4297,21 @@ function ehIntencaoPacto(texto) {
 }
 
 // Envia uma mensagem via WhatsApp e registra no histórico de mensagens enviadas.
+// "telefone" é sempre o número canônico (resolvido via resolveJid/numLimpo), NUNCA
+// o chat id cru do WhatsApp — passar o replyTo/chat.id._serialized aqui foi o bug
+// real por trás de contatos fantasma tipo "225992639565829": pra contas migradas
+// pro sistema @lid do WhatsApp, esse id é um número interno gigante sem relação
+// com o telefone, e registrarMensagemEnviada só tira o sufixo @lid, sobrando o
+// lid cru como se fosse o telefone — cria uma "conversa" nova e errada por
+// contato. resolverChatId() (mesmo helper usado nos disparos/campanhas) resolve
+// o chat id de verdade pra ENVIAR, sem contaminar o que é salvo no banco.
 async function enviarEregistrar(telefone, conteudo) {
+    const numLimpoCheck = telefone.replace('@c.us', '').replace('@lid', '');
+    const chatId = telefone.includes('@') ? telefone : await resolverChatId(numLimpoCheck);
     const delayConfigurado = await obterDelayRespostaConfigurado();
     if (delayConfigurado > 0) await delay(delayConfigurado * 1000);
     if (typeof conteudo === 'string') {
-        await simularDigitando(client.getChatById(telefone));
+        await simularDigitando(client.getChatById(chatId));
         await delay(calcularDelayDigitacao(conteudo));
     }
     // Rechecagem: entre decidir responder e chegar aqui pode ter se passado até
@@ -4309,13 +4319,12 @@ async function enviarEregistrar(telefone, conteudo) {
     // assumiu a conversa nesse meio tempo, o robô não pode mais mandar nada
     // (checar isso só no início do processamento da mensagem não é suficiente
     // com o Delay configurável habilitado).
-    const numLimpoCheck = telefone.replace('@c.us', '').replace('@lid', '');
     if (await db.get('SELECT 1 FROM conversas_humano WHERE telefone = ?', numLimpoCheck)) {
         console.log(`⏸️ Envio cancelado — conversa com ${numLimpoCheck} foi assumida por humano durante o atraso configurado.`);
         return null;
     }
-    const resultado = await client.sendMessage(telefone, conteudo);
-    await registrarMensagemEnviada(telefone, typeof conteudo === 'string' ? conteudo : '[mídia]', null, resultado.id?._serialized);
+    const resultado = await client.sendMessage(chatId, conteudo);
+    await registrarMensagemEnviada(numLimpoCheck, typeof conteudo === 'string' ? conteudo : '[mídia]', null, resultado.id?._serialized);
     return resultado;
 }
 
@@ -4855,8 +4864,6 @@ client.on('message', async (msg) => {
         const chat = await msg.getChat();
         if (chat.isGroup) return;
 
-        // Usa o ID interno do chat para envio — funciona com @lid e @c.us
-        const replyTo = chat.id._serialized;
         const telefoneReal = await resolvePhone(msg);  // número limpo para salvar no banco
         const numLimpo = telefoneReal.replace('@c.us', '').replace('@lid', '');
 
@@ -4986,9 +4993,12 @@ client.on('message', async (msg) => {
         // Sinaliza que o bot está processando ("digitando...")
         io.emit('bot_digitando', { telefone: numLimpo, ativo: true });
 
-        if (await handleCadastroFlow(replyTo, texto, msg.body || '')) { io.emit('bot_digitando', { telefone: numLimpo, ativo: false }); return; }
+        // numLimpo (já resolvido via resolveJid), não replyTo (chat id cru do
+        // WhatsApp) — ver comentário em enviarEregistrar sobre o bug de contato
+        // fantasma que isso causava em contas migradas pro sistema @lid.
+        if (await handleCadastroFlow(numLimpo, texto, msg.body || '')) { io.emit('bot_digitando', { telefone: numLimpo, ativo: false }); return; }
 
-        if (await handlePactoFlow(replyTo, texto)) { io.emit('bot_digitando', { telefone: numLimpo, ativo: false }); return; }
+        if (await handlePactoFlow(numLimpo, texto)) { io.emit('bot_digitando', { telefone: numLimpo, ativo: false }); return; }
 
         const regras = await db.all('SELECT * FROM respostas WHERE ativo = 1 ORDER BY ordem ASC');
         let regraAtiva = null;
