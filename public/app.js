@@ -2032,7 +2032,7 @@ function abrirEditarContato(telefone) {
     if (editarContatoNome) editarContatoNome.value = c.nome === telefone ? '' : c.nome;
     if (editarContatoMatricula) editarContatoMatricula.value = c.matricula || '';
     if (editarContatoNascimento) editarContatoNascimento.value = paraInputDate(c.data_nascimento);
-    if (editarContatoTelefone) editarContatoTelefone.textContent = telefone;
+    if (editarContatoTelefone) editarContatoTelefone.value = telefone;
     modalEditarContatoOverlay?.classList.add('open');
     renderEditarContatoEtiquetas();
 }
@@ -2197,12 +2197,14 @@ btnEditarContatoSalvar?.addEventListener('click', async () => {
     const nome = (editarContatoNome?.value || '').trim();
     const matricula = (editarContatoMatricula?.value || '').trim();
     const data_nascimento = (editarContatoNascimento?.value || '').trim() || null;
+    const telefoneDigitado = (editarContatoTelefone?.value || '').trim();
     if (!nome) { showToast('Nome obrigatório', 'Digite um nome para o contato.', 'error'); return; }
+    if (!telefoneDigitado) { showToast('WhatsApp obrigatório', 'Informe o número com DDD.', 'error'); return; }
     try {
         const res = await fetch(`/api/contatos/${encodeURIComponent(contatoEditandoTelefone)}`, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ nome, matricula, data_nascimento })
+            body: JSON.stringify({ nome, matricula, data_nascimento, telefone: telefoneDigitado })
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || 'Erro ao salvar');

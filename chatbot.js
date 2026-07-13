@@ -1768,6 +1768,30 @@ async function moverRelatorioDispensado(de, para) {
     }
 }
 
+// Move TODAS as tabelas relacionadas (exceto leads) de um telefone pra outro
+// — usado tanto na mesclagem de duplicados quanto na edição manual de
+// telefone (editar contato). NUNCA mexe em leads: cada chamador decide se é
+// rename simples (UPDATE) ou mesclagem de verdade (combinar 2 leads).
+async function moverTodasTabelasDoTelefone(de, canonico) {
+    await moverLinhaSimples('conversas', de, canonico);
+    await moverLinhaSimples('mensagens_enviadas', de, canonico);
+    await moverLinhaSimples('automacao_envios_log', de, canonico);
+    await moverLinhaSimples('automacao_envios_erros_log', de, canonico);
+    await moverLinhaSimples('agenda_avaliacoes_hoje', de, canonico);
+    await moverLinhaSimples('ia_uso_log', de, canonico);
+    await moverLinhaSimples('disparo_envios_log', de, canonico);
+    await moverLinhaSimples('ia_exemplos_consultoras', de, canonico);
+    await moverLinhaPkTelefone('vinculo_pacto', de, canonico);
+    await moverLinhaPkTelefone('conversas_humano', de, canonico);
+    await moverLinhaPkTelefone('conversas_status', de, canonico);
+    await moverLinhaPkTelefone('pacto_inadimplentes', de, canonico);
+    await moverLinhaPkTelefone('pacto_vencem_hoje', de, canonico);
+    await moverLinhasChaveComposta('contato_etiquetas', 'etiqueta_id', de, canonico);
+    await moverLinhasChaveComposta('contato_automacao_estado', 'automacao_id', de, canonico);
+    await moverRelatorioDispensado(de, canonico);
+    await moverMensagemPersonalizadaEnviada(de, canonico);
+}
+
 // Migra TODAS as tabelas de um grupo de telefones-duplicados pro telefone
 // canônico (normalizado), preservando o máximo de dado possível e nunca
 // duplicando linha em tabela nenhuma.
@@ -1782,23 +1806,7 @@ async function mesclarGrupoDeTelefones(canonico, leadsGrupo) {
 
     const outros = leadsGrupo.map(l => l.telefone).filter(t => t !== canonico);
     for (const de of outros) {
-        await moverLinhaSimples('conversas', de, canonico);
-        await moverLinhaSimples('mensagens_enviadas', de, canonico);
-        await moverLinhaSimples('automacao_envios_log', de, canonico);
-        await moverLinhaSimples('automacao_envios_erros_log', de, canonico);
-        await moverLinhaSimples('agenda_avaliacoes_hoje', de, canonico);
-        await moverLinhaSimples('ia_uso_log', de, canonico);
-        await moverLinhaSimples('disparo_envios_log', de, canonico);
-        await moverLinhaSimples('ia_exemplos_consultoras', de, canonico);
-        await moverLinhaPkTelefone('vinculo_pacto', de, canonico);
-        await moverLinhaPkTelefone('conversas_humano', de, canonico);
-        await moverLinhaPkTelefone('conversas_status', de, canonico);
-        await moverLinhaPkTelefone('pacto_inadimplentes', de, canonico);
-        await moverLinhaPkTelefone('pacto_vencem_hoje', de, canonico);
-        await moverLinhasChaveComposta('contato_etiquetas', 'etiqueta_id', de, canonico);
-        await moverLinhasChaveComposta('contato_automacao_estado', 'automacao_id', de, canonico);
-        await moverRelatorioDispensado(de, canonico);
-        await moverMensagemPersonalizadaEnviada(de, canonico);
+        await moverTodasTabelasDoTelefone(de, canonico);
         await db.run('DELETE FROM leads WHERE telefone = ?', de);
     }
 
@@ -1876,21 +1884,59 @@ app.post('/api/contatos/mesclar-duplicados', async (req, res) => {
     }
 });
 
-// Edita o nome de um contato na Audiência (usado pela modal de edição).
-// leads.telefone vem de fontes diferentes com formatos diferentes: mensagens do
-// WhatsApp gravam com sufixo (@c.us/@lid), importação por planilha grava limpo
-// — por isso o WHERE tenta todos os formatos, não só o número limpo que o front manda.
+// Edita um contato na Audiência (usado pela modal de edição). leads.telefone
+// vem de fontes diferentes com formatos diferentes: mensagens do WhatsApp
+// gravam com sufixo (@c.us/@lid), importação por planilha grava limpo — por
+// isso o WHERE tenta todos os formatos, não só o número limpo que o front manda.
+//
+// Editar o telefone é mais que um UPDATE: ele é chave primária de leads e
+// aparece em outras 17 tabelas (conversas, etiquetas, fila de automação
+// etc) — reaproveita moverTodasTabelasDoTelefone (mesma lógica usada na
+// mesclagem de duplicados) pra mover tudo antes de trocar a chave. Se o
+// número novo já pertence a OUTRO contato, não mescla silenciosamente (typo
+// aqui juntaria duas pessoas de verdade) — pede pra usar a mesclagem de
+// duplicados de propósito.
 app.put('/api/contatos/:telefone', async (req, res) => {
     const { telefone } = req.params;
-    const { nome, matricula, data_nascimento } = req.body;
+    const { nome, matricula, data_nascimento, telefone: telefoneNovoBruto } = req.body;
     if (!nome || !nome.trim()) return res.status(400).json({ error: 'Nome é obrigatório.' });
     try {
-        const result = await db.run(
-            'UPDATE leads SET nome = ?, matricula = ?, data_nascimento = ? WHERE telefone = ? OR telefone = ? OR telefone = ?',
-            [nome.trim(), (matricula || '').trim() || null, (data_nascimento || '').trim() || null, telefone, `${telefone}@c.us`, `${telefone}@lid`]
+        const atual = await db.get(
+            'SELECT telefone FROM leads WHERE telefone = ? OR telefone = ? OR telefone = ?',
+            [telefone, `${telefone}@c.us`, `${telefone}@lid`]
         );
-        if (result.changes === 0) return res.status(404).json({ error: 'Contato não encontrado.' });
-        res.json({ success: true, nome: nome.trim(), matricula: (matricula || '').trim() || null, data_nascimento: (data_nascimento || '').trim() || null });
+        if (!atual) return res.status(404).json({ error: 'Contato não encontrado.' });
+
+        let telefoneFinal = atual.telefone;
+        if (telefoneNovoBruto !== undefined && telefoneNovoBruto !== null && telefoneNovoBruto !== '') {
+            const telefoneNovo = normalizarTelefoneImportado(telefoneNovoBruto);
+            if (!telefoneNovo) return res.status(400).json({ error: 'Telefone inválido. Informe com DDD (ex: 46999998888).' });
+            const atualLimpo = atual.telefone.replace('@c.us', '').replace('@lid', '');
+            if (telefoneNovo !== atualLimpo) {
+                const conflito = await db.get(
+                    'SELECT 1 FROM leads WHERE telefone = ? OR telefone = ? OR telefone = ?',
+                    [telefoneNovo, `${telefoneNovo}@c.us`, `${telefoneNovo}@lid`]
+                );
+                if (conflito) {
+                    return res.status(400).json({ error: 'Já existe outro contato com esse número. Use "Mesclar Duplicados" pra unir os dois de propósito.' });
+                }
+                await moverTodasTabelasDoTelefone(atual.telefone, telefoneNovo);
+                await db.run('UPDATE leads SET telefone = ? WHERE telefone = ?', [telefoneNovo, atual.telefone]);
+                telefoneFinal = telefoneNovo;
+                // leadsSet cacheia quem já é lead pra registerLead() não tentar
+                // INSERT duplicado quando essa pessoa mandar mensagem de verdade
+                // — sem isso, a primeira mensagem dela depois da correção
+                // colidiria com a PRIMARY KEY que acabamos de criar aqui.
+                leadsSet.add(telefoneNovo);
+                io.emit('stats', stats);
+            }
+        }
+
+        await db.run(
+            'UPDATE leads SET nome = ?, matricula = ?, data_nascimento = ? WHERE telefone = ?',
+            [nome.trim(), (matricula || '').trim() || null, (data_nascimento || '').trim() || null, telefoneFinal]
+        );
+        res.json({ success: true, telefone: telefoneFinal, nome: nome.trim(), matricula: (matricula || '').trim() || null, data_nascimento: (data_nascimento || '').trim() || null });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
