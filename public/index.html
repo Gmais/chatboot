@@ -1008,6 +1008,7 @@ Sempre tente agendar uma aula experimental."></textarea>
 
                     <div style="display:flex;align-items:center;gap:.8rem;flex-wrap:wrap;margin-bottom:1rem">
                         <button class="btn-primary" id="btn-agenda-avaliacao" style="padding:.6rem 1.1rem;font-size:.85rem">🔄 Atualizar Lista</button>
+                        <button class="btn-secondary" id="btn-agenda-avaliacao-toggle" style="padding:.6rem 1rem;font-size:.85rem">▼ Ver contatos</button>
                         <span id="agenda-avaliacao-ultima-atualizacao" style="color:var(--text-3);font-size:.78rem"></span>
                     </div>
 
@@ -1015,7 +1016,7 @@ Sempre tente agendar uma aula experimental."></textarea>
                         Clique em "Atualizar Lista" pra começar.
                     </div>
 
-                    <div style="overflow-x:auto">
+                    <div id="agenda-avaliacao-tabela" class="hidden" style="overflow-x:auto">
                         <table class="leads-table">
                             <thead>
                                 <tr>

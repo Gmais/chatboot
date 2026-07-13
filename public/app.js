@@ -3505,9 +3505,18 @@ pactoVencemHojeBody?.addEventListener('click', async (e) => {
 // INTEGRAÇÃO — AGENDA DE AVALIAÇÃO FÍSICA
 // =====================================
 const btnAgendaAvaliacao = document.getElementById('btn-agenda-avaliacao');
+const btnAgendaAvaliacaoToggle = document.getElementById('btn-agenda-avaliacao-toggle');
+const agendaAvaliacaoTabela = document.getElementById('agenda-avaliacao-tabela');
 const agendaAvaliacaoResultado = document.getElementById('agenda-avaliacao-resultado');
 const agendaAvaliacaoUltimaAtualizacaoEl = document.getElementById('agenda-avaliacao-ultima-atualizacao');
 const agendaAvaliacaoBody = document.getElementById('agenda-avaliacao-lista');
+
+// Lista de contatos começa recolhida — só o resumo (contagens) fica visível
+// de cara, mesmo padrão do "Ver relatório detalhado" da Situação Financeira.
+btnAgendaAvaliacaoToggle?.addEventListener('click', () => {
+    const aberto = agendaAvaliacaoTabela?.classList.toggle('hidden') === false;
+    btnAgendaAvaliacaoToggle.textContent = aberto ? '▲ Esconder contatos' : '▼ Ver contatos';
+});
 const modalEditarAgendaAvaliacaoOverlay = document.getElementById('modal-editar-agenda-avaliacao-overlay');
 const editarAgendaAvaliacaoTelefone = document.getElementById('editar-agenda-avaliacao-telefone');
 const editarAgendaAvaliacaoNome = document.getElementById('editar-agenda-avaliacao-nome');
