@@ -2409,6 +2409,22 @@ broadcastMensagemSelect?.addEventListener('change', () => {
     if (m.media_path && broadcastMensagemAviso) broadcastMensagemAviso.style.display = 'block';
 });
 
+// Limpa números/mensagem/mídia depois de um disparo concluir — sem isso, a
+// lista e o texto do disparo anterior ficavam ali, e era fácil clicar
+// "Iniciar Disparo" de novo sem querer reenviar pra mesma lista. Intervalo
+// entre envios (velocidade) NÃO reseta — é preferência do usuário, não
+// conteúdo do disparo em si.
+function resetarFormularioDisparo() {
+    const broadcastNumerosEl = document.getElementById('broadcast-numeros');
+    if (broadcastNumerosEl) broadcastNumerosEl.value = '';
+    if (broadcastMensagem) broadcastMensagem.value = '';
+    if (broadcastMensagemSelect) broadcastMensagemSelect.value = '';
+    if (broadcastMensagemAviso) broadcastMensagemAviso.style.display = 'none';
+    if (broadcastFile) broadcastFile.value = '';
+    if (broadcastFileName) broadcastFileName.textContent = '';
+    broadcastUpload?.classList.remove('has-file');
+}
+
 function updateProgressUI(p) {
     if (!progTotal) return;
     progTotal.textContent = p.total;
@@ -2435,6 +2451,7 @@ socket.on('broadcast_done', (p) => {
     showToast('Disparo Finalizado!', `${p.sent} enviados com sucesso.`, 'success', 6000);
     addActivity('🚀', `Disparo concluído: ${p.sent} msgs`, new Date().toLocaleString('pt-BR'));
     if (btnDisparoFalhasToggle) btnDisparoFalhasToggle.style.display = p.failed > 0 ? 'block' : 'none';
+    resetarFormularioDisparo();
 });
 
 // ---- Detalhe de falhas do disparo mais recente (telefone + motivo) ----
