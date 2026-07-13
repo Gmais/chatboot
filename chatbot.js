@@ -4074,7 +4074,21 @@ async function checarProgramacoes() {
                         console.log(`⚠️ Programação "${prog.nome}": erro ao importar lista da automação #${acao.automacao_id} — ${e.message}`);
                     }
                 } else {
-                    // "Disparo" = Disparar Mensagens: manda pra quem já está na fila.
+                    // "Disparo" = Disparar Mensagens. Importa a lista sozinho ANTES de
+                    // disparar — importarContatosParaAutomacao é idempotente (só
+                    // sincroniza a fila com quem tem a etiqueta agora, não manda
+                    // mensagem nem duplica quem já está na fila), então isso não tem
+                    // efeito colateral nenhum. Sem isso, uma Programação com só a ação
+                    // "Disparo" (sem uma ação "Automação" separada antes) rodava sem
+                    // erro nenhum mas não mandava nada pra ninguém — fila vazia — e
+                    // parecia silenciosamente quebrado pro usuário.
+                    try {
+                        const r = await importarContatosParaAutomacao(acao.automacao_id);
+                        console.log(`📥 Programação "${prog.nome}": lista importada pra automação #${acao.automacao_id} antes do disparo (${r.importados} novo(s), ${r.removidos} removido(s))`);
+                        io.emit('automacoes_atualizadas');
+                    } catch (e) {
+                        console.log(`⚠️ Programação "${prog.nome}": erro ao importar lista da automação #${acao.automacao_id} antes do disparo — ${e.message}`);
+                    }
                     const resultado = await dispararAutomacaoComGuardas(acao.automacao_id, `Programação "${prog.nome}"`);
                     if (!resultado.ok) console.log(`⚠️ Programação "${prog.nome}": automação #${acao.automacao_id} não disparou — ${resultado.error}`);
                 }
