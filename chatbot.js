@@ -341,8 +341,8 @@ async function initDB() {
             atualizado_em DATETIME DEFAULT CURRENT_TIMESTAMP
         );
         CREATE TABLE IF NOT EXISTS agenda_avaliacoes_hoje (
-            telefone TEXT PRIMARY KEY,
-            appointment_id TEXT,
+            appointment_id TEXT PRIMARY KEY,
+            telefone TEXT,
             nome TEXT,
             matricula TEXT,
             horario TEXT,
@@ -466,6 +466,35 @@ async function initDB() {
             await db.run('INSERT OR REPLACE INTO configuracoes (chave, valor) VALUES (?, ?)', ['automacao_erros_log_migrado', 'true']);
         }
     } catch (e) { console.error('Erro ao migrar erros de automação existentes pro log persistente:', e.message); }
+
+    // Migração única: agenda_avaliacoes_hoje tinha telefone como chave, o que
+    // significava que agendamento SEM WhatsApp válido nunca era salvo (não tem
+    // chave pra salvar) — ficava invisível na tela, sem jeito de corrigir o
+    // número antes de automatizar. A chave vira appointment_id (sempre existe,
+    // venha ou não WhatsApp junto) e telefone passa a ser um campo comum, editável.
+    try {
+        const colsAgenda = await db.all("PRAGMA table_info(agenda_avaliacoes_hoje)");
+        const telefoneEhChave = colsAgenda.some(c => c.name === 'telefone' && c.pk === 1);
+        if (telefoneEhChave) {
+            await db.exec(`ALTER TABLE agenda_avaliacoes_hoje RENAME TO agenda_avaliacoes_hoje_old`);
+            await db.exec(`
+                CREATE TABLE agenda_avaliacoes_hoje (
+                    appointment_id TEXT PRIMARY KEY,
+                    telefone TEXT,
+                    nome TEXT,
+                    matricula TEXT,
+                    horario TEXT,
+                    professor TEXT,
+                    atualizado_em DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            `);
+            await db.run(`
+                INSERT OR IGNORE INTO agenda_avaliacoes_hoje (appointment_id, telefone, nome, matricula, horario, professor, atualizado_em)
+                SELECT COALESCE(appointment_id, telefone), telefone, nome, matricula, horario, professor, atualizado_em FROM agenda_avaliacoes_hoje_old
+            `);
+            await db.exec(`DROP TABLE agenda_avaliacoes_hoje_old`);
+        }
+    } catch (e) { console.error('Erro na migração de agenda_avaliacoes_hoje:', e.message); }
 
     // Adiciona colunas novas se migrando de versão anterior
     try { await db.exec(`ALTER TABLE respostas ADD COLUMN media_path TEXT DEFAULT NULL`); } catch (e) { }
@@ -3794,33 +3823,56 @@ app.get('/api/agenda-avaliacao', async (req, res) => {
     res.json(lista);
 });
 
-app.delete('/api/agenda-avaliacao/:telefone', async (req, res) => {
-    const { telefone } = req.params;
+// Chave é appointment_id, não telefone — quem não tem WhatsApp válido cadastrado
+// na Pacto também precisa aparecer aqui (é exatamente quem mais precisa de
+// correção antes de automatizar), e não dá pra usar telefone como chave pra
+// linha que ainda não tem telefone nenhum.
+app.delete('/api/agenda-avaliacao/:appointmentId', async (req, res) => {
+    const { appointmentId } = req.params;
     try {
-        const etiquetaId = await garantirEtiquetaAgendamentoAF();
-        await removerEtiquetaContato(telefone, etiquetaId);
-        await db.run('DELETE FROM agenda_avaliacoes_hoje WHERE telefone = ?', telefone);
+        const linha = await db.get('SELECT telefone FROM agenda_avaliacoes_hoje WHERE appointment_id = ?', appointmentId);
+        if (linha?.telefone) {
+            const etiquetaId = await garantirEtiquetaAgendamentoAF();
+            await removerEtiquetaContato(linha.telefone, etiquetaId);
+        }
+        await db.run('DELETE FROM agenda_avaliacoes_hoje WHERE appointment_id = ?', appointmentId);
         res.json({ success: true });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
 });
 
-// Corrige nome/matrícula/horário/professor ANTES de disparar a confirmação —
-// esses 4 campos alimentam direto os placeholders {nome}/{matricula}/{horario}/
-// {professor} da automação "Agendamento Avaliação". O telefone não é editável
-// aqui (é a chave da linha e da etiqueta); se o WhatsApp estiver errado, a
-// correção é no cadastro de origem (Pacto), não nessa lista do dia.
-app.put('/api/agenda-avaliacao/:telefone', async (req, res) => {
-    const { telefone } = req.params;
-    const { nome, matricula, horario, professor } = req.body;
+// Corrige nome/matrícula/horário/professor/telefone ANTES de disparar a
+// confirmação — os 4 primeiros alimentam direto os placeholders {nome}/
+// {matricula}/{horario}/{professor} da automação "Agendamento Avaliação".
+// Telefone É editável aqui de propósito: é o caso de uso principal — aluno
+// sem WhatsApp cadastrado (ou cadastrado errado) na Pacto só ganha a etiqueta
+// "Agendamento AF" (e entra na fila de disparo) depois de alguém corrigir o
+// número aqui.
+app.put('/api/agenda-avaliacao/:appointmentId', async (req, res) => {
+    const { appointmentId } = req.params;
+    const { nome, matricula, horario, professor, telefone } = req.body;
     try {
-        const existe = await db.get('SELECT 1 FROM agenda_avaliacoes_hoje WHERE telefone = ?', telefone);
-        if (!existe) return res.status(404).json({ error: 'Agendamento não encontrado.' });
+        const linha = await db.get('SELECT * FROM agenda_avaliacoes_hoje WHERE appointment_id = ?', appointmentId);
+        if (!linha) return res.status(404).json({ error: 'Agendamento não encontrado.' });
+
+        const telefoneDigitado = (telefone || '').trim();
+        const telefoneNovo = telefoneDigitado ? normalizarTelefoneImportado(telefoneDigitado) : null;
+        if (telefoneDigitado && !telefoneNovo) {
+            return res.status(400).json({ error: 'Número de WhatsApp inválido — confira o DDD e o número.' });
+        }
+
         await db.run(
-            'UPDATE agenda_avaliacoes_hoje SET nome = ?, matricula = ?, horario = ?, professor = ? WHERE telefone = ?',
-            [(nome || '').trim() || null, (matricula || '').trim() || null, (horario || '').trim() || null, (professor || '').trim() || null, telefone]
+            'UPDATE agenda_avaliacoes_hoje SET nome = ?, matricula = ?, horario = ?, professor = ?, telefone = ? WHERE appointment_id = ?',
+            [(nome || '').trim() || null, (matricula || '').trim() || null, (horario || '').trim() || null, (professor || '').trim() || null, telefoneNovo, appointmentId]
         );
+
+        if (linha.telefone !== telefoneNovo) {
+            const etiquetaId = await garantirEtiquetaAgendamentoAF();
+            if (linha.telefone) await removerEtiquetaContato(linha.telefone, etiquetaId);
+            if (telefoneNovo) await aplicarEtiquetaContato(telefoneNovo, etiquetaId);
+        }
+
         res.json({ success: true });
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -3845,43 +3897,55 @@ async function processarAgendaAvaliacao() {
         const agendamentos = resposta?.appointments || [];
         agendaAvaliacaoProgress.total = agendamentos.length;
 
-        const jaEstavam = await db.all('SELECT telefone FROM agenda_avaliacoes_hoje');
-        const telefonesNovos = new Set();
+        const jaEstavam = await db.all('SELECT appointment_id, telefone FROM agenda_avaliacoes_hoje');
+        const idsNovos = new Set();
 
         for (const ag of agendamentos) {
+            // appointment_id é a chave da linha agora (telefone pode não existir
+            // ainda) — sem ele não dá pra rastrear esse agendamento entre
+            // varreduras nem editar depois, então esse caso raro é pulado de verdade.
+            const appointmentId = ag.appointment_id ? String(ag.appointment_id) : null;
+            if (!appointmentId) {
+                console.log(`⚠️ Agenda de Avaliação: agendamento de ${ag.aluno?.nome || 'aluno'} sem appointment_id — pulado.`);
+                continue;
+            }
+            idsNovos.add(appointmentId);
+
             const whatsappBruto = ag.aluno?.whatsapp;
+            const numLimpo = whatsappBruto ? normalizarTelefoneImportado(whatsappBruto) : null;
+            // Sem WhatsApp válido: a linha AINDA é salva (aparece na tela pra
+            // alguém corrigir o número manualmente antes de automatizar) — só não
+            // ganha a etiqueta, já que não tem telefone nenhum pra aplicar nela.
             if (!whatsappBruto) {
                 agendaAvaliacaoProgress.sem_whatsapp++;
-                console.log(`⚠️ Agenda de Avaliação: ${ag.aluno?.nome || 'aluno'} (matrícula ${ag.aluno?.matricula || '?'}) sem WhatsApp cadastrado — pulado.`);
-                continue;
-            }
-            const numLimpo = normalizarTelefoneImportado(whatsappBruto);
-            if (!numLimpo) {
+                console.log(`⚠️ Agenda de Avaliação: ${ag.aluno?.nome || 'aluno'} (matrícula ${ag.aluno?.matricula || '?'}) sem WhatsApp cadastrado — sem etiqueta até corrigir na tela.`);
+            } else if (!numLimpo) {
                 agendaAvaliacaoProgress.sem_whatsapp++;
-                console.log(`⚠️ Agenda de Avaliação: ${ag.aluno?.nome || 'aluno'} (matrícula ${ag.aluno?.matricula || '?'}) com WhatsApp inválido ("${whatsappBruto}") — pulado.`);
-                continue;
+                console.log(`⚠️ Agenda de Avaliação: ${ag.aluno?.nome || 'aluno'} (matrícula ${ag.aluno?.matricula || '?'}) com WhatsApp inválido ("${whatsappBruto}") — sem etiqueta até corrigir na tela.`);
             }
-            telefonesNovos.add(numLimpo);
+
             const horario = (ag.time || '').slice(0, 5);
             await db.run(
-                `INSERT INTO agenda_avaliacoes_hoje (telefone, appointment_id, nome, matricula, horario, professor, atualizado_em)
+                `INSERT INTO agenda_avaliacoes_hoje (appointment_id, telefone, nome, matricula, horario, professor, atualizado_em)
                  VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-                 ON CONFLICT(telefone) DO UPDATE SET appointment_id = excluded.appointment_id, nome = excluded.nome,
+                 ON CONFLICT(appointment_id) DO UPDATE SET telefone = excluded.telefone, nome = excluded.nome,
                     matricula = excluded.matricula, horario = excluded.horario, professor = excluded.professor,
                     atualizado_em = CURRENT_TIMESTAMP`,
-                [numLimpo, ag.appointment_id || null, ag.aluno?.nome || null, ag.aluno?.matricula || null, horario, ag.professor?.nome || null]
+                [appointmentId, numLimpo, ag.aluno?.nome || null, ag.aluno?.matricula || null, horario, ag.professor?.nome || null]
             );
-            await aplicarEtiquetaContato(numLimpo, etiquetaId);
-            agendaAvaliacaoProgress.encontrados++;
+            if (numLimpo) {
+                await aplicarEtiquetaContato(numLimpo, etiquetaId);
+                agendaAvaliacaoProgress.encontrados++;
+            }
         }
 
         // Quem estava na lista de uma varredura anterior mas não está na de
         // agora: sai da lista e perde a etiqueta (não é mais um agendamento
         // válido pra hoje — foi cancelado, remarcado ou já passou o dia).
         for (const c of jaEstavam) {
-            if (!telefonesNovos.has(c.telefone)) {
-                await db.run('DELETE FROM agenda_avaliacoes_hoje WHERE telefone = ?', c.telefone);
-                await removerEtiquetaContato(c.telefone, etiquetaId);
+            if (!idsNovos.has(c.appointment_id)) {
+                await db.run('DELETE FROM agenda_avaliacoes_hoje WHERE appointment_id = ?', c.appointment_id);
+                if (c.telefone) await removerEtiquetaContato(c.telefone, etiquetaId);
             }
         }
 

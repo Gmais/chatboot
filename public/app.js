@@ -3515,18 +3515,18 @@ const editarAgendaAvaliacaoMatricula = document.getElementById('editar-agenda-av
 const editarAgendaAvaliacaoHorario = document.getElementById('editar-agenda-avaliacao-horario');
 const editarAgendaAvaliacaoProfessor = document.getElementById('editar-agenda-avaliacao-professor');
 const btnEditarAgendaAvaliacaoSalvar = document.getElementById('btn-editar-agenda-avaliacao-salvar');
-let agendaAvaliacaoEditandoTelefone = null;
+let agendaAvaliacaoEditandoId = null;
 
 function fecharEditarAgendaAvaliacao() {
-    agendaAvaliacaoEditandoTelefone = null;
+    agendaAvaliacaoEditandoId = null;
     modalEditarAgendaAvaliacaoOverlay?.classList.remove('open');
 }
 document.getElementById('modal-editar-agenda-avaliacao-fechar')?.addEventListener('click', fecharEditarAgendaAvaliacao);
 
 btnEditarAgendaAvaliacaoSalvar?.addEventListener('click', async () => {
-    if (!agendaAvaliacaoEditandoTelefone) return;
+    if (!agendaAvaliacaoEditandoId) return;
     try {
-        const res = await fetch(`/api/agenda-avaliacao/${encodeURIComponent(agendaAvaliacaoEditandoTelefone)}`, {
+        const res = await fetch(`/api/agenda-avaliacao/${encodeURIComponent(agendaAvaliacaoEditandoId)}`, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -3534,14 +3534,18 @@ btnEditarAgendaAvaliacaoSalvar?.addEventListener('click', async () => {
                 matricula: editarAgendaAvaliacaoMatricula.value,
                 horario: editarAgendaAvaliacaoHorario.value,
                 professor: editarAgendaAvaliacaoProfessor.value,
+                telefone: editarAgendaAvaliacaoTelefone.value,
             })
         });
-        if (!res.ok) throw new Error('Falha ao salvar');
+        if (!res.ok) {
+            const corpo = await res.json().catch(() => ({}));
+            throw new Error(corpo.error || 'Falha ao salvar');
+        }
         showToast('Salvo', '', 'success', 2000);
         fecharEditarAgendaAvaliacao();
         loadAgendaAvaliacao();
     } catch (err) {
-        showToast('Erro', 'Não foi possível salvar', 'error');
+        showToast('Erro', err.message || 'Não foi possível salvar', 'error');
     }
 });
 
@@ -3588,14 +3592,14 @@ async function loadAgendaAvaliacao() {
                 <tr>
                     <td>
                         <div style="font-weight:500;color:var(--text-1)">${i.nome || '-'}</div>
-                        <div style="font-size:.75rem;color:var(--text-3)">${i.telefone}</div>
+                        <div style="font-size:.75rem;color:${i.telefone ? 'var(--text-3)' : 'var(--red)'}">${i.telefone || '⚠️ Sem WhatsApp — edite pra corrigir'}</div>
                     </td>
                     <td style="color:var(--text-2);font-size:.85rem">${i.matricula || '-'}</td>
                     <td style="color:var(--text-2);font-size:.85rem">${i.horario || '-'}</td>
                     <td style="color:var(--text-2);font-size:.85rem">${i.professor || '-'}</td>
                     <td style="text-align:right;white-space:nowrap">
-                        <button type="button" class="btn-secondary btn-editar-agenda-avaliacao" data-telefone="${i.telefone}" data-nome="${i.nome || ''}" data-matricula="${i.matricula || ''}" data-horario="${i.horario || ''}" data-professor="${i.professor || ''}" style="padding:.35rem .6rem;font-size:.75rem" title="Editar antes de disparar">✏️</button>
-                        <button type="button" class="btn-danger btn-excluir-agenda-avaliacao" data-telefone="${i.telefone}" data-nome="${i.nome || i.telefone}" style="padding:.35rem .6rem;font-size:.75rem" title="Excluir da lista e remover a etiqueta Agendamento AF">🗑️</button>
+                        <button type="button" class="btn-secondary btn-editar-agenda-avaliacao" data-appointment-id="${i.appointment_id}" data-telefone="${i.telefone || ''}" data-nome="${i.nome || ''}" data-matricula="${i.matricula || ''}" data-horario="${i.horario || ''}" data-professor="${i.professor || ''}" style="padding:.35rem .6rem;font-size:.75rem" title="Editar antes de disparar">✏️</button>
+                        <button type="button" class="btn-danger btn-excluir-agenda-avaliacao" data-appointment-id="${i.appointment_id}" data-nome="${i.nome || i.telefone || 'esse agendamento'}" style="padding:.35rem .6rem;font-size:.75rem" title="Excluir da lista e remover a etiqueta Agendamento AF">🗑️</button>
                     </td>
                 </tr>
             `).join('')
@@ -3608,8 +3612,8 @@ async function loadAgendaAvaliacao() {
 agendaAvaliacaoBody?.addEventListener('click', async (e) => {
     const btnEditar = e.target.closest('.btn-editar-agenda-avaliacao');
     if (btnEditar) {
-        agendaAvaliacaoEditandoTelefone = btnEditar.dataset.telefone;
-        if (editarAgendaAvaliacaoTelefone) editarAgendaAvaliacaoTelefone.textContent = btnEditar.dataset.telefone;
+        agendaAvaliacaoEditandoId = btnEditar.dataset.appointmentId;
+        if (editarAgendaAvaliacaoTelefone) editarAgendaAvaliacaoTelefone.value = btnEditar.dataset.telefone || '';
         if (editarAgendaAvaliacaoNome) editarAgendaAvaliacaoNome.value = btnEditar.dataset.nome || '';
         if (editarAgendaAvaliacaoMatricula) editarAgendaAvaliacaoMatricula.value = btnEditar.dataset.matricula || '';
         if (editarAgendaAvaliacaoHorario) editarAgendaAvaliacaoHorario.value = btnEditar.dataset.horario || '';
@@ -3622,7 +3626,7 @@ agendaAvaliacaoBody?.addEventListener('click', async (e) => {
     if (!btn) return;
     if (!confirm(`Excluir "${btn.dataset.nome}" da lista e remover a etiqueta "Agendamento AF"?`)) return;
     try {
-        const res = await fetch(`/api/agenda-avaliacao/${encodeURIComponent(btn.dataset.telefone)}`, { method: 'DELETE' });
+        const res = await fetch(`/api/agenda-avaliacao/${encodeURIComponent(btn.dataset.appointmentId)}`, { method: 'DELETE' });
         if (!res.ok) throw new Error('Falha ao excluir');
         showToast('Removido', '', 'success', 2000);
         loadAgendaAvaliacao();
