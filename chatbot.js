@@ -3880,12 +3880,18 @@ app.put('/api/agenda-avaliacao/:appointmentId', async (req, res) => {
 });
 
 // Varre a agenda de avaliação física do dia (via Supabase da Planeta Corpo) e
-// etiqueta cada aluno com WhatsApp válido como "Agendamento AF" — NÃO manda
-// mensagem nenhuma sozinha. A automação "Agendamento Avaliação" (já
-// configurada pelo usuário, vinculada a essa mesma etiqueta) é quem cuida do
-// envio, e só dispara quando alguém clica "Importar Lista" + "Disparar
-// Mensagens" nela, igual toda automação do sistema — essa varredura só
-// alimenta a etiqueta/lista, não põe ninguém na fila de envio sozinha.
+// etiqueta cada aluno como "Agendamento AF" — NÃO manda mensagem nenhuma
+// sozinha. A automação "Agendamento Avaliação" (já configurada pelo usuário,
+// vinculada a essa mesma etiqueta) é quem cuida do envio, e só dispara quando
+// alguém clica "Importar Lista" + "Disparar Mensagens" nela, igual toda
+// automação do sistema — essa varredura só alimenta a etiqueta/lista, não
+// põe ninguém na fila de envio sozinha.
+//
+// Essa integração (sistema de agendamento, NADA a ver com a Pacto) só traz
+// matrícula/horário/professor — não vem telefone nenhum dela. O telefone é
+// resolvido correlacionando a matrícula com um contato que já existe aqui
+// (tabela leads) — sem isso, a linha fica sem WhatsApp e sem etiqueta até
+// alguém corrigir manualmente na tela (editar → WhatsApp).
 async function processarAgendaAvaliacao() {
     if (agendaAvaliacaoRunning) return;
     agendaAvaliacaoRunning = true;
@@ -3911,17 +3917,20 @@ async function processarAgendaAvaliacao() {
             }
             idsNovos.add(appointmentId);
 
-            const whatsappBruto = ag.aluno?.whatsapp;
-            const numLimpo = whatsappBruto ? normalizarTelefoneImportado(whatsappBruto) : null;
-            // Sem WhatsApp válido: a linha AINDA é salva (aparece na tela pra
-            // alguém corrigir o número manualmente antes de automatizar) — só não
-            // ganha a etiqueta, já que não tem telefone nenhum pra aplicar nela.
-            if (!whatsappBruto) {
+            // Correlaciona pela matrícula com um contato já existente (leads) —
+            // é a única fonte de telefone aqui, a agenda não traz WhatsApp.
+            const matricula = ag.aluno?.matricula ? String(ag.aluno.matricula).trim() : null;
+            let numLimpo = null;
+            if (matricula) {
+                const contato = await db.get('SELECT telefone FROM leads WHERE TRIM(matricula) = ?', matricula);
+                if (contato?.telefone) numLimpo = contato.telefone.replace('@c.us', '').replace('@lid', '');
+            }
+            // Sem contato correlacionado: a linha AINDA é salva (aparece na tela
+            // pra alguém corrigir o WhatsApp manualmente antes de automatizar) —
+            // só não ganha a etiqueta, já que não tem telefone nenhum pra aplicar.
+            if (!numLimpo) {
                 agendaAvaliacaoProgress.sem_whatsapp++;
-                console.log(`⚠️ Agenda de Avaliação: ${ag.aluno?.nome || 'aluno'} (matrícula ${ag.aluno?.matricula || '?'}) sem WhatsApp cadastrado — sem etiqueta até corrigir na tela.`);
-            } else if (!numLimpo) {
-                agendaAvaliacaoProgress.sem_whatsapp++;
-                console.log(`⚠️ Agenda de Avaliação: ${ag.aluno?.nome || 'aluno'} (matrícula ${ag.aluno?.matricula || '?'}) com WhatsApp inválido ("${whatsappBruto}") — sem etiqueta até corrigir na tela.`);
+                console.log(`⚠️ Agenda de Avaliação: ${ag.aluno?.nome || 'aluno'} (matrícula ${matricula || '?'}) sem contato correlacionado nos Contatos — sem etiqueta até corrigir na tela.`);
             }
 
             const horario = (ag.time || '').slice(0, 5);

@@ -3566,7 +3566,7 @@ function renderAgendaAvaliacaoResultado(p) {
         return;
     }
     agendaAvaliacaoResultado.innerHTML = `
-        <div>📋 ${p.total} agendamento(s) hoje · 🏷️ ${p.encontrados} etiquetado(s)${p.sem_whatsapp ? ` · ⚠️ ${p.sem_whatsapp} sem WhatsApp válido` : ''}</div>
+        <div>📋 ${p.total} agendamento(s) hoje · 🏷️ ${p.encontrados} etiquetado(s)${p.sem_whatsapp ? ` · ⚠️ ${p.sem_whatsapp} sem contato correlacionado` : ''}</div>
     `;
 }
 
@@ -3592,7 +3592,7 @@ async function loadAgendaAvaliacao() {
                 <tr>
                     <td>
                         <div style="font-weight:500;color:var(--text-1)">${i.nome || '-'}</div>
-                        <div style="font-size:.75rem;color:${i.telefone ? 'var(--text-3)' : 'var(--red)'}">${i.telefone || '⚠️ Sem WhatsApp — edite pra corrigir'}</div>
+                        <div style="font-size:.75rem;color:${i.telefone ? 'var(--text-3)' : 'var(--red)'}">${i.telefone || '⚠️ Matrícula não encontrada nos Contatos'}</div>
                     </td>
                     <td style="color:var(--text-2);font-size:.85rem">${i.matricula || '-'}</td>
                     <td style="color:var(--text-2);font-size:.85rem">${i.horario || '-'}</td>
