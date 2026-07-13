@@ -3426,7 +3426,10 @@ app.post('/api/conversas/:telefone/enviar-arquivo', upload.single('arquivo'), as
     try {
         const chatId = telefone.includes('@') ? telefone : await resolverChatId(telefone);
         const media = MessageMedia.fromFilePath(req.file.path);
-        const legenda = (req.body.legenda || '').trim();
+        const legendaBruta = (req.body.legenda || '').trim();
+        // Mesma substituição de {nome}/{matricula}/{saudacao} do envio manual de
+        // texto — legenda de arquivo é digitada pelo mesmo operador do mesmo jeito.
+        const legenda = legendaBruta ? await substituirPlaceholdersPessoais(legendaBruta, telefone) : legendaBruta;
         const sentMsg = await client.sendMessage(chatId, media, legenda ? { caption: legenda } : undefined);
         // Mantém o arquivo em public/uploads (não apaga mais) — é o que permite
         // reabrir a imagem/documento clicando na bolha depois.
@@ -5533,10 +5536,11 @@ client.on('message', async (msg) => {
         if (modo === 'humano') {
             const hoje = moment.tz(timezone || 'America/Sao_Paulo').format('YYYY-MM-DD');
             if (mensagemHumano && ultimaMsgModoHumano.get(numLimpo) !== hoje) {
-                const sentHumano = await enviarResposta(msg, mensagemHumano);
+                const mensagemHumanoFinal = await substituirPlaceholdersPessoais(mensagemHumano, numLimpo);
+                const sentHumano = await enviarResposta(msg, mensagemHumanoFinal);
                 if (sentHumano) {
                     ultimaMsgModoHumano.set(numLimpo, hoje);
-                    await registrarMensagemEnviada(telefoneReal, mensagemHumano, nomeContato, sentHumano.id?._serialized);
+                    await registrarMensagemEnviada(telefoneReal, mensagemHumanoFinal, nomeContato, sentHumano.id?._serialized);
                 }
             }
             await agendarFallbackHumano(msg, numLimpo, texto, telefoneReal, nomeContato);
