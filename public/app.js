@@ -675,7 +675,7 @@ navBtns.forEach(btn => {
         pageTitle.textContent = text;
         if (targetId === 'dashboard-section') carregarEstatisticas();
         if (targetId === 'mensagens-section') loadRegras();
-        if (targetId === 'ia-section') loadIaConfig();
+        if (targetId === 'ia-section') { loadIaConfig(); loadIaExemplosContagem(); }
         if (targetId === 'configuracoes-section') { loadHorarioConfig(); loadDelayResposta(); loadProgramacoes(); }
         if (targetId === 'conversas-section') CM.onEnterSection();
         if (targetId === 'contatos-section' || targetId === 'disparos-section') loadContatos();
@@ -744,6 +744,7 @@ async function loadIaConfig() {
         if (iaStatus)      iaStatus.checked  = config.openai_status === 'true';
         if (iaTreinamento) iaTreinamento.value = config.openai_treinamento || '';
         if (iaCampanhaMes) iaCampanhaMes.value = config.ia_campanha_mes || '';
+        if (iaAprenderConsultoras) iaAprenderConsultoras.checked = config.ia_aprender_com_consultoras === 'true';
         if (provider === 'groq') {
             if (iaApikey) iaApikey.value = config.groq_api_key || '';
             if (iaModelo) iaModelo.value = config.groq_modelo || 'llama-3.1-8b-instant';
@@ -763,6 +764,7 @@ btnSalvarIa?.addEventListener('click', async () => {
         openai_status: iaStatus.checked ? 'true' : 'false',
         openai_treinamento: iaTreinamento.value.trim(),
         ia_campanha_mes: iaCampanhaMes.value.trim(),
+        ia_aprender_com_consultoras: iaAprenderConsultoras?.checked ? 'true' : 'false',
         ...(provider === 'groq'
             ? { groq_api_key: iaApikey.value.trim(), groq_modelo: iaModelo.value }
             : { openai_api_key: iaApikey.value.trim(), openai_modelo: iaModelo.value }
@@ -779,6 +781,51 @@ btnSalvarIa?.addEventListener('click', async () => {
     } catch (e) {
         showToast('Erro', 'Não foi possível salvar as configurações da IA', 'error');
     }
+});
+
+// =====================================
+// IA — APRENDER COM CONSULTORAS (exemplos reais via RAG)
+// =====================================
+const iaAprenderConsultoras   = document.getElementById('ia-aprender-consultoras');
+const iaExemplosContagemEl    = document.getElementById('ia-exemplos-contagem');
+const btnIaImportarHistorico  = document.getElementById('btn-ia-importar-historico');
+const iaExemplosProgressoEl   = document.getElementById('ia-exemplos-progresso');
+
+async function loadIaExemplosContagem() {
+    if (!iaExemplosContagemEl) return;
+    try {
+        const res = await fetch('/api/ia/exemplos/contagem');
+        const data = await res.json();
+        iaExemplosContagemEl.textContent = data.total || 0;
+    } catch (e) {
+        console.error('Erro ao carregar contagem de exemplos de IA', e);
+    }
+}
+
+btnIaImportarHistorico?.addEventListener('click', async () => {
+    if (!confirm('Isso vai escanear todo o histórico de conversas com respostas manuais de consultoras e gerar exemplos pra IA — usa a API da OpenAI (custo pequeno) e pode levar alguns minutos. Continuar?')) return;
+    try {
+        const res = await fetch('/api/ia/exemplos/importar-historico', { method: 'POST' });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Erro ao iniciar importação');
+        btnIaImportarHistorico.disabled = true;
+        if (iaExemplosProgressoEl) { iaExemplosProgressoEl.style.display = 'block'; iaExemplosProgressoEl.textContent = 'Iniciando...'; }
+        showToast('Importação iniciada', 'Rodando em segundo plano.', 'success');
+    } catch (err) {
+        showToast('Erro', err.message, 'error');
+    }
+});
+
+socket.on('ia_exemplos_progress', (p) => {
+    if (!iaExemplosProgressoEl) return;
+    iaExemplosProgressoEl.style.display = 'block';
+    iaExemplosProgressoEl.textContent = `Processando ${p.processados}/${p.total} — ${p.indexados} exemplo(s) indexado(s)...`;
+});
+
+socket.on('ia_exemplos_done', (p) => {
+    if (btnIaImportarHistorico) btnIaImportarHistorico.disabled = false;
+    if (iaExemplosProgressoEl) iaExemplosProgressoEl.textContent = `✅ Concluído: ${p.indexados} exemplo(s) novo(s) indexado(s) de ${p.total} conversa(s) revisada(s).`;
+    loadIaExemplosContagem();
 });
 
 // =====================================

@@ -870,6 +870,23 @@ Sempre tente agendar uma aula experimental."></textarea>
                         <button class="btn-primary" id="btn-salvar-ia">💾 Salvar Configurações da IA</button>
                     </div>
                 </div>
+
+                <div class="card glass">
+                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem">
+                        <h3>🧠 Aprender com Consultoras</h3>
+                        <label style="display:flex;align-items:center;gap:.5rem;cursor:pointer">
+                            <input type="checkbox" id="ia-aprender-consultoras" style="accent-color:var(--green);width:18px;height:18px">
+                            <strong style="color:var(--text-1)">Ativar</strong>
+                        </label>
+                    </div>
+                    <p style="color:var(--text-2);font-size:.85rem;margin-bottom:1rem">Quando ativado, a IA busca respostas reais que suas consultoras já deram pra perguntas parecidas e usa como referência de tom e estilo — sem retreinar nenhum modelo, aprende sozinho a cada resposta manual nova pelo Bate Papo ao Vivo. Usa a chave da OpenAI configurada acima (só pra gerar os embeddings), mesmo que o provider de chat esteja em Groq.</p>
+                    <div style="display:flex;align-items:center;gap:1rem;flex-wrap:wrap;margin-bottom:.8rem">
+                        <span style="font-size:.85rem;color:var(--text-2)">📚 <strong id="ia-exemplos-contagem">0</strong> exemplo(s) já aprendido(s)</span>
+                        <button type="button" class="btn-secondary" id="btn-ia-importar-historico" style="padding:.5rem 1rem;font-size:.85rem">🔄 Importar Histórico de Conversas</button>
+                    </div>
+                    <div id="ia-exemplos-progresso" style="display:none;font-size:.82rem;color:var(--text-3);margin-bottom:.6rem"></div>
+                    <span class="hint">A redação de dados sensíveis (CPF, telefone) nos exemplos é automática, mas é uma tentativa best-effort — não é garantia de anonimização completa. Não existe ainda uma tela pra aprovar/rejeitar exemplo por exemplo nesta versão.</span>
+                </div>
             </div>
         </div>
 

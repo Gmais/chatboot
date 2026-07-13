@@ -390,6 +390,22 @@ async function initDB() {
             dispensado_em DATETIME DEFAULT CURRENT_TIMESTAMP,
             UNIQUE(tipo, telefone)
         );
+        CREATE TABLE IF NOT EXISTS ia_exemplos_consultoras (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            telefone TEXT,
+            pergunta_cliente TEXT NOT NULL,
+            resposta_consultora TEXT NOT NULL,
+            embedding TEXT NOT NULL,
+            origem_conversa_id INTEGER,
+            criado_em DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_ia_exemplos_criado ON ia_exemplos_consultoras(criado_em);
+        -- Índice único parcial: só entra em conflito quando origem_conversa_id
+        -- vem preenchido (backfill histórico) — evita reimportar a mesma
+        -- mensagem se o botão "Importar Histórico" for clicado de novo. As
+        -- indexações em tempo real (registrarMensagemEnviada) deixam essa
+        -- coluna NULL, e SQLite permite múltiplos NULL num índice único.
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_ia_exemplos_origem ON ia_exemplos_consultoras(origem_conversa_id) WHERE origem_conversa_id IS NOT NULL;
     `);
     try { await db.exec(`ALTER TABLE programacao_acoes ADD COLUMN intervalo_depois_segundos INTEGER DEFAULT 60`); } catch (e) { }
     // "automacao" = roda Importar Lista (sincroniza a fila com quem tem a
@@ -639,6 +655,118 @@ async function salvarNaConversa(telefone, nome, direcao, texto, tipo = 'text', t
     }
 }
 
+// =====================================
+// IA — APRENDER COM RESPOSTAS REAIS DAS CONSULTORAS (RAG, sem fine-tuning)
+// =====================================
+// Toda vez que uma consultora responde manualmente pelo Bate Papo ao Vivo,
+// guardamos o par (pergunta do cliente, resposta dela) com um embedding da
+// pergunta. Na hora da IA responder, buscamos os exemplos mais parecidos com
+// a mensagem atual e colocamos como referência de tom/estilo no prompt — sem
+// nenhum retreinamento de modelo, só cresce sozinho a cada resposta manual.
+
+// Redação básica de PII (best-effort — pega CPF/e-mail/sequências longas de
+// dígitos em formato comum, não é uma garantia de anonimização completa).
+function redigirPII(texto) {
+    if (!texto) return texto;
+    return texto
+        .replace(/\d{3}\.?\d{3}\.?\d{3}-?\d{2}/g, '[dado removido]')
+        .replace(/[\w.+-]+@[\w-]+\.[\w.-]+/g, '[dado removido]')
+        .replace(/\b\d{10,11}\b/g, '[dado removido]');
+}
+
+// Embeddings SEMPRE usam a API da OpenAI (Groq não tem endpoint de
+// embeddings) — reaproveita a mesma chave já configurada na tela de IA,
+// independente de qual provider está ativo pro chat.
+async function gerarEmbeddingsEmLote(textos) {
+    if (!Array.isArray(textos) || textos.length === 0) return [];
+    const row = await db.get("SELECT valor FROM configuracoes WHERE chave = 'openai_api_key'");
+    const apiKey = row?.valor;
+    if (!apiKey) return [];
+    const openai = new OpenAI({ apiKey });
+    const resultado = await openai.embeddings.create({ model: 'text-embedding-3-small', input: textos });
+    return resultado.data.map(d => d.embedding);
+}
+async function gerarEmbedding(texto) {
+    const [embedding] = await gerarEmbeddingsEmLote([texto]);
+    return embedding || null;
+}
+
+function similaridadeCosseno(a, b) {
+    if (!a || !b || a.length !== b.length) return 0;
+    let dot = 0, normA = 0, normB = 0;
+    for (let i = 0; i < a.length; i++) {
+        dot += a[i] * b[i];
+        normA += a[i] * a[i];
+        normB += b[i] * b[i];
+    }
+    if (normA === 0 || normB === 0) return 0;
+    return dot / (Math.sqrt(normA) * Math.sqrt(normB));
+}
+
+const IA_EXEMPLO_TAMANHO_MINIMO = 15; // caracteres — descarta "ok", "👍", "blz" etc.
+
+// Fire-and-forget: chamada dentro de registrarMensagemEnviada quando
+// manual===true. Nunca deve derrubar o envio real da mensagem — qualquer
+// erro aqui só loga e segue.
+async function indexarExemploConsultora(telefone, respostaTexto) {
+    try {
+        const configRow = await db.get("SELECT valor FROM configuracoes WHERE chave = 'ia_aprender_com_consultoras'");
+        if (configRow?.valor !== 'true') return;
+        if (!respostaTexto || respostaTexto.trim().length < IA_EXEMPLO_TAMANHO_MINIMO) return;
+
+        const numLimpo = telefone.replace('@c.us', '').replace('@lid', '');
+        const ultimaPergunta = await db.get(
+            "SELECT texto FROM conversas WHERE telefone = ? AND direcao = 'in' ORDER BY ts DESC LIMIT 1",
+            numLimpo
+        );
+        if (!ultimaPergunta?.texto || ultimaPergunta.texto.trim().length < IA_EXEMPLO_TAMANHO_MINIMO) return;
+
+        const perguntaLimpa = redigirPII(ultimaPergunta.texto.trim());
+        const respostaLimpa = redigirPII(respostaTexto.trim());
+        const embedding = await gerarEmbedding(perguntaLimpa);
+        if (!embedding) return;
+
+        await db.run(
+            'INSERT INTO ia_exemplos_consultoras (telefone, pergunta_cliente, resposta_consultora, embedding) VALUES (?, ?, ?, ?)',
+            [numLimpo, perguntaLimpa, respostaLimpa, JSON.stringify(embedding)]
+        );
+    } catch (e) {
+        console.error('Erro ao indexar exemplo de consultora:', e.message);
+    }
+}
+
+// Busca os exemplos mais parecidos com a mensagem atual do cliente — carrega
+// a tabela inteira e compara em JS (sem extensão de vetor no SQLite);
+// tranquilo no volume esperado. Devolve [] sem custo se o recurso estiver
+// desligado ou não tiver chave OpenAI configurada.
+const IA_EXEMPLOS_SIMILARIDADE_MINIMA = 0.75;
+async function buscarExemplosRelevantes(textoCliente, topK = 3) {
+    try {
+        const configRow = await db.get("SELECT valor FROM configuracoes WHERE chave = 'ia_aprender_com_consultoras'");
+        if (configRow?.valor !== 'true') return [];
+        if (!textoCliente || textoCliente.trim().length < 5) return [];
+
+        const embeddingAtual = await gerarEmbedding(textoCliente);
+        if (!embeddingAtual) return [];
+
+        const exemplos = await db.all('SELECT pergunta_cliente, resposta_consultora, embedding FROM ia_exemplos_consultoras');
+        if (exemplos.length === 0) return [];
+
+        return exemplos
+            .map(e => {
+                let vetor;
+                try { vetor = JSON.parse(e.embedding); } catch (_) { return null; }
+                return { pergunta_cliente: e.pergunta_cliente, resposta_consultora: e.resposta_consultora, similaridade: similaridadeCosseno(embeddingAtual, vetor) };
+            })
+            .filter(e => e && e.similaridade >= IA_EXEMPLOS_SIMILARIDADE_MINIMA)
+            .sort((a, b) => b.similaridade - a.similaridade)
+            .slice(0, topK);
+    } catch (e) {
+        console.error('Erro ao buscar exemplos relevantes de consultoras:', e.message);
+        return [];
+    }
+}
+
 // Registra no histórico permanente cada mensagem realmente enviada pelo robô.
 // É a única fonte da contagem "Mensagens Enviadas" — se está no contador, está nesta tabela.
 async function registrarMensagemEnviada(telefone, texto, nome, msgId = null, manual = false, tipo = 'text', mediaPath = null) {
@@ -649,6 +777,7 @@ async function registrarMensagemEnviada(telefone, texto, nome, msgId = null, man
     await salvarNaConversa(numeroLimpo, nome, 'out', texto, tipo, null, manual, mediaPath);
     io.emit('message_out', { to: numeroLimpo, text: texto, ts: Date.now() });
     io.emit('stats', stats);
+    if (manual) indexarExemploConsultora(numeroLimpo, texto).catch(e => console.error('Erro ao indexar exemplo (fire-and-forget):', e.message));
 }
 
 async function registerLead(telefone) {
@@ -815,6 +944,89 @@ app.get('/api/ia/config', async (req, res) => {
     rows.forEach(r => config[r.chave] = r.valor);
     res.json(config);
 });
+
+app.get('/api/ia/exemplos/contagem', async (req, res) => {
+    const row = await db.get('SELECT COUNT(*) AS total FROM ia_exemplos_consultoras');
+    res.json({ total: row.total });
+});
+
+// Varredura única do histórico de conversas.out(manual=1) que ainda não foi
+// indexado (via origem_conversa_id) — sem isso o recurso começa vazio e não
+// ajuda em nada até acumular semanas de conversas novas. Roda em background,
+// disparada manualmente (não automática no boot), mesmo padrão de progresso
+// via socket usado pela varredura de Situação Financeira do CRM Pacto.
+let iaExemplosImportacaoRunning = false;
+let iaExemplosImportacaoProgress = { total: 0, processados: 0, indexados: 0, running: false };
+
+async function importarHistoricoExemplosConsultoras() {
+    try {
+        const respostasManuais = await db.all(`
+            SELECT id, telefone, texto, ts FROM conversas
+            WHERE direcao = 'out' AND manual = 1
+              AND id NOT IN (SELECT origem_conversa_id FROM ia_exemplos_consultoras WHERE origem_conversa_id IS NOT NULL)
+            ORDER BY ts ASC
+        `);
+        iaExemplosImportacaoProgress.total = respostasManuais.length;
+        io.emit('ia_exemplos_progress', iaExemplosImportacaoProgress);
+
+        const TAMANHO_LOTE = 40; // reduz chamadas de embedding — a API aceita várias entradas por requisição
+        for (let i = 0; i < respostasManuais.length; i += TAMANHO_LOTE) {
+            const lote = respostasManuais.slice(i, i + TAMANHO_LOTE);
+            const paresValidos = [];
+            for (const r of lote) {
+                iaExemplosImportacaoProgress.processados++;
+                if (!r.texto || r.texto.trim().length < IA_EXEMPLO_TAMANHO_MINIMO) continue;
+                const numLimpo = r.telefone.replace('@c.us', '').replace('@lid', '');
+                const perguntaRow = await db.get(
+                    "SELECT texto FROM conversas WHERE telefone = ? AND direcao = 'in' AND ts < ? ORDER BY ts DESC LIMIT 1",
+                    [numLimpo, r.ts]
+                );
+                if (!perguntaRow?.texto || perguntaRow.texto.trim().length < IA_EXEMPLO_TAMANHO_MINIMO) continue;
+                paresValidos.push({
+                    conversaId: r.id,
+                    telefone: numLimpo,
+                    pergunta: redigirPII(perguntaRow.texto.trim()),
+                    resposta: redigirPII(r.texto.trim()),
+                });
+            }
+            if (paresValidos.length > 0) {
+                const embeddings = await gerarEmbeddingsEmLote(paresValidos.map(p => p.pergunta));
+                for (let j = 0; j < paresValidos.length; j++) {
+                    if (!embeddings[j]) continue;
+                    const p = paresValidos[j];
+                    try {
+                        await db.run(
+                            'INSERT OR IGNORE INTO ia_exemplos_consultoras (telefone, pergunta_cliente, resposta_consultora, embedding, origem_conversa_id) VALUES (?, ?, ?, ?, ?)',
+                            [p.telefone, p.pergunta, p.resposta, JSON.stringify(embeddings[j]), p.conversaId]
+                        );
+                        iaExemplosImportacaoProgress.indexados++;
+                    } catch (e) {
+                        console.error('Erro ao gravar exemplo do backfill:', e.message);
+                    }
+                }
+            }
+            io.emit('ia_exemplos_progress', iaExemplosImportacaoProgress);
+        }
+    } catch (e) {
+        console.error('Erro no backfill de exemplos de consultoras:', e.message);
+    } finally {
+        iaExemplosImportacaoRunning = false;
+        iaExemplosImportacaoProgress.running = false;
+        io.emit('ia_exemplos_done', iaExemplosImportacaoProgress);
+    }
+}
+
+app.post('/api/ia/exemplos/importar-historico', async (req, res) => {
+    if (iaExemplosImportacaoRunning) return res.status(400).json({ error: 'Já tem uma importação em andamento.' });
+    const row = await db.get("SELECT valor FROM configuracoes WHERE chave = 'openai_api_key'");
+    if (!row?.valor) return res.status(400).json({ error: 'Configure a chave da OpenAI na tela de IA antes de importar.' });
+    iaExemplosImportacaoRunning = true;
+    iaExemplosImportacaoProgress = { total: 0, processados: 0, indexados: 0, running: true };
+    res.json({ success: true });
+    importarHistoricoExemplosConsultoras();
+});
+
+app.get('/api/ia/exemplos/status', (req, res) => res.json(iaExemplosImportacaoProgress));
 
 // =====================================
 // API REST — HORÁRIO DE FUNCIONAMENTO
@@ -4818,6 +5030,17 @@ client.on('message', async (msg) => {
                             : `Você está conversando com ${nomeParaIA}.`;
                     }
                     if (systemContent) history.push({ role: 'system', content: systemContent });
+                }
+
+                // Exemplos reais de consultoras parecidos com a mensagem ATUAL — busca
+                // de novo a cada turno (não só na primeira mensagem), porque a pergunta
+                // muda de turno a turno. Entra como mensagem de sistema à parte, não
+                // misturada no systemContent fixo acima.
+                const exemplosConsultoras = await buscarExemplosRelevantes(texto);
+                if (exemplosConsultoras.length > 0) {
+                    const textoExemplos = 'Exemplos reais de como nossas consultoras já responderam perguntas parecidas com essa — use como referência de tom e estilo, sem copiar literalmente se não fizer sentido pro contexto atual:\n\n' +
+                        exemplosConsultoras.map(e => `Cliente: ${e.pergunta_cliente}\nConsultora: ${e.resposta_consultora}`).join('\n\n');
+                    history.push({ role: 'system', content: textoExemplos });
                 }
 
                 history.push({ role: 'user', content: texto });
