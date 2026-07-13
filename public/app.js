@@ -4521,6 +4521,7 @@ function renderAcompanhamentoAutomacoes(automacoesOriginal) {
                         ${aberto ? '▲ Esconder' : '▼ Ver contatos'}
                     </button>
                     <button type="button" class="btn-primary btn-disparar-automacao" data-id="${a.id}" data-nome="${a.nome}" style="padding:.4rem .8rem;font-size:.78rem" title="Manda a mensagem sorteada pra cada contato em andamento">🚀 Disparar Mensagens</button>
+                    ${a.disparo_ativo ? `<button type="button" class="btn-danger btn-pausar-automacao" data-id="${a.id}" data-nome="${a.nome}" style="padding:.4rem .8rem;font-size:.78rem" title="Para antes do próximo contato — quem ainda não recebeu fica intacto na fila">⏸️ Pausar Disparo</button>` : ''}
                     <button type="button" class="btn-secondary btn-importar-lista-automacao" data-id="${a.id}" data-nome="${a.nome}" style="padding:.4rem .8rem;font-size:.78rem" title="Sincroniza a fila com quem tem a etiqueta agora — quem perdeu a etiqueta sai, quem ganhou entra">📥 Importar Lista</button>
                 </div>
                 <div class="acompanhamento-detalhe" data-id="${a.id}" style="margin-top:1rem;${aberto ? '' : 'display:none'}">
@@ -4558,6 +4559,7 @@ async function carregarProgressoDetalhe(automacaoId) {
                         <th>Mensagem</th>
                         <th>Horário previsto</th>
                         <th>Erro no último envio</th>
+                        <th></th>
                     </tr>
                 </thead>
                 <tbody>
@@ -4571,6 +4573,9 @@ async function carregarProgressoDetalhe(automacaoId) {
                             <td style="color:var(--text-2);font-size:.85rem">${c.mensagem_nome || '<span style="color:var(--text-3)">será sorteada no envio</span>'}</td>
                             <td style="color:var(--text-2);font-size:.85rem">${data.disparo_ativo ? formatDataCurta(c.horario_previsto) : '<span style="color:var(--text-3)">aguardando clicar em Disparar</span>'}</td>
                             <td style="font-size:.8rem">${c.ultimo_erro ? `<span style="color:var(--red)" title="${c.ultimo_erro}">⚠️ ${c.ultimo_erro}</span>` : '<span style="color:var(--text-3)">-</span>'}</td>
+                            <td style="text-align:right">
+                                <button type="button" class="btn-danger btn-excluir-contato-automacao" data-automacao-id="${automacaoId}" data-telefone="${c.telefone}" data-nome="${c.nome}" style="padding:.3rem .5rem;font-size:.72rem" title="Tira só esse contato da fila, sem mandar mensagem">🗑️</button>
+                            </td>
                         </tr>
                     `).join('')}
                 </tbody>
@@ -4648,6 +4653,35 @@ acompanhamentoAutomacoesLista?.addEventListener('click', async (e) => {
         } finally {
             btnDisparar.disabled = false;
             btnDisparar.textContent = '🚀 Disparar Mensagens';
+        }
+        return;
+    }
+
+    const btnExcluirContato = e.target.closest('.btn-excluir-contato-automacao');
+    if (btnExcluirContato) {
+        if (!confirm(`Tirar "${btnExcluirContato.dataset.nome}" da fila dessa automação? Não manda mensagem nenhuma, só sai da lista.`)) return;
+        try {
+            const res = await fetch(`/api/automacoes/${btnExcluirContato.dataset.automacaoId}/contatos/${encodeURIComponent(btnExcluirContato.dataset.telefone)}`, { method: 'DELETE' });
+            if (!res.ok) { const data = await res.json().catch(() => ({})); throw new Error(data.error || 'Erro ao excluir'); }
+            showToast('Removido da fila', '', 'success', 2000);
+        } catch (err) {
+            showToast('Erro', err.message, 'error');
+        }
+        return;
+    }
+
+    const btnPausar = e.target.closest('.btn-pausar-automacao');
+    if (btnPausar) {
+        if (!confirm(`Pausar o disparo de "${btnPausar.dataset.nome}"? Para antes do próximo contato — quem ainda não recebeu fica intacto na fila pra retomar depois.`)) return;
+        btnPausar.disabled = true;
+        try {
+            const res = await fetch(`/api/automacoes/${btnPausar.dataset.id}/pausar`, { method: 'POST' });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || 'Erro ao pausar');
+            showToast('Pausa solicitada', 'Para assim que o envio do contato atual terminar.', 'success', 4000);
+        } catch (err) {
+            showToast('Erro', err.message, 'error');
+            btnPausar.disabled = false;
         }
         return;
     }

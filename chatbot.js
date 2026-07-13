@@ -2364,6 +2364,10 @@ async function poolMensagensDaAutomacao(automacaoId) {
 }
 
 let automacaoDisparoRodando = {};
+// Sinal de pausa cooperativo — dispararMensagensDaAutomacao olha isso ANTES
+// de cada contato e para no meio da fila sem terminar (contato atual só, os
+// que ainda não foram tentados ficam intactos na fila pra um próximo disparo).
+let automacaoDisparoPausado = {};
 
 // Disparo de verdade da automação: cada contato "em andamento" recebe UMA
 // mensagem sorteada do pool (se ainda não tiver uma atribuída, sorteia agora
@@ -2383,6 +2387,10 @@ async function dispararMensagensDaAutomacao(automacaoId) {
 
     let primeiro = true;
     for (const estado of pendentes) {
+        if (automacaoDisparoPausado[automacaoId]) {
+            console.log(`⏸️ Disparo da automação #${automacaoId} pausado pelo usuário — parou antes de ${estado.telefone}, resto da fila intacto.`);
+            break;
+        }
         // "primeiro" precisa virar false ANTES de qualquer await — se o passo
         // de delay/sorteio de mensagem abaixo falhar (ver catch mais adiante),
         // o próximo contato da fila ainda precisa saber que não é mais o 1º.
@@ -2846,12 +2854,38 @@ async function dispararAutomacaoComGuardas(id, origem = 'manual') {
         return { ok: false, error: `Fora do horário configurado pra essa automação (${automacao.horario_inicio}–${automacao.horario_fim}).` };
     }
     automacaoDisparoRodando[id] = true;
+    automacaoDisparoPausado[id] = false; // reseta pausa de uma rodada anterior
     console.log(`🚀 Disparo da automação #${id} (${automacao.nome}) iniciado — origem: ${origem}`);
     dispararMensagensDaAutomacao(id)
         .catch(e => console.error('Erro ao disparar automação:', e.message))
-        .finally(() => { automacaoDisparoRodando[id] = false; });
+        .finally(() => { automacaoDisparoRodando[id] = false; automacaoDisparoPausado[id] = false; });
     return { ok: true };
 }
+
+// Sinal cooperativo pro disparo em andamento parar antes do próximo contato —
+// não cancela o envio que já está no meio (ver dispararMensagensDaAutomacao),
+// só impede de começar o próximo. Fila continua intacta pra retomar depois.
+app.post('/api/automacoes/:id/pausar', async (req, res) => {
+    const { id } = req.params;
+    if (!automacaoDisparoRodando[id]) return res.status(400).json({ error: 'Essa automação não está disparando agora.' });
+    automacaoDisparoPausado[id] = true;
+    console.log(`⏸️ Pausa solicitada pra automação #${id}.`);
+    res.json({ success: true });
+});
+
+// Remove UM contato específico da fila "em andamento" — não manda mensagem
+// nenhuma, só tira ele da lista (ex: cliente já pagou, quer excluir só esse).
+app.delete('/api/automacoes/:id/contatos/:telefone', async (req, res) => {
+    const { id, telefone } = req.params;
+    try {
+        const result = await db.run('DELETE FROM contato_automacao_estado WHERE telefone = ? AND automacao_id = ?', [telefone, id]);
+        if (result.changes === 0) return res.status(404).json({ error: 'Contato não encontrado na fila dessa automação.' });
+        io.emit('automacoes_atualizadas');
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
 
 // Dispara de verdade os contatos "em andamento" dessa automação — cada um
 // recebe a mensagem sorteada pra ele (ver dispararMensagensDaAutomacao).
