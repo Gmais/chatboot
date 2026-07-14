@@ -5651,28 +5651,46 @@ async function processarComoRobo(msg, numLimpo, texto, telefoneReal, nomeContato
 // só dispara N segundos depois da ÚLTIMA mensagem sem resposta, não da primeira.
 const pendingFallbackTimers = new Map();
 async function agendarFallbackHumano(msg, numLimpo, texto, telefoneReal, nomeContato) {
-    const [ativoRow, segRow, agoraRow] = await Promise.all([
+    // Cancela o timer anterior JÁ NO INÍCIO, antes de qualquer await — se não
+    // fizer isso aqui em cima, duas mensagens quase simultâneas do mesmo
+    // contato (comum: cliente manda várias mensagens curtas seguidas) podiam
+    // ler "nenhum timer pendente" ao mesmo tempo (nenhuma via a da outra
+    // ainda) e cada uma agendar o SEU próprio timer sem cancelar o do outro —
+    // o mais antigo disparava sozinho, como se a mensagem mais nova nunca
+    // tivesse resetado a contagem ("robô assume cedo demais").
+    const timerAnterior = pendingFallbackTimers.get(numLimpo);
+    if (timerAnterior) clearTimeout(timerAnterior);
+    pendingFallbackTimers.delete(numLimpo);
+
+    const [ativoRow, segRow] = await Promise.all([
         db.get("SELECT valor FROM configuracoes WHERE chave = 'horario_fallback_ativo'"),
         db.get("SELECT valor FROM configuracoes WHERE chave = 'horario_fallback_segundos'"),
-        db.get("SELECT datetime('now') AS agora"),
     ]);
     if (ativoRow?.valor !== 'true') return;
     const segundos = parseInt(segRow?.valor, 10) || 180;
-    const marcadorTs = agoraRow.agora;
-
-    const timerAnterior = pendingFallbackTimers.get(numLimpo);
-    if (timerAnterior) clearTimeout(timerAnterior);
+    // Mesmo formato usado em conversas.ts (ver salvarNaConversa: sempre ISO,
+    // "2026-07-14T15:30:45.123Z") — usar o formato do datetime('now') do
+    // SQLite ("2026-07-14 15:30:45", com espaço) pra comparar contra isso
+    // era uma comparação de texto incoerente: 'T' (0x54) sempre vence ' '
+    // (0x20) no mesmo ponto da string, então QUALQUER resposta do MESMO DIA
+    // contava como "já respondida" mesmo tendo sido enviada horas antes da
+    // mensagem atual — o robô achava que alguém tinha acabado de responder
+    // quando na verdade não tinha nada recente.
+    const marcadorTs = new Date().toISOString();
 
     const timer = setTimeout(async () => {
+        // Só prossegue se ESTE ainda for o timer mais recente desse contato —
+        // se uma mensagem mais nova chegou depois e criou outro timer (ver
+        // comentário acima), este aqui é stale e não deve fazer nada.
+        if (pendingFallbackTimers.get(numLimpo) !== timer) return;
         pendingFallbackTimers.delete(numLimpo);
         try {
             // Recheca tudo na hora de disparar, não na hora de agendar — muita
             // coisa pode ter mudado nesses N segundos.
             const assumida = await db.get('SELECT 1 FROM conversas_humano WHERE telefone = ?', numLimpo);
             if (assumida) return; // alguém assumiu de propósito nesse meio tempo — não atravessa
-            // >= (não só >): datetime('now') do SQLite só tem precisão de
-            // segundo — uma resposta humana que caia no MESMO segundo do
-            // marcador seria perdida com ">" estrito.
+            // >= (não só >): garante que uma resposta no mesmo instante do
+            // marcador ainda conte como "já respondida".
             const jaRespondida = await db.get(
                 `SELECT 1 FROM conversas WHERE telefone = ? AND direcao = 'out' AND ts >= ? LIMIT 1`,
                 [numLimpo, marcadorTs]
