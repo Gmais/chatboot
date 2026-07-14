@@ -179,16 +179,16 @@ async function mesclarLeadsDuplicados() {
     const relatorio = [];
     try {
         const linhasLeads = await db.all('SELECT rowid, telefone, nome, matricula, data_nascimento, data_captura, mensagens_recebidas FROM leads');
-        // Agrupa pelo telefone NORMALIZADO (sem sufixo @c.us/@lid) — as duas
-        // linhas duplicadas não tinham telefone idêntico de verdade (isso
-        // violaria a PRIMARY KEY), e sim uma com sufixo e outra sem, que
-        // /api/contatos já trata como o mesmo contato ao exibir (por isso
-        // pareciam duplicadas na tela mas o agrupamento por string crua não
-        // achava nada pra mesclar).
-        const normalizar = (tel) => tel.replace('@c.us', '').replace('@lid', '');
+        // Agrupa pelo telefone totalmente normalizado (mesma função usada no
+        // resto do sistema: tira sufixo @c.us/@lid E resolve a variação do
+        // 9º dígito do celular) — as linhas duplicadas não tinham telefone
+        // idêntico de verdade (isso violaria a PRIMARY KEY); eram variações
+        // válidas e diferentes do MESMO número (com/sem sufixo, com/sem o
+        // 9), que /api/contatos e o resto do sistema já tratam como o mesmo
+        // contato, por isso pareciam duplicadas na tela.
         const porTelefone = new Map();
         linhasLeads.forEach(l => {
-            const chave = normalizar(l.telefone);
+            const chave = normalizarTelefoneBR(l.telefone);
             if (!porTelefone.has(chave)) porTelefone.set(chave, []);
             porTelefone.get(chave).push(l);
         });
