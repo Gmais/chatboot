@@ -2517,6 +2517,12 @@ function resetarFormularioDisparo() {
     if (broadcastFile) broadcastFile.value = '';
     if (broadcastFileName) broadcastFileName.textContent = '';
     broadcastUpload?.classList.remove('has-file');
+    // Limpa também a seleção da Lista de Contatos — sem isso, contatos
+    // marcados pra um disparo continuavam "selecionados" por baixo dos panos
+    // (mesmo já fora da busca atual) e entravam de novo, somados aos novos,
+    // na próxima vez que "Usar selecionados no disparo" fosse clicado.
+    contatosSelecionados.clear();
+    renderContatos();
 }
 
 function updateProgressUI(p) {
