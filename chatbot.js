@@ -3568,7 +3568,7 @@ let broadcastRunning = false;
 let broadcastProgress = { total: 0, sent: 0, failed: 0, running: false };
 let ultimoDisparoIniciadoEm = null; // 'YYYY-MM-DD HH:mm:ss' (mesmo formato do SQLite) — filtra /api/broadcast/falhas no disparo mais recente
 
-app.get('/api/broadcast/status', (req, res) => res.json(broadcastProgress));
+app.get('/api/broadcast/status', (req, res) => res.json({ ...broadcastProgress, filaTamanho: filaDisparos.length }));
 
 // Detalhe de falhas do disparo em massa mais recente — telefone + motivo,
 // pra quem acabou de rodar um disparo entender NA HORA quem falhou e por quê,
@@ -3621,17 +3621,14 @@ app.get('/api/broadcast/detalhe', async (req, res) => {
     }
 });
 
-app.post('/api/broadcast/start', upload.single('media'), async (req, res) => {
-    if (broadcastRunning) return res.status(400).json({ error: 'Um disparo já está em andamento.' });
-    if (!isConnected) return res.status(400).json({ error: 'WhatsApp não está conectado.' });
+// Fila de disparos: se o usuário criar um novo disparo com um anterior ainda
+// rodando, ele não é rejeitado nem roda em paralelo (mandar de duas listas
+// ao mesmo tempo pelo mesmo WhatsApp aumenta risco de bloqueio) — entra
+// aqui e começa sozinho assim que o disparo atual terminar.
+let filaDisparos = [];
 
-    const { numeros, mensagem, delay_ms, delay_modo, delay_velocidade } = req.body;
-    const listaNumeros = numeros.split('\n').map(n => n.trim().replace(/\D/g, '')).filter(n => n.length >= 10);
-
-    if (listaNumeros.length === 0) return res.status(400).json({ error: 'Nenhum número válido encontrado.' });
-    if (!mensagem) return res.status(400).json({ error: 'Mensagem obrigatória.' });
-
-    const mediaFile = req.file ? { path: req.file.path, mimetype: req.file.mimetype, filename: req.file.originalname } : null;
+function iniciarBroadcast(job) {
+    const { listaNumeros, mensagem, mediaFile, delay_ms, delay_modo, delay_velocidade } = job;
 
     // Modo fixo: mesmo intervalo sempre. Modo aleatório: um valor novo dentro
     // da faixa escolhida a cada mensagem — menos previsível, reduz risco de bloqueio.
@@ -3646,8 +3643,7 @@ app.post('/api/broadcast/start', upload.single('media'), async (req, res) => {
     broadcastProgress = { total: listaNumeros.length, sent: 0, failed: 0, running: true };
     ultimoDisparoIniciadoEm = moment.utc().format('YYYY-MM-DD HH:mm:ss');
     io.emit('broadcast_progress', broadcastProgress);
-
-    res.json({ success: true, total: listaNumeros.length });
+    io.emit('broadcast_started', broadcastProgress);
 
     // Executa o broadcast de forma assíncrona
     (async () => {
@@ -3684,11 +3680,46 @@ app.post('/api/broadcast/start', upload.single('media'), async (req, res) => {
         io.emit('broadcast_progress', broadcastProgress);
         io.emit('broadcast_done', broadcastProgress);
         console.log(`✅ Broadcast finalizado: ${broadcastProgress.sent} enviados, ${broadcastProgress.failed} falhas.`);
+
+        // Próximo da fila (se tiver) começa sozinho, sem precisar de ação do usuário.
+        if (filaDisparos.length > 0) {
+            const proximo = filaDisparos.shift();
+            io.emit('broadcast_fila_atualizada', { tamanho: filaDisparos.length });
+            iniciarBroadcast(proximo);
+        }
     })();
+}
+
+app.post('/api/broadcast/start', upload.single('media'), async (req, res) => {
+    if (!isConnected) return res.status(400).json({ error: 'WhatsApp não está conectado.' });
+
+    const { numeros, mensagem, delay_ms, delay_modo, delay_velocidade } = req.body;
+    const listaNumeros = numeros.split('\n').map(n => n.trim().replace(/\D/g, '')).filter(n => n.length >= 10);
+
+    if (listaNumeros.length === 0) return res.status(400).json({ error: 'Nenhum número válido encontrado.' });
+    if (!mensagem) return res.status(400).json({ error: 'Mensagem obrigatória.' });
+
+    const mediaFile = req.file ? { path: req.file.path, mimetype: req.file.mimetype, filename: req.file.originalname } : null;
+    const job = { listaNumeros, mensagem, mediaFile, delay_ms, delay_modo, delay_velocidade };
+
+    if (broadcastRunning) {
+        filaDisparos.push(job);
+        io.emit('broadcast_fila_atualizada', { tamanho: filaDisparos.length });
+        return res.json({ success: true, queued: true, posicaoNaFila: filaDisparos.length, total: listaNumeros.length });
+    }
+
+    res.json({ success: true, queued: false, total: listaNumeros.length });
+    iniciarBroadcast(job);
 });
 
 app.post('/api/broadcast/stop', (req, res) => {
     broadcastRunning = false;
+    // "Parar" cancela tudo, não só a lista atual — sem isso, um disparo
+    // enfileirado começaria sozinho logo em seguida, surpreendendo quem
+    // clicou Parar justamente pra não mandar mais nada.
+    const tinhaFila = filaDisparos.length > 0;
+    filaDisparos = [];
+    if (tinhaFila) io.emit('broadcast_fila_atualizada', { tamanho: 0 });
     res.json({ success: true });
 });
 

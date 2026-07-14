@@ -693,6 +693,7 @@ navBtns.forEach(btn => {
             // anterior. Sem efeito nenhum se um disparo estiver rodando —
             // ele usa o estado do servidor, não o valor local do campo.
             resetarFormularioDisparo();
+            sincronizarEstadoDisparo();
         }
         if (targetId === 'relatorio-section') { loadRelatorioErrosWhatsapp(); loadRelatorioSemCadastro(); }
     });
@@ -2462,6 +2463,7 @@ const progPercent       = document.getElementById('prog-percent');
 const progBar           = document.getElementById('prog-bar');
 const broadcastStatusMsg= document.getElementById('broadcast-status-msg');
 const disparoDetalheLista = document.getElementById('disparo-detalhe-lista');
+const disparoFilaStatus = document.getElementById('disparo-fila-status');
 const progressStatClicaveis = document.querySelectorAll('.progress-stat-clickable');
 const broadcastUpload   = document.getElementById('broadcast-upload-area');
 const broadcastFile     = document.getElementById('broadcast-file');
@@ -2503,12 +2505,10 @@ broadcastMensagemSelect?.addEventListener('change', () => {
     if (m.media_path && broadcastMensagemAviso) broadcastMensagemAviso.style.display = 'block';
 });
 
-// Limpa números/mensagem/mídia depois de um disparo concluir — sem isso, a
-// lista e o texto do disparo anterior ficavam ali, e era fácil clicar
-// "Iniciar Disparo" de novo sem querer reenviar pra mesma lista. Intervalo
-// entre envios (velocidade) NÃO reseta — é preferência do usuário, não
-// conteúdo do disparo em si.
-function resetarFormularioDisparo() {
+// Limpa só números/mensagem/mídia — usado tanto depois que um disparo
+// termina quanto logo que um novo é enfileirado (ver btnDisparar), pra não
+// deixar o campo com o texto de uma lista que já foi capturada.
+function limparCamposFormularioDisparo() {
     const broadcastNumerosEl = document.getElementById('broadcast-numeros');
     if (broadcastNumerosEl) broadcastNumerosEl.value = '';
     if (broadcastMensagem) broadcastMensagem.value = '';
@@ -2517,6 +2517,15 @@ function resetarFormularioDisparo() {
     if (broadcastFile) broadcastFile.value = '';
     if (broadcastFileName) broadcastFileName.textContent = '';
     broadcastUpload?.classList.remove('has-file');
+}
+
+// Limpa números/mensagem/mídia depois de um disparo concluir — sem isso, a
+// lista e o texto do disparo anterior ficavam ali, e era fácil clicar
+// "Iniciar Disparo" de novo sem querer reenviar pra mesma lista. Intervalo
+// entre envios (velocidade) NÃO reseta — é preferência do usuário, não
+// conteúdo do disparo em si.
+function resetarFormularioDisparo() {
+    limparCamposFormularioDisparo();
     // Limpa também a seleção da Lista de Contatos — sem isso, contatos
     // marcados pra um disparo continuavam "selecionados" por baixo dos panos
     // (mesmo já fora da busca atual) e entravam de novo, somados aos novos,
@@ -2539,7 +2548,10 @@ function updateProgressUI(p) {
     if (p.running) {
         broadcastStatusMsg.textContent = `🚀 Disparando... ${p.sent + p.failed}/${p.total}`;
         broadcastStatusMsg.style.color = 'var(--green)';
-        if (btnDisparar) btnDisparar.style.display = 'none';
+        // "Iniciar Disparo" continua visível (e vira "Enfileirar") mesmo com
+        // um disparo rodando — clicar nele agora entra na fila em vez de
+        // travar/recusar, e começa sozinho quando este terminar.
+        if (btnDisparar) btnDisparar.textContent = '➕ Enfileirar Novo Disparo';
         if (btnParar)    btnParar.style.display = 'inline-flex';
     }
     // Se o painel de detalhe já está aberto, atualiza a lista junto — assim
@@ -2548,12 +2560,59 @@ function updateProgressUI(p) {
     if (filtroDisparoDetalheAtivo) renderDisparoDetalhe(filtroDisparoDetalheAtivo);
 }
 
+// Sincroniza os botões/status ao (re)entrar na tela — sem isso, um reload
+// no meio de um disparo mostrava "Iniciar Disparo" (estado padrão do HTML)
+// mesmo com um disparo de verdade rodando no servidor, só se corrigindo
+// sozinho no próximo evento de progresso (que pode demorar minutos com
+// velocidade "Muito Longo").
+async function sincronizarEstadoDisparo() {
+    try {
+        const res = await fetch('/api/broadcast/status');
+        const p = await res.json();
+        if (p.running) {
+            updateProgressUI(p);
+        } else if (btnDisparar) {
+            btnDisparar.textContent = '🚀 Iniciar Disparo';
+        }
+        if (disparoFilaStatus) {
+            if (p.filaTamanho > 0) {
+                disparoFilaStatus.textContent = `📋 ${p.filaTamanho} disparo${p.filaTamanho !== 1 ? 's' : ''} na fila — começa${p.filaTamanho !== 1 ? 'm' : ''} automaticamente assim que o atual terminar.`;
+                disparoFilaStatus.classList.remove('hidden');
+            } else {
+                disparoFilaStatus.classList.add('hidden');
+            }
+        }
+    } catch (e) {
+        console.error('Erro ao sincronizar estado do disparo', e);
+    }
+}
+
+// Início de um disparo — o primeiro clicado na hora, ou o próximo da fila
+// começando sozinho assim que o anterior termina (ver iniciarBroadcast no
+// backend). Reseta o painel de detalhe pra refletir a lista NOVA que
+// começou a rodar, não a anterior.
+socket.on('broadcast_started', () => {
+    filtroDisparoDetalheAtivo = null;
+    progressStatClicaveis.forEach(el => el.classList.remove('active'));
+    if (disparoDetalheLista) { disparoDetalheLista.classList.add('hidden'); disparoDetalheLista.innerHTML = ''; }
+});
+
+socket.on('broadcast_fila_atualizada', ({ tamanho }) => {
+    if (!disparoFilaStatus) return;
+    if (tamanho > 0) {
+        disparoFilaStatus.textContent = `📋 ${tamanho} disparo${tamanho !== 1 ? 's' : ''} na fila — começa${tamanho !== 1 ? 'm' : ''} automaticamente assim que o atual terminar.`;
+        disparoFilaStatus.classList.remove('hidden');
+    } else {
+        disparoFilaStatus.classList.add('hidden');
+    }
+});
+
 socket.on('broadcast_progress', updateProgressUI);
 
 socket.on('broadcast_done', (p) => {
     broadcastStatusMsg.textContent = `✅ Concluído! ${p.sent} enviados, ${p.failed} falhas.`;
     broadcastStatusMsg.style.color = 'var(--green)';
-    if (btnDisparar) btnDisparar.style.display = 'inline-flex';
+    if (btnDisparar) { btnDisparar.style.display = 'inline-flex'; btnDisparar.textContent = '🚀 Iniciar Disparo'; }
     if (btnParar)    btnParar.style.display = 'none';
     showToast('Disparo Finalizado!', `${p.sent} enviados com sucesso.`, 'success', 6000);
     addActivity('🚀', `Disparo concluído: ${p.sent} msgs`, new Date().toLocaleString('pt-BR'));
@@ -2630,6 +2689,16 @@ btnDisparar?.addEventListener('click', async () => {
     const res = await fetch('/api/broadcast/start', { method: 'POST', body: formData });
     const data = await res.json();
     if (!res.ok) { alert(data.error || 'Erro ao iniciar disparo.'); return; }
+
+    // Já tinha um disparo rodando — este entrou na fila em vez de começar na
+    // hora. Só limpa os campos (a lista já foi capturada pro backend) sem
+    // mexer no painel de progresso/detalhe, que ainda é do disparo atual.
+    if (data.queued) {
+        limparCamposFormularioDisparo();
+        showToast('Disparo enfileirado!', `Vai começar automaticamente assim que o disparo atual terminar (posição ${data.posicaoNaFila} na fila).`, 'success', 6000);
+        return;
+    }
+
     broadcastStatusMsg.textContent = `🚀 Iniciando disparo para ${data.total} números...`;
     broadcastStatusMsg.style.color = 'var(--green)';
     showToast('Disparo Iniciado!', `${data.total} números na fila`, 'success');
