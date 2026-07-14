@@ -4175,7 +4175,19 @@ async function processarAgendaAvaliacao() {
             const matricula = ag.aluno?.matricula ? String(ag.aluno.matricula).trim() : null;
             let numLimpo = null;
             if (matricula) {
-                const contato = await db.get('SELECT telefone FROM leads WHERE TRIM(matricula) = ?', matricula);
+                // Compara tanto o texto exato quanto o valor numérico — a Agenda de
+                // Avaliação (Planeta Corpo) manda a matrícula sem zeros à esquerda
+                // (ex: "4079"), enquanto o Pacto costuma salvar em Contatos com
+                // zeros à esquerda (ex: "004079"); sem isso, o correlacionamento
+                // falhava silenciosamente pra todo aluno com matrícula < 6 dígitos.
+                const contato = await db.get(
+                    `SELECT telefone FROM leads
+                     WHERE matricula IS NOT NULL AND TRIM(matricula) != '' AND (
+                        TRIM(matricula) = ?
+                        OR CAST(matricula AS INTEGER) = CAST(? AS INTEGER)
+                     )`,
+                    [matricula, matricula]
+                );
                 // normalizarTelefoneBR — leads.telefone pode estar sem o 9º dígito
                 // (import antigo do Pacto); sem isso a etiqueta vai pro telefone
                 // errado e cria uma conversa fantasma separada da real.
