@@ -1902,6 +1902,31 @@ contatosPageFiltroEtiquetas?.addEventListener('click', (e) => {
     renderContatosPage();
 });
 
+// Filtros extras (não são etiquetas de verdade) — quem ainda não tem
+// matrícula ou data de nascimento cadastrada, pra achar contatos incompletos.
+let filtroSemMatriculaAtivo = false;
+let filtroSemDnAtivo = false;
+const btnFiltroSemMatricula = document.getElementById('contatos-page-filtro-sem-matricula');
+const btnFiltroSemDn = document.getElementById('contatos-page-filtro-sem-dn');
+
+btnFiltroSemMatricula?.addEventListener('click', () => {
+    filtroSemMatriculaAtivo = !filtroSemMatriculaAtivo;
+    btnFiltroSemMatricula.classList.toggle('active', filtroSemMatriculaAtivo);
+    btnFiltroSemMatricula.style.background = filtroSemMatriculaAtivo ? 'var(--amber)' : 'rgba(255,255,255,0.05)';
+    btnFiltroSemMatricula.style.borderColor = filtroSemMatriculaAtivo ? 'var(--amber)' : 'rgba(245,158,11,0.35)';
+    btnFiltroSemMatricula.style.color = filtroSemMatriculaAtivo ? '#000' : 'var(--amber)';
+    renderContatosPage();
+});
+
+btnFiltroSemDn?.addEventListener('click', () => {
+    filtroSemDnAtivo = !filtroSemDnAtivo;
+    btnFiltroSemDn.classList.toggle('active', filtroSemDnAtivo);
+    btnFiltroSemDn.style.background = filtroSemDnAtivo ? 'var(--red)' : 'rgba(255,255,255,0.05)';
+    btnFiltroSemDn.style.borderColor = filtroSemDnAtivo ? 'var(--red)' : 'rgba(239,68,68,0.35)';
+    btnFiltroSemDn.style.color = filtroSemDnAtivo ? '#fff' : 'var(--red)';
+    renderContatosPage();
+});
+
 function atualizarContadorContatos() {
     const n = contatosSelecionados.size;
     if (!contatosContador) return;
@@ -1939,7 +1964,9 @@ function contatosPageFiltrados() {
     return todosContatos.filter(c => {
         const bateBusca = !termo || c.nome.toLowerCase().includes(termo) || c.telefone.includes(termo) || (c.matricula || '').toLowerCase().includes(termo);
         const bateEtiqueta = etiquetasFiltroAtivasPage.size === 0 || c.etiquetas.some(e => etiquetasFiltroAtivasPage.has(e.id));
-        return bateBusca && bateEtiqueta;
+        const bateSemMatricula = !filtroSemMatriculaAtivo || !c.matricula;
+        const bateSemDn = !filtroSemDnAtivo || !c.data_nascimento;
+        return bateBusca && bateEtiqueta && bateSemMatricula && bateSemDn;
     });
 }
 
