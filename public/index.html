@@ -537,6 +537,7 @@
                             <select id="chat-header-add-tag" style="background:var(--input-bg);border:1px solid rgba(255,255,255,0.1);border-radius:var(--radius-sm);padding:.35rem .6rem;color:var(--text-1);font-size:.75rem">
                                 <option value="">🏷️ Etiqueta...</option>
                             </select>
+                            <button type="button" id="btn-chat-gerenciar-etiqueta" class="btn-secondary" style="padding:.35rem .6rem;font-size:.75rem" title="Editar ou excluir etiquetas">⚙️</button>
                             <button id="btn-chat-assumir" class="btn-secondary" style="padding:.35rem .8rem;font-size:.75rem;white-space:nowrap">🙋 Assumir Conversa</button>
                             <button id="btn-chat-resolver" class="btn-secondary" style="padding:.35rem .7rem;font-size:.75rem;white-space:nowrap" title="Marcar como finalizada">✅ Finalizar</button>
                             <button id="btn-chat-excluir" class="btn-danger" style="padding:.35rem .7rem;font-size:.75rem" title="Excluir conversa (irreversível)">🗑️</button>
@@ -637,34 +638,17 @@
         <!-- ===================== DISPAROS ===================== -->
         <div id="disparos-section" class="page-section hidden">
             <div class="card glass" style="margin-bottom:1.5rem">
-                <h3 style="margin-bottom:1rem">🚀 Campanhas Rápidas</h3>
-                <div class="campanhas-rapidas-grid">
-                    <button type="button" class="btn-campanha-rapida" data-campanha="aniversariantes"><span class="campanha-icon">🎂</span>ANIVERSARIANTES<span class="campanha-freq">Diário</span></button>
-                    <button type="button" class="btn-campanha-rapida" data-campanha="confirmacao-agendamento"><span class="campanha-icon">📅</span>CONFIRMAÇÃO AGENDAMENTO<span class="campanha-freq">Diário</span></button>
-                    <button type="button" class="btn-campanha-rapida" data-campanha="alunos-novos"><span class="campanha-icon">🆕</span>ALUNOS NOVOS<span class="campanha-freq">Diário</span></button>
-                    <button type="button" class="btn-campanha-rapida" data-campanha="inadimplentes"><span class="campanha-icon">🔴</span>INADIMPLENTES<span class="campanha-freq">Quartas</span></button>
-                    <button type="button" class="btn-campanha-rapida" data-campanha="parcelas-atrasadas"><span class="campanha-icon">🟡</span>PARCELAS ATRASADAS<span class="campanha-freq">Segunda e Quinta</span></button>
-                    <button type="button" class="btn-campanha-rapida" data-campanha="vence-hoje"><span class="campanha-icon">🔵</span>VENCE HOJE<span class="campanha-freq">Diário</span></button>
-                    <button type="button" class="btn-campanha-rapida" data-campanha="ex-alunos"><span class="campanha-icon">👋</span>EX-ALUNOS<span class="campanha-freq">Diário</span></button>
-                    <button type="button" class="btn-campanha-rapida" data-campanha="pos-venda-1"><span class="campanha-icon">🎯</span>PÓS VENDA 1<span class="campanha-freq">Diário</span></button>
-                    <button type="button" class="btn-campanha-rapida" data-campanha="pos-venda-2"><span class="campanha-icon">🔁</span>PÓS VENDA 2<span class="campanha-freq">Diário</span></button>
-                </div>
-            </div>
-
-            <div class="card glass" style="margin-bottom:1.5rem">
-                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem;flex-wrap:wrap;gap:.6rem">
-                    <h3>📇 Lista de Contatos</h3>
-                    <div style="display:flex;gap:.8rem;align-items:center;flex-wrap:wrap">
-                        <button type="button" class="btn-secondary" id="btn-importar-lista-transmissao" style="padding:.5rem .8rem;font-size:.85rem" title="Cole uma lista de matrículas ou nomes — o sistema acha o telefone de cada um">📥 Importar Lista de Transmissão</button>
-                        <input type="text" id="contatos-busca" placeholder="Buscar por nome, telefone ou matrícula..." style="background:var(--input-bg);border:1px solid rgba(255,255,255,0.1);border-radius:var(--radius-sm);padding:.5rem .8rem;color:var(--text-1);font-size:.85rem;min-width:220px">
-                        <label style="display:flex;align-items:center;gap:.4rem;cursor:pointer;font-size:.85rem;color:var(--text-2)">
-                            <input type="checkbox" id="contatos-select-all" style="accent-color:var(--green)"> Selecionar todos
-                        </label>
-                    </div>
-                </div>
-                <div style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:center;margin-bottom:.8rem">
-                    <div id="contatos-filtro-etiquetas" style="display:flex;gap:.5rem;flex-wrap:wrap"></div>
-                    <button type="button" class="btn-secondary" id="btn-gerenciar-etiquetas-disparos" style="padding:.3rem .7rem;font-size:.75rem" title="Gerenciar etiquetas">⚙️ Etiquetas</button>
+                <div style="display:flex;align-items:center;flex-wrap:wrap;gap:.6rem;margin-bottom:1rem">
+                    <h3 style="margin:0">📇 Lista de Contatos</h3>
+                    <input type="text" id="contatos-busca" placeholder="Buscar por nome, telefone ou matrícula..." style="background:var(--input-bg);border:1px solid rgba(255,255,255,0.1);border-radius:var(--radius-sm);padding:.5rem .8rem;color:var(--text-1);font-size:.85rem;flex:1;min-width:180px">
+                    <select id="contatos-filtro-etiquetas" style="background:var(--input-bg);border:1px solid rgba(255,255,255,0.1);border-radius:var(--radius-sm);padding:.5rem .6rem;color:var(--text-1);font-size:.85rem">
+                        <option value="">🏷️ Todas as etiquetas</option>
+                    </select>
+                    <button type="button" class="btn-secondary" id="btn-gerenciar-etiquetas-disparos" style="padding:.5rem .6rem;font-size:.75rem" title="Editar ou excluir etiquetas">⚙️</button>
+                    <button type="button" class="btn-secondary" id="btn-importar-lista-transmissao" style="padding:.5rem .8rem;font-size:.85rem;white-space:nowrap" title="Cole uma lista de matrículas ou nomes — o sistema acha o telefone de cada um">📥 Importar Lista de Transmissão</button>
+                    <label style="display:flex;align-items:center;gap:.4rem;cursor:pointer;font-size:.85rem;color:var(--text-2);white-space:nowrap">
+                        <input type="checkbox" id="contatos-select-all" style="accent-color:var(--green)"> Selecionar todos
+                    </label>
                 </div>
                 <div id="contatos-lista" style="max-height:320px;overflow-y:auto;display:flex;flex-direction:column;gap:.2rem">
                     <p style="color:var(--text-3);text-align:center;padding:2rem">Carregando contatos...</p>
@@ -706,21 +690,21 @@
                         <label>Intervalo entre envios</label>
                         <select id="broadcast-delay-modo" style="width:100%;background:var(--input-bg);border:1px solid rgba(255,255,255,0.1);border-radius:var(--radius-sm);padding:.7rem 1rem;color:var(--text-1);font-family:'Inter',sans-serif">
                             <option value="fixo">Fixo (você define os segundos)</option>
-                            <option value="aleatorio">🎲 Aleatório (varia a cada envio, mais humano)</option>
+                            <option value="aleatorio" selected>🎲 Aleatório (varia a cada envio, mais humano)</option>
                         </select>
                     </div>
-                    <div class="form-group" id="broadcast-delay-fixo-group">
+                    <div class="form-group" id="broadcast-delay-fixo-group" style="display:none">
                         <label>Segundos fixos</label>
                         <input type="number" id="broadcast-delay" value="6" min="3" max="60">
                         <span class="hint">⚠️ Mínimo 3s para não ser banido.</span>
                     </div>
-                    <div class="form-group" id="broadcast-delay-aleatorio-group" style="display:none">
+                    <div class="form-group" id="broadcast-delay-aleatorio-group">
                         <label>Velocidade</label>
                         <select id="broadcast-delay-velocidade" style="width:100%;background:var(--input-bg);border:1px solid rgba(255,255,255,0.1);border-radius:var(--radius-sm);padding:.7rem 1rem;color:var(--text-1);font-family:'Inter',sans-serif">
                             <option value="curto">Curto (5–10s)</option>
                             <option value="medio">Médio (10–30s)</option>
                             <option value="longo">Longo (30–120s)</option>
-                            <option value="muito_longo">Muito Longo (120–320s)</option>
+                            <option value="muito_longo" selected>Muito Longo (120–320s)</option>
                         </select>
                         <span class="hint">A cada mensagem enviada, o robô espera um tempo aleatório dentro dessa faixa — menos previsível, reduz risco de bloqueio.</span>
                     </div>
@@ -791,11 +775,11 @@
 
                 <div style="display:flex;align-items:center;gap:1.2rem;flex-wrap:wrap;margin-bottom:.8rem">
                     <label style="display:flex;align-items:center;gap:.4rem;font-size:.8rem;color:var(--text-2);cursor:pointer">
-                        <input type="checkbox" id="acompanhamento-ordenar-az" style="accent-color:var(--green);width:15px;height:15px">
+                        <input type="checkbox" id="acompanhamento-ordenar-az" checked style="accent-color:var(--green);width:15px;height:15px">
                         Ordenar por nome (A-Z)
                     </label>
                     <label style="display:flex;align-items:center;gap:.4rem;font-size:.8rem;color:var(--text-2);cursor:pointer">
-                        <input type="checkbox" id="acompanhamento-filtro-ativas" style="accent-color:var(--green);width:15px;height:15px">
+                        <input type="checkbox" id="acompanhamento-filtro-ativas" checked style="accent-color:var(--green);width:15px;height:15px">
                         🔴 Só disparando agora
                     </label>
                 </div>
@@ -927,7 +911,11 @@ Sempre tente agendar uma aula experimental."></textarea>
                         </div>
                     </div>
 
-                    <button class="btn-primary" id="btn-pacto-importar" style="padding:.6rem 1.1rem;font-size:.85rem;margin-bottom:1rem">📥 Importar Contatos do Pacto</button>
+                    <div style="display:flex;align-items:center;gap:.8rem;flex-wrap:wrap;margin-bottom:1rem">
+                        <button class="btn-primary" id="btn-pacto-importar" style="padding:.6rem 1.1rem;font-size:.85rem">📥 Importar Contatos do Pacto</button>
+                        <button type="button" class="btn-secondary btn-integracao-programar" data-chave="pacto_importar" style="padding:.6rem 1rem;font-size:.85rem">🗓️ Criar Programação</button>
+                        <span class="integracao-programacao-status" data-chave="pacto_importar" style="color:var(--text-3);font-size:.78rem"></span>
+                    </div>
 
                     <div id="pacto-importar-resultado" style="background:rgba(255,255,255,0.03);border-radius:var(--radius-sm);padding:1rem;font-size:.82rem;color:var(--text-2);line-height:1.6">
                         Clique em "Importar Contatos do Pacto" pra começar.
@@ -945,7 +933,9 @@ Sempre tente agendar uma aula experimental."></textarea>
                     <div style="display:flex;align-items:center;gap:.8rem;flex-wrap:wrap;margin-bottom:1rem">
                         <button class="btn-primary" id="btn-pacto-inadimplentes" style="padding:.6rem 1.1rem;font-size:.85rem">🔄 Atualizar Lista</button>
                         <button class="btn-secondary" id="btn-pacto-inadimplentes-toggle" style="padding:.6rem 1rem;font-size:.85rem">▼ Ver relatório detalhado</button>
+                        <button type="button" class="btn-secondary btn-integracao-programar" data-chave="situacao_financeira" style="padding:.6rem 1rem;font-size:.85rem">🗓️ Criar Programação</button>
                         <span id="pacto-inadimplentes-ultima-atualizacao" style="color:var(--text-3);font-size:.78rem"></span>
+                        <span class="integracao-programacao-status" data-chave="situacao_financeira" style="color:var(--text-3);font-size:.78rem"></span>
                     </div>
 
                     <div id="pacto-inadimplentes-resultado" style="background:rgba(255,255,255,0.03);border-radius:var(--radius-sm);padding:1rem;font-size:.82rem;color:var(--text-2);line-height:1.6;margin-bottom:1rem">
@@ -1015,14 +1005,16 @@ Sempre tente agendar uma aula experimental."></textarea>
                     <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:.8rem;margin-bottom:1rem">
                         <div>
                             <h3 style="margin-bottom:.3rem">📅 Agenda de Avaliação Física</h3>
-                            <p style="color:var(--text-2);font-size:.85rem;max-width:560px">Busca a agenda de avaliações físicas do dia (sistema de agendamento Planeta Corpo — só traz matrícula, horário e professor) e correlaciona a matrícula com um contato já existente aqui pra achar o WhatsApp; quem tem contato correlacionado é etiquetado sozinho como "Agendamento AF" — some quando a avaliação deixa de estar na agenda de hoje. Roda automaticamente todo dia às 8h, e também pode ser atualizada na hora aqui. Não envia mensagem nenhuma sozinho — use "Importar Lista" e "Disparar Mensagens" na automação "Agendamento Avaliação" pra confirmar de verdade com os alunos.</p>
+                            <p style="color:var(--text-2);font-size:.85rem;max-width:560px">Busca a agenda de avaliações físicas do dia (sistema de agendamento Planeta Corpo — só traz matrícula, horário e professor) e correlaciona a matrícula com um contato já existente aqui pra achar o WhatsApp; quem tem contato correlacionado é etiquetado sozinho como "Agendamento AF" — some quando a avaliação deixa de estar na agenda de hoje. Roda sozinha nos dias e horário programados em "Criar Programação" (padrão: dias úteis às 06:00), e também pode ser atualizada na hora aqui. Não envia mensagem nenhuma sozinho — use "Importar Lista" e "Disparar Mensagens" na automação "Agendamento Avaliação" pra confirmar de verdade com os alunos.</p>
                         </div>
                     </div>
 
                     <div style="display:flex;align-items:center;gap:.8rem;flex-wrap:wrap;margin-bottom:1rem">
                         <button class="btn-primary" id="btn-agenda-avaliacao" style="padding:.6rem 1.1rem;font-size:.85rem">🔄 Atualizar Lista</button>
                         <button class="btn-secondary" id="btn-agenda-avaliacao-toggle" style="padding:.6rem 1rem;font-size:.85rem">▼ Ver contatos</button>
+                        <button type="button" class="btn-secondary btn-integracao-programar" data-chave="agenda_avaliacao" style="padding:.6rem 1rem;font-size:.85rem">🗓️ Criar Programação</button>
                         <span id="agenda-avaliacao-ultima-atualizacao" style="color:var(--text-3);font-size:.78rem"></span>
+                        <span class="integracao-programacao-status" data-chave="agenda_avaliacao" style="color:var(--text-3);font-size:.78rem"></span>
                     </div>
 
                     <div id="agenda-avaliacao-resultado" style="background:rgba(255,255,255,0.03);border-radius:var(--radius-sm);padding:1rem;font-size:.82rem;color:var(--text-2);line-height:1.6;margin-bottom:1rem">
@@ -1375,6 +1367,28 @@ Sempre tente agendar uma aula experimental."></textarea>
             <div class="modal-footer">
                 <button class="btn-cancel" id="modal-programacao-fechar">Cancelar</button>
                 <button class="btn-primary" id="btn-programacao-salvar">💾 Salvar</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- MODAL: PROGRAMAR INTEGRAÇÃO (Importar Contatos, Situação Financeira, Agenda de Avaliação) -->
+    <div class="modal-overlay" id="modal-integracao-programacao-overlay">
+        <div class="modal">
+            <h3 id="modal-integracao-programacao-titulo">🗓️ Criar Programação</h3>
+            <input type="hidden" id="integracao-programacao-chave">
+
+            <label style="display:block;font-size:.78rem;color:var(--text-3);margin-bottom:.4rem">Dias da semana</label>
+            <div id="integracao-programacao-dias" style="display:flex;flex-wrap:wrap;gap:.6rem;margin-bottom:1rem"></div>
+
+            <label style="display:block;font-size:.78rem;color:var(--text-3);margin-bottom:.3rem">Horário</label>
+            <input type="time" id="integracao-programacao-horario" value="06:00" style="width:100%;background:var(--input-bg);border:1px solid rgba(255,255,255,0.1);border-radius:var(--radius-sm);padding:.6rem .8rem;color:var(--text-1);font-size:.9rem;margin-bottom:1.2rem">
+
+            <div class="modal-footer" style="justify-content:space-between">
+                <button class="btn-danger" id="btn-integracao-programacao-remover" style="display:none">🗑️ Remover</button>
+                <div style="display:flex;gap:.6rem;margin-left:auto">
+                    <button class="btn-cancel" id="modal-integracao-programacao-fechar">Cancelar</button>
+                    <button class="btn-primary" id="btn-integracao-programacao-salvar">💾 Salvar</button>
+                </div>
             </div>
         </div>
     </div>

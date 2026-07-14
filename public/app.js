@@ -1541,6 +1541,7 @@ socket.on('etiquetas_atualizadas', async () => {
 document.getElementById('btn-gerenciar-etiquetas-disparos')?.addEventListener('click', abrirGerenciarEtiquetas);
 document.getElementById('btn-modal-gerenciar-etiqueta')?.addEventListener('click', abrirGerenciarEtiquetas);
 document.getElementById('btn-gerenciar-etiquetas-page')?.addEventListener('click', abrirGerenciarEtiquetas);
+document.getElementById('btn-chat-gerenciar-etiqueta')?.addEventListener('click', abrirGerenciarEtiquetas);
 
 loadEtiquetas();
 
@@ -1867,23 +1868,15 @@ function atualizarContadorContatos() {
 
 function renderFiltroEtiquetas() {
     if (!contatosFiltroEtiquetas) return;
-    if (todasEtiquetas.length === 0) { contatosFiltroEtiquetas.innerHTML = ''; return; }
-    contatosFiltroEtiquetas.innerHTML = todasEtiquetas.map(e => `
-        <button type="button" class="etiqueta-filtro-chip${etiquetasFiltroAtivas.has(e.id) ? ' active' : ''}"
-            data-etiqueta-id="${e.id}"
-            style="${etiquetasFiltroAtivas.has(e.id) ? `background:${e.cor};border-color:${e.cor}` : `border-color:${e.cor}55;color:${e.cor}`}">
-            ${e.nome}
-        </button>
-    `).join('');
+    const atual = contatosFiltroEtiquetas.value;
+    contatosFiltroEtiquetas.innerHTML = '<option value="">🏷️ Todas as etiquetas</option>' +
+        todasEtiquetas.map(e => `<option value="${e.id}">${e.nome}</option>`).join('');
+    contatosFiltroEtiquetas.value = todasEtiquetas.some(e => String(e.id) === atual) ? atual : '';
 }
 
-contatosFiltroEtiquetas?.addEventListener('click', (e) => {
-    const chip = e.target.closest('.etiqueta-filtro-chip');
-    if (!chip) return;
-    const id = Number(chip.dataset.etiquetaId);
-    if (etiquetasFiltroAtivas.has(id)) etiquetasFiltroAtivas.delete(id);
-    else etiquetasFiltroAtivas.add(id);
-    renderFiltroEtiquetas();
+contatosFiltroEtiquetas?.addEventListener('change', () => {
+    etiquetasFiltroAtivas.clear();
+    if (contatosFiltroEtiquetas.value) etiquetasFiltroAtivas.add(Number(contatosFiltroEtiquetas.value));
     renderContatos();
 });
 
@@ -3772,6 +3765,118 @@ socket.on('agenda_avaliacao_done', (p) => {
     formatarUltimaAtualizacaoAgenda(p.ultima_atualizacao);
     if (!p.erro) showToast('Agenda atualizada!', `${p.encontrados} aluno(s) etiquetado(s) com "Agendamento AF".`, 'success', 5000);
     loadAgendaAvaliacao();
+});
+
+// =====================================
+// PROGRAMAÇÃO DAS INTEGRAÇÕES (Importar Contatos, Situação Financeira, Agenda de Avaliação)
+// =====================================
+const INTEGRACAO_PROGRAMACAO_LABELS = {
+    pacto_importar: 'Importar Contatos do Pacto',
+    situacao_financeira: 'Situação Financeira',
+    agenda_avaliacao: 'Agenda de Avaliação',
+};
+let integracaoProgramacoes = {}; // chave -> { dias, horario, ativo }
+
+const modalIntegracaoProgramacao = document.getElementById('modal-integracao-programacao-overlay');
+const integracaoProgramacaoTitulo = document.getElementById('modal-integracao-programacao-titulo');
+const integracaoProgramacaoChaveInput = document.getElementById('integracao-programacao-chave');
+const integracaoProgramacaoDiasDiv = document.getElementById('integracao-programacao-dias');
+const integracaoProgramacaoHorarioInput = document.getElementById('integracao-programacao-horario');
+const btnIntegracaoProgramacaoSalvar = document.getElementById('btn-integracao-programacao-salvar');
+const btnIntegracaoProgramacaoRemover = document.getElementById('btn-integracao-programacao-remover');
+const modalIntegracaoProgramacaoFechar = document.getElementById('modal-integracao-programacao-fechar');
+
+let integracaoProgramacaoDiasSelecionados = [1, 2, 3, 4, 5];
+
+function renderIntegracaoProgramacaoDias() {
+    if (!integracaoProgramacaoDiasDiv) return;
+    integracaoProgramacaoDiasDiv.innerHTML = DIAS_SEMANA.map((label, d) => `
+        <label style="display:flex;align-items:center;gap:.3rem;cursor:pointer;font-size:.82rem">
+            <input type="checkbox" class="integracao-programacao-dia" data-dia="${d}" ${integracaoProgramacaoDiasSelecionados.includes(d) ? 'checked' : ''} style="accent-color:var(--green)"> ${label}
+        </label>
+    `).join('');
+}
+
+integracaoProgramacaoDiasDiv?.addEventListener('change', (e) => {
+    if (!e.target.classList.contains('integracao-programacao-dia')) return;
+    const dia = Number(e.target.dataset.dia);
+    if (e.target.checked) { if (!integracaoProgramacaoDiasSelecionados.includes(dia)) integracaoProgramacaoDiasSelecionados.push(dia); }
+    else integracaoProgramacaoDiasSelecionados = integracaoProgramacaoDiasSelecionados.filter(d => d !== dia);
+});
+
+function renderIntegracaoProgramacaoStatus() {
+    document.querySelectorAll('.integracao-programacao-status').forEach(span => {
+        const prog = integracaoProgramacoes[span.dataset.chave];
+        if (!prog) { span.textContent = ''; return; }
+        const diasTxt = prog.dias.length === 7 ? 'todos os dias' : [...prog.dias].sort().map(d => DIAS_SEMANA[d]).join(', ');
+        span.textContent = `🗓️ Programado: ${diasTxt} às ${prog.horario}`;
+    });
+}
+
+async function loadIntegracaoProgramacoes() {
+    try {
+        const res = await fetch('/api/integracoes/programacoes');
+        const linhas = await res.json();
+        integracaoProgramacoes = {};
+        linhas.forEach(l => { integracaoProgramacoes[l.chave] = l; });
+        renderIntegracaoProgramacaoStatus();
+    } catch (e) {
+        console.error('Erro ao carregar programações de integração', e);
+    }
+}
+loadIntegracaoProgramacoes();
+
+document.querySelectorAll('.btn-integracao-programar').forEach(btn => {
+    btn.addEventListener('click', () => {
+        const chave = btn.dataset.chave;
+        const prog = integracaoProgramacoes[chave];
+        if (integracaoProgramacaoTitulo) integracaoProgramacaoTitulo.textContent = `🗓️ Programação — ${INTEGRACAO_PROGRAMACAO_LABELS[chave] || chave}`;
+        if (integracaoProgramacaoChaveInput) integracaoProgramacaoChaveInput.value = chave;
+        if (integracaoProgramacaoHorarioInput) integracaoProgramacaoHorarioInput.value = prog?.horario || '06:00';
+        integracaoProgramacaoDiasSelecionados = prog ? [...prog.dias] : [1, 2, 3, 4, 5];
+        renderIntegracaoProgramacaoDias();
+        if (btnIntegracaoProgramacaoRemover) btnIntegracaoProgramacaoRemover.style.display = prog ? 'inline-flex' : 'none';
+        modalIntegracaoProgramacao?.classList.add('open');
+    });
+});
+
+modalIntegracaoProgramacaoFechar?.addEventListener('click', () => modalIntegracaoProgramacao?.classList.remove('open'));
+modalIntegracaoProgramacao?.addEventListener('click', (e) => { if (e.target === modalIntegracaoProgramacao) modalIntegracaoProgramacao.classList.remove('open'); });
+
+btnIntegracaoProgramacaoSalvar?.addEventListener('click', async () => {
+    const chave = integracaoProgramacaoChaveInput?.value;
+    const horario = integracaoProgramacaoHorarioInput?.value || '';
+    if (!chave) return;
+    if (integracaoProgramacaoDiasSelecionados.length === 0) { showToast('Erro', 'Escolha pelo menos um dia da semana.', 'error'); return; }
+    if (!horario) { showToast('Erro', 'Escolha um horário.', 'error'); return; }
+    try {
+        const res = await fetch(`/api/integracoes/programacoes/${chave}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ dias: integracaoProgramacaoDiasSelecionados, horario }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Erro ao salvar programação');
+        await loadIntegracaoProgramacoes();
+        modalIntegracaoProgramacao?.classList.remove('open');
+        showToast('Programação salva', `${INTEGRACAO_PROGRAMACAO_LABELS[chave] || chave} vai rodar sozinha nos dias/horário escolhidos.`, 'success', 4000);
+    } catch (e) {
+        showToast('Erro', e.message, 'error');
+    }
+});
+
+btnIntegracaoProgramacaoRemover?.addEventListener('click', async () => {
+    const chave = integracaoProgramacaoChaveInput?.value;
+    if (!chave) return;
+    if (!confirm('Remover a programação dessa integração? Ela só vai rodar quando você clicar manualmente.')) return;
+    try {
+        await fetch(`/api/integracoes/programacoes/${chave}`, { method: 'DELETE' });
+        await loadIntegracaoProgramacoes();
+        modalIntegracaoProgramacao?.classList.remove('open');
+        showToast('Programação removida', '', 'info', 3000);
+    } catch (e) {
+        showToast('Erro', 'Não foi possível remover a programação', 'error');
+    }
 });
 
 // =====================================

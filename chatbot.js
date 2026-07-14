@@ -391,6 +391,13 @@ async function initDB() {
             ordem INTEGER DEFAULT 0
         );
         CREATE INDEX IF NOT EXISTS idx_programacao_acoes_prog ON programacao_acoes(programacao_id);
+        CREATE TABLE IF NOT EXISTS integracao_programacoes (
+            chave TEXT PRIMARY KEY,
+            dias TEXT NOT NULL,
+            horario TEXT NOT NULL,
+            ativo INTEGER DEFAULT 1,
+            ultima_execucao_em TEXT
+        );
         CREATE TABLE IF NOT EXISTS relatorio_dispensados (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             tipo TEXT NOT NULL,
@@ -425,6 +432,17 @@ async function initDB() {
     // escolhida pelo atalho "Disparo" — só pra reabrir o seletor certo ao
     // editar; a automação-alvo em si já está resolvida em automacao_id.
     try { await db.exec(`ALTER TABLE programacao_acoes ADD COLUMN campanha_chave TEXT DEFAULT NULL`); } catch (e) { }
+
+    // Semeia as programações automáticas que antes eram horários fixos no
+    // código (Agenda de Avaliação às 06:00, Situação Financeira às 06:05,
+    // dias úteis) — agora editáveis em Integração → "Criar Programação". Só
+    // roda se a chave ainda não existir, pra não sobrescrever o que o usuário
+    // já configurou. "Importar Contatos do Pacto" não tinha automático antes,
+    // então não ganha semente — fica sem programação até o usuário criar uma.
+    try {
+        await db.run(`INSERT OR IGNORE INTO integracao_programacoes (chave, dias, horario, ativo) VALUES ('agenda_avaliacao', '1,2,3,4,5', '06:00', 1)`);
+        await db.run(`INSERT OR IGNORE INTO integracao_programacoes (chave, dias, horario, ativo) VALUES ('situacao_financeira', '1,2,3,4,5', '06:05', 1)`);
+    } catch (e) { console.error('Erro ao semear programações de integração:', e.message); }
 
     // relatorio_dispensados ganhou uma coluna "motivo" (cada relatório passou
     // a ter 2 checkboxes independentes em vez de 1) — SQLite não deixa alterar
@@ -3687,17 +3705,14 @@ const PACTO_IMPORT_CONCORRENCIA = 5;
 
 app.get('/api/pacto/importar-contatos/status', (req, res) => res.json(pactoImportProgress));
 
-app.post('/api/pacto/importar-contatos', async (req, res) => {
-    if (pactoImportRunning) return res.status(400).json({ error: 'Uma importação do Pacto já está em andamento.' });
-
+async function processarImportacaoPactoContatos() {
+    if (pactoImportRunning) return;
     const total = PACTO_IMPORT_MATRICULA_MAX - PACTO_IMPORT_MATRICULA_MIN + 1;
     pactoImportRunning = true;
     pactoImportProgress = { total, verificadas: 0, importados: 0, ja_existiam: 0, sem_telefone: 0, nao_encontrados: 0, running: true };
     io.emit('pacto_import_progress', pactoImportProgress);
-    res.json({ success: true, total });
 
-    (async () => {
-        async function processarMatricula(numero) {
+    async function processarMatricula(numero) {
             const matricula = String(numero).padStart(6, '0');
             try {
                 const aluno = await buscarAlunoPorMatricula(matricula);
@@ -3747,13 +3762,18 @@ app.post('/api/pacto/importar-contatos', async (req, res) => {
             io.emit('pacto_import_progress', pactoImportProgress);
         }
 
-        pactoImportProgress.running = false;
-        pactoImportRunning = false;
-        io.emit('stats', stats);
-        io.emit('pacto_import_progress', pactoImportProgress);
-        io.emit('pacto_import_done', pactoImportProgress);
-        console.log(`✅ Importação Pacto finalizada: ${pactoImportProgress.importados} novos contatos de ${pactoImportProgress.verificadas} matrículas verificadas.`);
-    })();
+    pactoImportProgress.running = false;
+    pactoImportRunning = false;
+    io.emit('stats', stats);
+    io.emit('pacto_import_progress', pactoImportProgress);
+    io.emit('pacto_import_done', pactoImportProgress);
+    console.log(`✅ Importação Pacto finalizada: ${pactoImportProgress.importados} novos contatos de ${pactoImportProgress.verificadas} matrículas verificadas.`);
+}
+
+app.post('/api/pacto/importar-contatos', (req, res) => {
+    if (pactoImportRunning) return res.status(400).json({ error: 'Uma importação do Pacto já está em andamento.' });
+    res.json({ success: true, total: PACTO_IMPORT_MATRICULA_MAX - PACTO_IMPORT_MATRICULA_MIN + 1 });
+    processarImportacaoPactoContatos().catch(e => console.error('Erro ao importar contatos do Pacto:', e.message));
 });
 
 // =====================================
@@ -3826,6 +3846,8 @@ app.delete('/api/pacto/inadimplentes/:telefone', async (req, res) => {
 // (rastreado pela própria linha em pacto_inadimplentes) — não mexe em quem
 // foi etiquetado manualmente por outro motivo.
 async function processarInadimplentesPacto() {
+    if (pactoInadimplentesRunning) return;
+    pactoInadimplentesRunning = true;
     const contatos = await db.all("SELECT telefone, matricula FROM leads WHERE matricula IS NOT NULL AND matricula != ''");
     const etiquetaLongaId = await garantirEtiquetaInadimplente();
     const etiquetaRecenteId = await garantirEtiquetaParcelaAtrasada();
@@ -3836,7 +3858,6 @@ async function processarInadimplentesPacto() {
     const etiquetaVenceHojeId = await garantirEtiquetaVenceHoje();
     const hojeYMD = moment.tz('America/Sao_Paulo').format('YYYY-MM-DD');
 
-    pactoInadimplentesRunning = true;
     pactoInadimplentesProgress = { total: contatos.length, verificados: 0, inadimplentes: 0, parcelasAtrasadas: 0, vencemHoje: 0, running: true };
     io.emit('pacto_inadimplentes_progress', pactoInadimplentesProgress);
 
@@ -4215,63 +4236,82 @@ app.post('/api/agenda-avaliacao/atualizar', async (req, res) => {
     processarAgendaAvaliacao().catch(e => console.error('Erro ao processar agenda de avaliação:', e.message));
 });
 
-// true pra segunda a sexta (America/Sao_Paulo) — as duas varreduras
-// automáticas abaixo só fazem sentido em dia útil (é quando tem aula/
-// avaliação/atendimento; sábado e domingo não precisa).
-function ehDiaUtil(momentObj) {
-    const dia = momentObj.day(); // 0 = domingo, 6 = sábado
-    return dia >= 1 && dia <= 5;
-}
+// Programações de Integração — cada card em Integração ("Importar Contatos
+// do Pacto", "Situação Financeira", "Agenda de Avaliação") pode ter sua
+// própria programação (dias da semana + horário), configurável em
+// Integração → "Criar Programação" e guardada em `integracao_programacoes`.
+// Roda a mesma varredura a cada 5min: se o dia da semana bate, já passou do
+// horário configurado e ainda não rodou hoje, dispara a ação daquela
+// integração. `ultima_execucao_em` sobrevive a deploy/restart (senão um
+// reinício logo depois do horário faria rodar de novo, ou nunca).
+const INTEGRACAO_PROCESSADORES = {
+    pacto_importar: processarImportacaoPactoContatos,
+    situacao_financeira: processarInadimplentesPacto,
+    agenda_avaliacao: processarAgendaAvaliacao,
+};
 
-// Roda sozinha 1x por dia útil, na janela das 06:00 (America/Sao_Paulo) —
-// checa a cada 5min (fino o bastante pra respeitar o intervalo de 5min em
-// relação à varredura de Situação Financeira, às 06:05, sem colidir no
-// mesmo tick) se já passou das 06:00 hoje e ainda não rodou hoje; se sim,
-// dispara. Guarda a data da última execução automática em `configuracoes`
-// pra sobreviver a deploy/restart (senão um reinício logo depois das 06:00
-// faria rodar nunca, ou várias vezes).
-async function checarAgendaAvaliacaoAutomatica() {
+async function checarProgramacoesIntegracao() {
     if (!db) return;
     try {
         const agora = moment.tz('America/Sao_Paulo');
-        if (!ehDiaUtil(agora)) return;
-        if (agora.hours() * 60 + agora.minutes() < 6 * 60) return; // antes das 06:00
+        const diaAtual = agora.day();
+        const minutoAtual = agora.hours() * 60 + agora.minutes();
         const hojeYMD = agora.format('YYYY-MM-DD');
-        const row = await db.get("SELECT valor FROM configuracoes WHERE chave = 'agenda_avaliacao_ultima_execucao_automatica'");
-        if (row?.valor === hojeYMD) return; // já rodou hoje
-        await db.run('INSERT OR REPLACE INTO configuracoes (chave, valor) VALUES (?, ?)', ['agenda_avaliacao_ultima_execucao_automatica', hojeYMD]);
-        console.log('📅 Agenda de Avaliação: rodando varredura automática das 06:00...');
-        await processarAgendaAvaliacao();
+        const programacoes = await db.all('SELECT * FROM integracao_programacoes WHERE ativo = 1');
+        for (const prog of programacoes) {
+            if (prog.ultima_execucao_em === hojeYMD) continue; // já rodou hoje
+            const dias = prog.dias.split(',').filter(Boolean).map(Number);
+            if (!dias.includes(diaAtual)) continue;
+            const [h, m] = prog.horario.split(':').map(Number);
+            if (minutoAtual < h * 60 + m) continue; // ainda não chegou o horário
+            const processador = INTEGRACAO_PROCESSADORES[prog.chave];
+            if (!processador) continue;
+            await db.run('UPDATE integracao_programacoes SET ultima_execucao_em = ? WHERE chave = ?', [hojeYMD, prog.chave]);
+            console.log(`🗓️ Programação de integração "${prog.chave}": disparando...`);
+            processador().catch(e => console.error(`Erro na programação de integração "${prog.chave}":`, e.message));
+        }
     } catch (e) {
-        console.error('Erro ao checar varredura automática da Agenda de Avaliação:', e.message);
+        console.error('Erro ao checar programações de integração:', e.message);
     }
 }
-setInterval(checarAgendaAvaliacaoAutomatica, 5 * 60 * 1000);
-setTimeout(checarAgendaAvaliacaoAutomatica, 110 * 1000);
+setInterval(checarProgramacoesIntegracao, 5 * 60 * 1000);
+setTimeout(checarProgramacoesIntegracao, 110 * 1000);
 
-// Mesmo padrão acima, só que pro CRM Pacto — Situação Financeira, 5min depois
-// (06:05) — dá tempo da Agenda de Avaliação (mais rápida, uma chamada só)
-// terminar antes da varredura pesada do Pacto (milhares de chamadas,
-// demora minutos) começar, evitando as duas competindo por CPU/rede juntas.
-async function checarSituacaoFinanceiraAutomatica() {
-    if (!db) return;
+app.get('/api/integracoes/programacoes', async (req, res) => {
     try {
-        const agora = moment.tz('America/Sao_Paulo');
-        if (!ehDiaUtil(agora)) return;
-        if (agora.hours() * 60 + agora.minutes() < 6 * 60 + 5) return; // antes das 06:05
-        const hojeYMD = agora.format('YYYY-MM-DD');
-        const row = await db.get("SELECT valor FROM configuracoes WHERE chave = 'situacao_financeira_ultima_execucao_automatica'");
-        if (row?.valor === hojeYMD) return; // já rodou hoje
-        if (pactoInadimplentesRunning) return; // alguém já disparou na mão bem nessa hora — não empilha
-        await db.run('INSERT OR REPLACE INTO configuracoes (chave, valor) VALUES (?, ?)', ['situacao_financeira_ultima_execucao_automatica', hojeYMD]);
-        console.log('💰 CRM Pacto — Situação Financeira: rodando varredura automática das 06:05...');
-        await processarInadimplentesPacto();
-    } catch (e) {
-        console.error('Erro ao checar varredura automática da Situação Financeira:', e.message);
+        const linhas = await db.all('SELECT chave, dias, horario, ativo, ultima_execucao_em FROM integracao_programacoes');
+        res.json(linhas.map(l => ({ ...l, dias: l.dias.split(',').filter(Boolean).map(Number) })));
+    } catch (err) {
+        res.status(500).json({ error: err.message });
     }
-}
-setInterval(checarSituacaoFinanceiraAutomatica, 5 * 60 * 1000);
-setTimeout(checarSituacaoFinanceiraAutomatica, 130 * 1000);
+});
+
+app.post('/api/integracoes/programacoes/:chave', async (req, res) => {
+    const { chave } = req.params;
+    if (!INTEGRACAO_PROCESSADORES[chave]) return res.status(400).json({ error: 'Integração desconhecida.' });
+    const { dias, horario } = req.body;
+    if (!Array.isArray(dias) || dias.length === 0) return res.status(400).json({ error: 'Escolha pelo menos um dia da semana.' });
+    if (!/^\d{2}:\d{2}$/.test(horario || '')) return res.status(400).json({ error: 'Escolha um horário.' });
+    try {
+        await db.run(
+            `INSERT INTO integracao_programacoes (chave, dias, horario, ativo) VALUES (?, ?, ?, 1)
+             ON CONFLICT(chave) DO UPDATE SET dias = excluded.dias, horario = excluded.horario, ativo = 1`,
+            [chave, dias.join(','), horario]
+        );
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.delete('/api/integracoes/programacoes/:chave', async (req, res) => {
+    try {
+        await db.run('DELETE FROM integracao_programacoes WHERE chave = ?', req.params.chave);
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
 
 // Mesmo padrão das duas varreduras acima, só que generalizado: N programações
 // configuráveis pelo usuário (dias da semana + horário próprios cada uma) em

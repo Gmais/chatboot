@@ -728,13 +728,15 @@ header h1 {
    CHAT LAYOUT — GERENCIADOR DE CONVERSAS
    ========================================== */
 
-/* Override para seção de conversas: ocupa toda a altura disponível sem padding extra */
+/* Override para seção de conversas: ocupa toda a altura disponível sem padding extra.
+   Sem min-height:0 aqui, a barra de input (último item do flex) pode ser
+   empurrada pra fora da área visível em janelas mais baixas — ela é o
+   elemento que "sumia" nesses casos. */
 #conversas-section {
     display: flex;
     flex-direction: column;
     flex: 1;
-    height: calc(100vh - 6rem);
-    min-height: 600px;
+    min-height: 0;
 }
 #conversas-section.hidden { display: none !important; }
 
