@@ -1715,6 +1715,57 @@ app.post('/api/contatos', async (req, res) => {
     }
 });
 
+// Resolve uma lista de matrículas OU nomes pro telefone correspondente —
+// alimenta o "Importar Lista de Transmissão" dos Disparos (usuário cola uma
+// lista de matrícula/nome, sem precisar saber o telefone de cada um).
+// Nunca adivinha: nome duplicado (2+ contatos com o mesmo nome) volta como
+// "ambíguo" em vez de escolher um dos dois à toa — mandar mensagem pra pessoa
+// errada é pior que pedir pra resolver na mão.
+app.post('/api/contatos/resolver-lista', async (req, res) => {
+    const { tipo, valores } = req.body;
+    if (tipo !== 'matricula' && tipo !== 'nome') return res.status(400).json({ error: 'Tipo inválido — use "matricula" ou "nome".' });
+    if (!Array.isArray(valores) || valores.length === 0) return res.status(400).json({ error: 'Lista vazia.' });
+
+    const encontrados = [];
+    const naoEncontrados = [];
+    const ambiguos = [];
+    const jaVistos = new Set(); // evita duplicar se a mesma matrícula/nome aparecer 2x na lista colada
+
+    try {
+        for (const valorBruto of valores) {
+            const valor = String(valorBruto || '').trim();
+            if (!valor || jaVistos.has(valor.toLowerCase())) continue;
+            jaVistos.add(valor.toLowerCase());
+
+            let linhas;
+            if (tipo === 'matricula') {
+                // Compara tanto o texto exato quanto o valor numérico (cobre
+                // "4284" batendo com "004284" salvo com zeros à esquerda).
+                linhas = await db.all(
+                    `SELECT telefone, nome, matricula FROM leads
+                     WHERE matricula IS NOT NULL AND TRIM(matricula) != '' AND (
+                        TRIM(matricula) = ?
+                        OR CAST(matricula AS INTEGER) = CAST(? AS INTEGER)
+                     )`,
+                    [valor, valor]
+                );
+            } else {
+                linhas = await db.all(
+                    `SELECT telefone, nome, matricula FROM leads WHERE LOWER(TRIM(nome)) = LOWER(?)`,
+                    valor
+                );
+            }
+            const unicos = [...new Map(linhas.map(l => [l.telefone, l])).values()];
+            if (unicos.length === 0) naoEncontrados.push(valor);
+            else if (unicos.length === 1) encontrados.push({ valor, telefone: unicos[0].telefone, nome: unicos[0].nome, matricula: unicos[0].matricula });
+            else ambiguos.push({ valor, opcoes: unicos.map(u => ({ telefone: u.telefone, nome: u.nome, matricula: u.matricula })) });
+        }
+        res.json({ encontrados, nao_encontrados: naoEncontrados, ambiguos });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
 // =====================================
 // MESCLAGEM DE CONTATOS DUPLICADOS (mesmo telefone, formatos diferentes)
 // =====================================

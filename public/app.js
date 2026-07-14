@@ -2368,6 +2368,69 @@ btnUsarSelecionados?.addEventListener('click', () => {
 });
 
 // =====================================
+// IMPORTAR LISTA DE TRANSMISSÃO (matrícula/nome -> telefone)
+// =====================================
+const btnImportarListaTransmissao = document.getElementById('btn-importar-lista-transmissao');
+const modalImportarListaTransmissao = document.getElementById('modal-importar-lista-transmissao-overlay');
+const importListaValores = document.getElementById('import-lista-valores');
+const importListaResultado = document.getElementById('import-lista-resultado');
+const btnImportarListaResolver = document.getElementById('btn-importar-lista-transmissao-resolver');
+
+btnImportarListaTransmissao?.addEventListener('click', () => {
+    if (importListaValores) importListaValores.value = '';
+    if (importListaResultado) { importListaResultado.style.display = 'none'; importListaResultado.innerHTML = ''; }
+    modalImportarListaTransmissao?.classList.add('open');
+});
+document.getElementById('modal-importar-lista-transmissao-fechar')?.addEventListener('click', () => {
+    modalImportarListaTransmissao?.classList.remove('open');
+});
+
+btnImportarListaResolver?.addEventListener('click', async () => {
+    const tipo = document.querySelector('input[name="import-lista-tipo"]:checked')?.value || 'matricula';
+    const valores = (importListaValores?.value || '').split('\n').map(v => v.trim()).filter(Boolean);
+    if (valores.length === 0) {
+        showToast('Lista vazia', 'Cole ao menos uma matrícula ou nome.', 'error');
+        return;
+    }
+    btnImportarListaResolver.disabled = true;
+    btnImportarListaResolver.textContent = '⏳ Buscando...';
+    try {
+        const res = await fetch('/api/contatos/resolver-lista', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ tipo, valores })
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Erro ao resolver lista');
+
+        data.encontrados.forEach(c => contatosSelecionados.add(c.telefone));
+        const broadcastNumerosEl = document.getElementById('broadcast-numeros');
+        if (broadcastNumerosEl) broadcastNumerosEl.value = Array.from(contatosSelecionados).join('\n');
+        renderContatos();
+        atualizarContadorContatos();
+
+        if (importListaResultado) {
+            const partes = [`✅ ${data.encontrados.length} encontrado(s) e já selecionado(s) pro disparo.`];
+            if (data.nao_encontrados.length > 0) {
+                partes.push(`⚠️ ${data.nao_encontrados.length} não encontrado(s): ${data.nao_encontrados.join(', ')}`);
+            }
+            if (data.ambiguos.length > 0) {
+                const listaAmbiguos = data.ambiguos.map(a => `"${a.valor}" (${a.opcoes.length} contatos com esse nome — resolva pela busca manual abaixo)`).join('; ');
+                partes.push(`🔀 ${data.ambiguos.length} ambíguo(s), não selecionado(s) sozinho(s): ${listaAmbiguos}`);
+            }
+            importListaResultado.innerHTML = partes.join('<br><br>');
+            importListaResultado.style.display = 'block';
+        }
+        showToast('Lista resolvida!', `${data.encontrados.length} contato(s) adicionado(s) à seleção.`, 'success', 5000);
+    } catch (err) {
+        showToast('Erro', err.message, 'error');
+    } finally {
+        btnImportarListaResolver.disabled = false;
+        btnImportarListaResolver.textContent = '🔎 Buscar e Selecionar';
+    }
+});
+
+// =====================================
 // BROADCAST
 // =====================================
 const btnDisparar       = document.getElementById('btn-disparar');
