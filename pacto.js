@@ -9,6 +9,16 @@ const PACTO_EMPRESA_CODIGO = Number(process.env.PACTO_EMPRESA_CODIGO || 1);
 // Usa o módulo https nativo em vez de fetch: o gateway da Pacto retorna 500
 // (sem corpo) para requisições feitas via undici/fetch, mas responde
 // normalmente a clientes http/1.1 "tradicionais" como curl ou https.request.
+// Timeout de segurança pra cada chamada — sem isso, se a Pacto aceitar a
+// conexão e nunca responder (nem erro, nem dado), a Promise fica pendurada
+// pra sempre. Isso trava a Promise.all de um lote inteiro de contatos numa
+// varredura (Situação Financeira, Importar Contatos), que fica parada num
+// percentual pra sempre — foi exatamente o que travou a varredura em
+// andamento em 14/07/2026 (parada em 770/3837). 20s é folgado o bastante pra
+// uma chamada normal da API, mas curto o bastante pra não travar a
+// varredura inteira por causa de uma chamada perdida.
+const PACTO_REQUEST_TIMEOUT_MS = 20000;
+
 function pactoRequest(method, path, { params, body, headers } = {}) {
     const url = new URL(path, PACTO_BASE_URL);
     Object.entries(params || {}).forEach(([key, value]) => url.searchParams.set(key, value));
@@ -17,6 +27,7 @@ function pactoRequest(method, path, { params, body, headers } = {}) {
     return new Promise((resolve, reject) => {
         const req = https.request(url, {
             method,
+            timeout: PACTO_REQUEST_TIMEOUT_MS,
             headers: {
                 Authorization: `Bearer ${PACTO_API_KEY}`,
                 Accept: '*/*',
@@ -53,6 +64,10 @@ function pactoRequest(method, path, { params, body, headers } = {}) {
             });
         });
         req.on('error', reject);
+        // 'timeout' só avisa que passou do tempo — não aborta sozinho, então
+        // precisa destruir a conexão na mão, o que dispara 'error' acima e
+        // rejeita a Promise.
+        req.on('timeout', () => req.destroy(new Error(`Timeout de ${PACTO_REQUEST_TIMEOUT_MS / 1000}s ao chamar a API da Pacto`)));
         if (payload) req.write(payload);
         req.end();
     });
