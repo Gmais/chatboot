@@ -514,6 +514,40 @@ async function initDB() {
         }
     } catch (e) { console.error('Erro na migração de agenda_avaliacoes_hoje:', e.message); }
 
+    // Corrige duplicatas de leads.telefone — telefone é PRIMARY KEY, mas
+    // pelo menos 3 contatos acabaram com 2 linhas pro mesmo número (uma
+    // origem 'whatsapp', outra 'pacto'), provavelmente de uma corrida entre
+    // o import do Pacto e uma mensagem real chegando ao mesmo tempo (ver
+    // fix no upsert de processarImportacaoPactoContatos). Mescla os dados
+    // na linha com mais mensagens recebidas (a mais "real"/ativa; empate
+    // desempata pela mais antiga) e apaga a(s) outra(s). Roda toda vez no
+    // início — é barato (uma leitura da tabela toda) e não faz nada se não
+    // houver duplicata, então serve de rede de segurança permanente.
+    try {
+        const linhasLeads = await db.all('SELECT rowid, telefone, nome, matricula, data_nascimento, data_captura, mensagens_recebidas FROM leads');
+        const porTelefone = new Map();
+        linhasLeads.forEach(l => {
+            if (!porTelefone.has(l.telefone)) porTelefone.set(l.telefone, []);
+            porTelefone.get(l.telefone).push(l);
+        });
+        for (const [telefoneDuplicado, grupo] of porTelefone) {
+            if (grupo.length < 2) continue;
+            grupo.sort((a, b) => (b.mensagens_recebidas - a.mensagens_recebidas) || (new Date(a.data_captura) - new Date(b.data_captura)));
+            const manter = grupo[0];
+            const outras = grupo.slice(1);
+            const nome = manter.nome || outras.find(o => o.nome)?.nome || null;
+            const matricula = manter.matricula || outras.find(o => o.matricula)?.matricula || null;
+            const dataNascimento = manter.data_nascimento || outras.find(o => o.data_nascimento)?.data_nascimento || null;
+            const totalMensagens = grupo.reduce((soma, l) => soma + (l.mensagens_recebidas || 0), 0);
+            await db.run(
+                'UPDATE leads SET nome = ?, matricula = ?, data_nascimento = ?, mensagens_recebidas = ? WHERE rowid = ?',
+                [nome, matricula, dataNascimento, totalMensagens, manter.rowid]
+            );
+            for (const o of outras) await db.run('DELETE FROM leads WHERE rowid = ?', o.rowid);
+            console.log(`🔧 Mesclado(s) ${outras.length} registro(s) duplicado(s) de leads pro telefone ${telefoneDuplicado} (mantido rowid ${manter.rowid}).`);
+        }
+    } catch (e) { console.error('Erro ao mesclar leads duplicados:', e.message); }
+
     // Rede de segurança do Horário de Funcionamento (robô assume depois de N
     // segundos sem resposta humana): liga por padrão com 180s na primeira vez
     // que o servidor sobe com essa feature — pedido explícito do usuário pra
@@ -3792,24 +3826,31 @@ async function processarImportacaoPactoContatos() {
                     'SELECT telefone, data_nascimento FROM leads WHERE telefone = ? OR telefone = ? OR telefone = ?',
                     [telefone, `${telefone}@c.us`, `${telefone}@lid`]
                 );
-                if (existente) {
-                    // Contato já existia (de um import anterior, do WhatsApp, etc.) — só
-                    // completa a data de nascimento se estiver faltando, sem tocar em
-                    // nome/matrícula pra não sobrescrever edição manual.
-                    if (!existente.data_nascimento && dataNascimento) {
-                        await db.run('UPDATE leads SET data_nascimento = ? WHERE telefone = ?', [dataNascimento, existente.telefone]);
-                    }
-                    pactoImportProgress.ja_existiam++;
-                    return;
-                }
 
+                // UPSERT atômico (em vez do antigo "confere, depois decide INSERT
+                // ou UPDATE" em dois passos separados) — fecha uma janela de
+                // corrida real: se uma mensagem de WhatsApp desse mesmo aluno
+                // chegasse (registerLead) bem entre o SELECT acima e um INSERT
+                // separado, os dois processos inseriam ao mesmo tempo e criavam
+                // DUAS linhas pro mesmo telefone — foi exatamente o que aconteceu
+                // com pelo menos 3 contatos (telefone é PRIMARY KEY, mas com dois
+                // INSERTs concorrentes sem essa proteção, ambos passavam). Só
+                // completa data_nascimento se estiver faltando, sem tocar em
+                // nome/matrícula pra não sobrescrever edição manual de quem já existia.
                 await db.run(
-                    'INSERT INTO leads (telefone, nome, origem, matricula, data_nascimento) VALUES (?, ?, ?, ?, ?)',
-                    [telefone, aluno.pessoa?.nome || null, 'pacto', aluno.matricula || matricula, dataNascimento]
+                    `INSERT INTO leads (telefone, nome, origem, matricula, data_nascimento) VALUES (?, ?, 'pacto', ?, ?)
+                     ON CONFLICT(telefone) DO UPDATE SET data_nascimento = excluded.data_nascimento
+                     WHERE leads.data_nascimento IS NULL AND excluded.data_nascimento IS NOT NULL`,
+                    [telefone, aluno.pessoa?.nome || null, aluno.matricula || matricula, dataNascimento]
                 );
-                leadsSet.add(telefone);
-                stats.leads++;
-                pactoImportProgress.importados++;
+
+                if (existente) {
+                    pactoImportProgress.ja_existiam++;
+                } else {
+                    leadsSet.add(telefone);
+                    stats.leads++;
+                    pactoImportProgress.importados++;
+                }
             } catch (err) {
                 console.error(`❌ Erro ao importar matrícula ${matricula} do Pacto:`, err.message);
                 pactoImportProgress.nao_encontrados++;
