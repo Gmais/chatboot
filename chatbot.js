@@ -3587,6 +3587,40 @@ app.get('/api/broadcast/falhas', async (req, res) => {
     }
 });
 
+// Lista detalhada (com nome) do disparo em massa mais recente — clicando em
+// Total/Enviados/Falhas na tela. disparo_envios_log guarda só o telefone cru
+// (sem DDI, como foi digitado na lista), então normaliza pro formato usado
+// em Contatos (normalizarTelefoneBR) antes de casar com leads.telefone.
+app.get('/api/broadcast/detalhe', async (req, res) => {
+    if (!ultimoDisparoIniciadoEm) return res.json([]);
+    const filtro = req.query.filtro;
+    try {
+        let sql = 'SELECT telefone, sucesso, erro, enviado_em FROM disparo_envios_log WHERE enviado_em >= ?';
+        const params = [ultimoDisparoIniciadoEm];
+        if (filtro === 'enviados') sql += ' AND sucesso = 1';
+        else if (filtro === 'falhas') sql += ' AND sucesso = 0';
+        sql += ' ORDER BY enviado_em ASC LIMIT 500';
+        const linhas = await db.all(sql, params);
+
+        const numerosNormalizados = linhas.map(l => normalizarTelefoneBR(l.telefone));
+        const variantes = [...new Set(numerosNormalizados.flatMap(n => [n, `${n}@c.us`, `${n}@lid`]))];
+        const contatos = variantes.length
+            ? await db.all(`SELECT telefone, nome FROM leads WHERE telefone IN (${variantes.map(() => '?').join(',')})`, variantes)
+            : [];
+        const nomePorTelefone = new Map();
+        contatos.forEach(c => nomePorTelefone.set(c.telefone.replace('@c.us', '').replace('@lid', ''), c.nome));
+
+        res.json(linhas.map((l, i) => ({
+            telefone: l.telefone,
+            nome: nomePorTelefone.get(numerosNormalizados[i]) || null,
+            sucesso: !!l.sucesso,
+            erro: l.erro,
+        })));
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
 app.post('/api/broadcast/start', upload.single('media'), async (req, res) => {
     if (broadcastRunning) return res.status(400).json({ error: 'Um disparo já está em andamento.' });
     if (!isConnected) return res.status(400).json({ error: 'WhatsApp não está conectado.' });

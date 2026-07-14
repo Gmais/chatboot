@@ -2461,8 +2461,8 @@ const progFailed        = document.getElementById('prog-failed');
 const progPercent       = document.getElementById('prog-percent');
 const progBar           = document.getElementById('prog-bar');
 const broadcastStatusMsg= document.getElementById('broadcast-status-msg');
-const btnDisparoFalhasToggle = document.getElementById('btn-disparo-falhas-toggle');
-const disparoFalhasDetalhe   = document.getElementById('disparo-falhas-detalhe');
+const disparoDetalheLista = document.getElementById('disparo-detalhe-lista');
+const progressStatClicaveis = document.querySelectorAll('.progress-stat-clickable');
 const broadcastUpload   = document.getElementById('broadcast-upload-area');
 const broadcastFile     = document.getElementById('broadcast-file');
 const broadcastFileName = document.getElementById('broadcast-file-name');
@@ -2523,6 +2523,9 @@ function resetarFormularioDisparo() {
     // na próxima vez que "Usar selecionados no disparo" fosse clicado.
     contatosSelecionados.clear();
     renderContatos();
+    filtroDisparoDetalheAtivo = null;
+    progressStatClicaveis.forEach(el => el.classList.remove('active'));
+    if (disparoDetalheLista) { disparoDetalheLista.classList.add('hidden'); disparoDetalheLista.innerHTML = ''; }
 }
 
 function updateProgressUI(p) {
@@ -2539,6 +2542,10 @@ function updateProgressUI(p) {
         if (btnDisparar) btnDisparar.style.display = 'none';
         if (btnParar)    btnParar.style.display = 'inline-flex';
     }
+    // Se o painel de detalhe já está aberto, atualiza a lista junto — assim
+    // dá pra acompanhar quem foi entrando em Enviados/Falhas em tempo real,
+    // sem precisar clicar de novo a cada mensagem enviada.
+    if (filtroDisparoDetalheAtivo) renderDisparoDetalhe(filtroDisparoDetalheAtivo);
 }
 
 socket.on('broadcast_progress', updateProgressUI);
@@ -2550,35 +2557,47 @@ socket.on('broadcast_done', (p) => {
     if (btnParar)    btnParar.style.display = 'none';
     showToast('Disparo Finalizado!', `${p.sent} enviados com sucesso.`, 'success', 6000);
     addActivity('🚀', `Disparo concluído: ${p.sent} msgs`, new Date().toLocaleString('pt-BR'));
-    if (btnDisparoFalhasToggle) btnDisparoFalhasToggle.style.display = p.failed > 0 ? 'block' : 'none';
+    if (filtroDisparoDetalheAtivo) renderDisparoDetalhe(filtroDisparoDetalheAtivo);
     resetarFormularioDisparo();
 });
 
-// ---- Detalhe de falhas do disparo mais recente (telefone + motivo) ----
-btnDisparoFalhasToggle?.addEventListener('click', async () => {
-    const aberto = !disparoFalhasDetalhe.classList.contains('hidden');
-    if (aberto) {
-        disparoFalhasDetalhe.classList.add('hidden');
-        btnDisparoFalhasToggle.textContent = '▼ Ver detalhes das falhas';
-        return;
-    }
-    btnDisparoFalhasToggle.textContent = '▲ Esconder detalhes';
-    disparoFalhasDetalhe.classList.remove('hidden');
-    disparoFalhasDetalhe.innerHTML = '<p style="color:var(--text-3);font-size:.78rem;text-align:center;padding:.5rem 0">Carregando...</p>';
+// ---- Relatório detalhado (nome + telefone) do disparo mais recente —
+// clicando em Total/Enviados/Falhas na tela, filtra a lista de acordo. ----
+let filtroDisparoDetalheAtivo = null;
+
+async function renderDisparoDetalhe(filtro) {
+    if (!disparoDetalheLista) return;
+    disparoDetalheLista.classList.remove('hidden');
+    disparoDetalheLista.innerHTML = '<p style="color:var(--text-3);font-size:.78rem;text-align:center;padding:.5rem 0">Carregando...</p>';
     try {
-        const res = await fetch('/api/broadcast/falhas');
-        const falhas = await res.json();
-        disparoFalhasDetalhe.innerHTML = falhas.length
-            ? falhas.map(f => `
+        const res = await fetch(`/api/broadcast/detalhe?filtro=${filtro}`);
+        const linhas = await res.json();
+        disparoDetalheLista.innerHTML = linhas.length
+            ? linhas.map(l => `
                 <div style="display:flex;justify-content:space-between;gap:.6rem;font-size:.78rem;padding:.3rem 0;border-bottom:1px solid rgba(255,255,255,0.05)">
-                    <span style="color:var(--text-2);white-space:nowrap">${f.telefone}</span>
-                    <span style="color:var(--text-3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:right">${f.erro || 'Erro desconhecido'}</span>
+                    <span style="color:var(--text-1);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${l.nome || l.telefone}${l.nome ? ` <span style="color:var(--text-3)">· ${l.telefone}</span>` : ''}</span>
+                    <span style="color:${l.sucesso ? 'var(--green)' : 'var(--red)'};overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:right;flex-shrink:0;margin-left:.6rem">${l.sucesso ? '✅ Enviado' : `❌ ${l.erro || 'Falhou'}`}</span>
                 </div>
             `).join('')
-            : '<p style="color:var(--text-3);font-size:.78rem;text-align:center;padding:.5rem 0">Nenhuma falha registrada.</p>';
+            : '<p style="color:var(--text-3);font-size:.78rem;text-align:center;padding:.5rem 0">Nada por aqui ainda.</p>';
     } catch (e) {
-        disparoFalhasDetalhe.innerHTML = '<p style="color:var(--text-3);font-size:.78rem;text-align:center;padding:.5rem 0">Erro ao carregar detalhes.</p>';
+        disparoDetalheLista.innerHTML = '<p style="color:var(--text-3);font-size:.78rem;text-align:center;padding:.5rem 0">Erro ao carregar detalhes.</p>';
     }
+}
+
+progressStatClicaveis.forEach(el => {
+    el.addEventListener('click', () => {
+        const filtro = el.dataset.filtro;
+        if (filtroDisparoDetalheAtivo === filtro) {
+            filtroDisparoDetalheAtivo = null;
+            progressStatClicaveis.forEach(e => e.classList.remove('active'));
+            disparoDetalheLista?.classList.add('hidden');
+            return;
+        }
+        filtroDisparoDetalheAtivo = filtro;
+        progressStatClicaveis.forEach(e => e.classList.toggle('active', e === el));
+        renderDisparoDetalhe(filtro);
+    });
 });
 
 const broadcastDelayModo   = document.getElementById('broadcast-delay-modo');
@@ -2614,8 +2633,9 @@ btnDisparar?.addEventListener('click', async () => {
     broadcastStatusMsg.textContent = `🚀 Iniciando disparo para ${data.total} números...`;
     broadcastStatusMsg.style.color = 'var(--green)';
     showToast('Disparo Iniciado!', `${data.total} números na fila`, 'success');
-    if (btnDisparoFalhasToggle) { btnDisparoFalhasToggle.style.display = 'none'; btnDisparoFalhasToggle.textContent = '▼ Ver detalhes das falhas'; }
-    if (disparoFalhasDetalhe) disparoFalhasDetalhe.classList.add('hidden');
+    filtroDisparoDetalheAtivo = null;
+    progressStatClicaveis.forEach(el => el.classList.remove('active'));
+    if (disparoDetalheLista) { disparoDetalheLista.classList.add('hidden'); disparoDetalheLista.innerHTML = ''; }
 });
 
 btnParar?.addEventListener('click', async () => {

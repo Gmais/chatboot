@@ -688,20 +688,20 @@
 
                 <div class="card glass">
                     <h3>Progresso em Tempo Real</h3>
-                    <div class="progress-stat">
+                    <div class="progress-stat progress-stat-clickable" data-filtro="todos" title="Ver a lista detalhada">
                         <span style="color:var(--text-2)">Total</span>
                         <span id="prog-total" class="prog-val" style="color:var(--text-1)">0</span>
                     </div>
-                    <div class="progress-stat">
+                    <div class="progress-stat progress-stat-clickable" data-filtro="enviados" title="Ver quem recebeu">
                         <span style="color:var(--text-2)">Enviados</span>
                         <span id="prog-sent" class="prog-val" style="color:var(--green)">0</span>
                     </div>
-                    <div class="progress-stat">
+                    <div class="progress-stat progress-stat-clickable" data-filtro="falhas" title="Ver quem falhou e o motivo">
                         <span style="color:var(--text-2)">Falhas</span>
                         <span id="prog-failed" class="prog-val" style="color:var(--red)">0</span>
                     </div>
-                    <button type="button" id="btn-disparo-falhas-toggle" class="btn-secondary" style="display:none;width:100%;margin-top:.4rem;padding:.4rem;font-size:.75rem">▼ Ver detalhes das falhas</button>
-                    <div id="disparo-falhas-detalhe" class="hidden" style="max-height:180px;overflow-y:auto;margin-top:.6rem;display:flex;flex-direction:column;gap:.3rem"></div>
+                    <p style="color:var(--text-3);font-size:.72rem;margin-top:.3rem">Clique em um número acima pra ver a lista detalhada com nome.</p>
+                    <div id="disparo-detalhe-lista" class="hidden" style="max-height:220px;overflow-y:auto;margin-top:.6rem;display:flex;flex-direction:column;gap:.3rem"></div>
                     <div style="margin-top:1.5rem">
                         <div style="display:flex;justify-content:space-between;margin-bottom:.4rem">
                             <span style="font-size:.8rem;color:var(--text-3)">Progresso</span>
