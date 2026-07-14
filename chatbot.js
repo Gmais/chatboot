@@ -1545,6 +1545,58 @@ app.post('/api/admin/mesclar-leads-duplicados', async (req, res) => {
     }
 });
 
+// Reconsulta a Pacto por matrícula pra preencher data_nascimento de quem já
+// foi importado sem ela (ex: import antigo que rodou antes da API devolver
+// esse campo, ou matrículas que vieram sem telefone/data na 1ª tentativa).
+// Só ATUALIZA quem está com data_nascimento NULL — nunca sobrescreve uma
+// data já preenchida (manual ou de import anterior). Se o corpo não trouxer
+// "matriculas", varre sozinho todo mundo com matrícula mas sem data.
+app.post('/api/admin/preencher-datas-nascimento', async (req, res) => {
+    try {
+        let matriculas = Array.isArray(req.body?.matriculas) ? req.body.matriculas : null;
+        if (!matriculas) {
+            const linhas = await db.all("SELECT matricula FROM leads WHERE matricula IS NOT NULL AND TRIM(matricula) != '' AND data_nascimento IS NULL");
+            matriculas = linhas.map(l => l.matricula);
+        }
+
+        const resultado = { total: matriculas.length, atualizados: 0, sem_data_na_pacto: 0, nao_encontrados: 0, erros: [] };
+        const CONCORRENCIA = 5;
+
+        async function processar(matriculaBruta) {
+            const matricula = String(matriculaBruta).trim().padStart(6, '0');
+            try {
+                const aluno = await buscarAlunoPorMatricula(matricula);
+                if (!aluno) { resultado.nao_encontrados++; return; }
+                const dataNascimento = aluno.pessoa?.datanasc ? String(aluno.pessoa.datanasc).slice(0, 10) : null;
+                if (!dataNascimento) { resultado.sem_data_na_pacto++; return; }
+                // Mesma comparação dual (texto exato OU valor numérico) usada em
+                // Importar Lista de Transmissão — cobre "4844" batendo com
+                // "004844" salvo com zeros à esquerda.
+                const r = await db.run(
+                    `UPDATE leads SET data_nascimento = ?
+                     WHERE data_nascimento IS NULL AND matricula IS NOT NULL AND TRIM(matricula) != '' AND (
+                        TRIM(matricula) = ? OR CAST(matricula AS INTEGER) = CAST(? AS INTEGER)
+                     )`,
+                    [dataNascimento, String(matriculaBruta).trim(), String(matriculaBruta).trim()]
+                );
+                if (r.changes > 0) resultado.atualizados++;
+            } catch (e) {
+                resultado.erros.push({ matricula: matriculaBruta, erro: e.message });
+            }
+        }
+
+        let indice = 0;
+        while (indice < matriculas.length) {
+            const lote = matriculas.slice(indice, indice + CONCORRENCIA);
+            await Promise.all(lote.map(processar));
+            indice += lote.length;
+        }
+        res.json(resultado);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
 app.get('/api/contatos', async (req, res) => {
     try {
         const leads = await db.all('SELECT telefone, nome, origem, matricula, data_nascimento, data_captura, mensagens_recebidas FROM leads ORDER BY data_captura DESC');
