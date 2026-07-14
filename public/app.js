@@ -2724,7 +2724,7 @@ const CM = (() => {
     let activePhone = null;
     let totalNaoLidas = 0;
     let searchQuery = '';
-    let activeTab = 'aberta'; // 'aberta' | 'fechada' | 'aguardando'
+    let activeTab = 'aberta'; // 'aberta' | 'fechada'
     let notifMuted = localStorage.getItem('chatNotifMuted') === '1';
 
     // ---- Referências DOM ----
@@ -2751,7 +2751,6 @@ const CM = (() => {
     const badgeNaoLidas  = document.getElementById('badge-nao-lidas');
     const tabAbertas     = document.getElementById('tab-chat-abertas');
     const tabFechadas    = document.getElementById('tab-chat-fechadas');
-    const tabAguardando  = document.getElementById('tab-chat-aguardando');
     const btnVolume      = document.getElementById('btn-chat-volume');
     const btnNovaConversa = document.getElementById('btn-chat-nova-conversa');
     const btnEmoji        = document.getElementById('btn-chat-emoji');
@@ -2829,13 +2828,7 @@ const CM = (() => {
     // ---- Atualiza badge global de não lidas ----
     function updateGlobalBadge() {
         totalNaoLidas = 0;
-        let aguardandoNaoLidas = 0;
-        contacts.forEach(c => {
-            totalNaoLidas += (c.nao_lidas || 0);
-            const status = c.status || 'aberta';
-            const aba = status === 'fechada' ? 'fechada' : (c.assumida_humano ? 'aguardando' : 'aberta');
-            if (aba === 'aguardando') aguardandoNaoLidas += (c.nao_lidas || 0);
-        });
+        contacts.forEach(c => { totalNaoLidas += (c.nao_lidas || 0); });
         if (badgeNaoLidas) {
             if (totalNaoLidas > 0) {
                 badgeNaoLidas.textContent = totalNaoLidas > 99 ? '99+' : totalNaoLidas;
@@ -2844,9 +2837,6 @@ const CM = (() => {
                 badgeNaoLidas.style.display = 'none';
             }
         }
-        // Aba "Aguardando" pisca em vermelho enquanto tiver mensagem não lida
-        // ali dentro — some sozinha quando o operador abre a conversa.
-        if (tabAguardando) tabAguardando.classList.toggle('tab-piscando', aguardandoNaoLidas > 0);
     }
 
     // ---- Renderiza a lista de contatos ----
@@ -2856,13 +2846,12 @@ const CM = (() => {
         const existing = contactList.querySelectorAll('.chat-contact-item');
         existing.forEach(el => el.remove());
 
-        // Filtra e ordena: por data decrescente. Abertas/Fechadas/Aguardando são
-        // mutuamente exclusivas: Fechadas = status finalizada; dentro das não
-        // finalizadas, Aguardando = assumida por humano (bot esperando ação
-        // humana pra finalizar), Abertas = o resto.
+        // Filtra e ordena: por data decrescente. Abertas/Fechadas são
+        // mutuamente exclusivas pelo status — assumida por humano ou não,
+        // enquanto não estiver finalizada ela é "Abertas".
         const filtered = [...contacts.values()].filter(c => {
             const status = c.status || 'aberta';
-            const aba = status === 'fechada' ? 'fechada' : (c.assumida_humano ? 'aguardando' : 'aberta');
+            const aba = status === 'fechada' ? 'fechada' : 'aberta';
             if (aba !== activeTab) return false;
             if (!searchQuery) return true;
             const q = searchQuery.toLowerCase();
@@ -2875,9 +2864,7 @@ const CM = (() => {
                 chatEmpty.style.display = 'block';
                 chatEmpty.textContent = activeTab === 'fechada'
                     ? 'Nenhuma conversa finalizada ainda.'
-                    : activeTab === 'aguardando'
-                        ? 'Nenhuma conversa aguardando interação humana.'
-                        : 'Nenhuma conversa encontrada.';
+                    : 'Nenhuma conversa encontrada.';
             }
             return;
         }
@@ -3296,16 +3283,15 @@ const CM = (() => {
             if (activePhone) loadHistory(activePhone);
         });
 
-        // Abas Abertas / Fechadas / Aguardando
+        // Abas Abertas / Fechadas
         function selecionarAba(aba) {
             activeTab = aba;
-            [tabAbertas, tabFechadas, tabAguardando].forEach(btn => btn?.classList.remove('active'));
-            ({ aberta: tabAbertas, fechada: tabFechadas, aguardando: tabAguardando }[aba])?.classList.add('active');
+            [tabAbertas, tabFechadas].forEach(btn => btn?.classList.remove('active'));
+            ({ aberta: tabAbertas, fechada: tabFechadas }[aba])?.classList.add('active');
             renderContactList();
         }
         tabAbertas?.addEventListener('click', () => selecionarAba('aberta'));
         tabFechadas?.addEventListener('click', () => selecionarAba('fechada'));
-        tabAguardando?.addEventListener('click', () => selecionarAba('aguardando'));
 
         // Volume das notificações (liga/desliga)
         atualizarIconeVolume();
