@@ -680,7 +680,7 @@ navBtns.forEach(btn => {
         }
         if (targetId === 'mensagens-section') loadRegras();
         if (targetId === 'ia-section') { loadIaConfig(); loadIaExemplosContagem(); }
-        if (targetId === 'configuracoes-section') { loadHorarioConfig(); loadDelayResposta(); loadProgramacoes(); }
+        if (targetId === 'configuracoes-section') { loadHorarioConfig(); loadDelayResposta(); loadProgramacoes(); loadInstagramConfig(); }
         if (targetId === 'conversas-section') CM.onEnterSection();
         if (targetId === 'contatos-section' || targetId === 'disparos-section') loadContatos();
         if (targetId === 'integracoes-section') { loadPactoInadimplentes(); loadPactoVencemHoje(); loadAgendaAvaliacao(); }
@@ -1014,6 +1014,46 @@ cfgDelayResposta?.addEventListener('change', async () => {
         showToast('Delay atualizado!', `O robô agora responde com ${texto} antes de começar a digitar.`, 'success', 3500);
     } catch (e) {
         showToast('Erro', 'Não foi possível salvar o delay.', 'error');
+    }
+});
+
+// =====================================
+// INSTAGRAM (DMs)
+// =====================================
+const instagramWebhookUrlInput = document.getElementById('instagram-webhook-url');
+const instagramVerifyTokenInput = document.getElementById('instagram-verify-token');
+const instagramPageAccessTokenInput = document.getElementById('instagram-page-access-token');
+const instagramAppSecretInput = document.getElementById('instagram-app-secret');
+const btnInstagramConfigSalvar = document.getElementById('btn-instagram-config-salvar');
+
+async function loadInstagramConfig() {
+    if (!instagramWebhookUrlInput) return;
+    instagramWebhookUrlInput.value = `${window.location.origin}/webhook/instagram`;
+    try {
+        const res = await fetch('/api/instagram/config');
+        const config = await res.json();
+        if (instagramVerifyTokenInput) instagramVerifyTokenInput.value = config.verify_token || '';
+        if (instagramPageAccessTokenInput) instagramPageAccessTokenInput.value = config.page_access_token || '';
+        if (instagramAppSecretInput) instagramAppSecretInput.value = config.app_secret || '';
+    } catch (e) {
+        console.error('Erro ao carregar configuração do Instagram', e);
+    }
+}
+
+btnInstagramConfigSalvar?.addEventListener('click', async () => {
+    try {
+        await fetch('/api/instagram/config', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                verify_token: instagramVerifyTokenInput?.value || '',
+                page_access_token: instagramPageAccessTokenInput?.value || '',
+                app_secret: instagramAppSecretInput?.value || '',
+            }),
+        });
+        showToast('Instagram salvo!', 'Configuração atualizada.', 'success', 3000);
+    } catch (e) {
+        showToast('Erro', 'Não foi possível salvar a configuração do Instagram.', 'error');
     }
 });
 
@@ -3120,7 +3160,7 @@ const CM = (() => {
             item.innerHTML = `
                 <div class="chat-contact-avatar">${avatarLetter(c.nome)}</div>
                 <div class="chat-contact-body">
-                    <div class="chat-contact-name">${c.nome}${c.matricula ? ` <span class="chat-contact-matricula">#${c.matricula}</span>` : ''}${c.assumida_humano ? ' 🙋' : ''}</div>
+                    <div class="chat-contact-name">${c.canal === 'instagram' ? '📷 ' : ''}${c.nome}${c.matricula ? ` <span class="chat-contact-matricula">#${c.matricula}</span>` : ''}${c.assumida_humano ? ' 🙋' : ''}</div>
                     <div class="${previewClass}">${previewPrefix}${previewText}</div>
                 </div>
                 <div class="chat-contact-meta">
@@ -3153,7 +3193,7 @@ const CM = (() => {
         if (chatHeader)         chatHeader.style.display = 'flex';
         if (chatPlaceholder)    chatPlaceholder.style.display = 'none';
         if (chatHeaderAvatar)   chatHeaderAvatar.textContent = avatarLetter(nome);
-        if (chatHeaderName)     chatHeaderName.innerHTML = `${escapeHtml(nome)}${c?.matricula ? ` <span class="chat-contact-matricula">#${escapeHtml(c.matricula)}</span>` : ''}`;
+        if (chatHeaderName)     chatHeaderName.innerHTML = `${c?.canal === 'instagram' ? '📷 ' : ''}${escapeHtml(nome)}${c?.matricula ? ` <span class="chat-contact-matricula">#${escapeHtml(c.matricula)}</span>` : ''}`;
         if (chatHeaderStatus)   chatHeaderStatus.textContent = telefone;
         renderChatHeaderTags(telefone);
         renderChatAssumirButton();

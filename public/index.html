@@ -1095,6 +1095,28 @@ Sempre tente agendar uma aula experimental."></textarea>
                 </div>
 
                 <div class="card glass">
+                    <h3 style="margin-bottom:.3rem">📷 Instagram (DMs)</h3>
+                    <p style="color:var(--text-3);font-size:.8rem;margin-bottom:1rem">Conecta o robô às mensagens diretas do Instagram — precisa de um App da Meta com o Instagram comercial vinculado à Página do Facebook (configurado por fora, no painel de desenvolvedor da Meta). Cole a URL do webhook abaixo lá na Meta, escolha um Verify Token (texto seu) e cole também o Page Access Token e o App Secret gerados por lá.</p>
+                    <div class="form-group">
+                        <label>URL do Webhook <span style="color:var(--text-3);font-size:.75rem">(cole exatamente essa na Meta)</span></label>
+                        <input type="text" id="instagram-webhook-url" readonly style="width:100%;background:var(--input-bg);border:1px solid rgba(255,255,255,0.1);border-radius:var(--radius-sm);padding:.6rem .8rem;color:var(--text-2);font-family:monospace;font-size:.82rem">
+                    </div>
+                    <div class="form-group">
+                        <label>Verify Token <span style="color:var(--text-3);font-size:.75rem">(escolha um texto qualquer e cole o mesmo na Meta)</span></label>
+                        <input type="text" id="instagram-verify-token" placeholder="Ex: minha-chave-secreta-123" style="width:100%;background:var(--input-bg);border:1px solid rgba(255,255,255,0.1);border-radius:var(--radius-sm);padding:.6rem .8rem;color:var(--text-1);font-family:'Inter',sans-serif">
+                    </div>
+                    <div class="form-group">
+                        <label>Page Access Token</label>
+                        <input type="password" id="instagram-page-access-token" placeholder="Gerado no App da Meta" style="width:100%;background:var(--input-bg);border:1px solid rgba(255,255,255,0.1);border-radius:var(--radius-sm);padding:.6rem .8rem;color:var(--text-1);font-family:'Inter',sans-serif">
+                    </div>
+                    <div class="form-group">
+                        <label>App Secret</label>
+                        <input type="password" id="instagram-app-secret" placeholder="Configurações Básicas do App na Meta" style="width:100%;background:var(--input-bg);border:1px solid rgba(255,255,255,0.1);border-radius:var(--radius-sm);padding:.6rem .8rem;color:var(--text-1);font-family:'Inter',sans-serif">
+                    </div>
+                    <button class="btn-primary" id="btn-instagram-config-salvar" style="padding:.6rem 1.1rem;font-size:.85rem">💾 Salvar</button>
+                </div>
+
+                <div class="card glass">
                     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem">
                         <h3>🗓️ Programação</h3>
                         <button type="button" class="btn-primary" id="btn-nova-programacao" style="padding:.5rem 1rem;font-size:.85rem">➕ Adicionar Ação</button>

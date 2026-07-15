@@ -73,6 +73,7 @@ const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
 const OpenAI = require('openai');
 const moment = require('moment-timezone');
 const { buscarAlunoPorMatricula, buscarAlunoPorCodigo, obterParcelasEmAberto, criarCliente, matricularAluno, gerarLinkPagamentoPixSantander } = require('./pacto');
+const { enviarMensagemInstagram, obterNomeUsuarioInstagram, verificarAssinaturaWebhook } = require('./instagram');
 const { buscarAgendaDoDia } = require('./agenda');
 
 // =====================================
@@ -507,6 +508,23 @@ async function initDB() {
     // for removido do pool depois). NULL pros envios antigos, de antes dessa
     // feature existir.
     try { await db.exec(`ALTER TABLE disparo_envios_log ADD COLUMN numero_envio TEXT DEFAULT NULL`); } catch (e) { }
+    // Canal de origem do contato/mensagem ('whatsapp' ou 'instagram') — leads
+    // e conversas continuam com a mesma chave opaca (telefone ou IGSID do
+    // Instagram), só ganham essa coluna a mais pra saber por onde falar com
+    // esse contato e pra filtrar relatórios/limpezas específicas de canal.
+    try { await db.exec(`ALTER TABLE leads ADD COLUMN canal TEXT DEFAULT 'whatsapp'`); } catch (e) { }
+    try { await db.exec(`ALTER TABLE conversas ADD COLUMN canal TEXT DEFAULT 'whatsapp'`); } catch (e) { }
+    // Dedup de mensagens do webhook do Instagram — a Meta não garante entrega
+    // única, pode reenviar o MESMO evento se a resposta demorar/falhar. Sem
+    // isso, uma reentrega processava a mensagem de novo (lead duplicado,
+    // robô respondendo duas vezes). Fica numa tabela (não só em memória)
+    // porque o processo reinicia com frequência (deploys).
+    try {
+        await db.exec(`CREATE TABLE IF NOT EXISTS instagram_mensagens_processadas (
+            mid TEXT PRIMARY KEY,
+            processado_em DATETIME DEFAULT CURRENT_TIMESTAMP
+        )`);
+    } catch (e) { console.error('Erro ao criar tabela de dedup do Instagram:', e.message); }
 
     // Semeia as programações automáticas que antes eram horários fixos no
     // código (Agenda de Avaliação às 06:00, Situação Financeira às 06:05,
@@ -818,17 +836,17 @@ const TIPO_LABEL_FALLBACK = {
 // segundos) — quando informado, usa esse em vez de "agora". Sem isso, uma
 // mensagem sincronizada em lote (ex: reconexão trazendo histórico) fica com
 // o horário de quando o robô processou, não o horário real da mensagem.
-async function salvarNaConversa(telefone, nome, direcao, texto, tipo = 'text', tsReal = null, manual = false, mediaPath = null) {
+async function salvarNaConversa(telefone, nome, direcao, texto, tipo = 'text', tsReal = null, manual = false, mediaPath = null, canal = 'whatsapp') {
     const num = telefone.replace('@c.us', '').replace('@lid', '');
     const ts = tsReal ? new Date(tsReal * 1000).toISOString() : new Date().toISOString();
     const lida = direcao === 'out' ? 1 : 0;
     await db.run(
-        'INSERT INTO conversas (telefone, nome, direcao, texto, tipo, ts, lida, manual, media_path) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-        [num, nome || num, direcao, texto, tipo, ts, lida, manual ? 1 : 0, mediaPath]
+        'INSERT INTO conversas (telefone, nome, direcao, texto, tipo, ts, lida, manual, media_path, canal) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        [num, nome || num, direcao, texto, tipo, ts, lida, manual ? 1 : 0, mediaPath, canal]
     );
     // Conta não lidas deste telefone
     const naoLidas = await db.get('SELECT COUNT(*) as c FROM conversas WHERE telefone=? AND lida=0 AND direcao="in"', num);
-    io.emit('nova_mensagem', { telefone: num, nome: nome || num, texto, direcao, tipo, ts, nao_lidas: naoLidas.c, manual, media_path: mediaPath });
+    io.emit('nova_mensagem', { telefone: num, nome: nome || num, texto, direcao, tipo, ts, nao_lidas: naoLidas.c, manual, media_path: mediaPath, canal });
 
     // Qualquer mensagem nova (do cliente OU pro cliente — bot, automação,
     // envio manual) reabre a conversa se ela tinha sido finalizada. "Finalizada"
@@ -969,28 +987,152 @@ async function buscarExemplosRelevantes(textoCliente, topK = 3) {
 
 // Registra no histórico permanente cada mensagem realmente enviada pelo robô.
 // É a única fonte da contagem "Mensagens Enviadas" — se está no contador, está nesta tabela.
-async function registrarMensagemEnviada(telefone, texto, nome, msgId = null, manual = false, tipo = 'text', mediaPath = null) {
+async function registrarMensagemEnviada(telefone, texto, nome, msgId = null, manual = false, tipo = 'text', mediaPath = null, canal = 'whatsapp') {
     const numeroLimpo = telefone.replace('@c.us', '').replace('@lid', '');
     marcarMensagemComoDoSistema(msgId);
     await db.run('INSERT INTO mensagens_enviadas (telefone, texto) VALUES (?, ?)', [numeroLimpo, texto]);
     stats.sent++;
-    await salvarNaConversa(numeroLimpo, nome, 'out', texto, tipo, null, manual, mediaPath);
+    await salvarNaConversa(numeroLimpo, nome, 'out', texto, tipo, null, manual, mediaPath, canal);
     io.emit('message_out', { to: numeroLimpo, text: texto, ts: Date.now() });
     io.emit('stats', stats);
     if (manual) indexarExemploConsultora(numeroLimpo, texto).catch(e => console.error('Erro ao indexar exemplo (fire-and-forget):', e.message));
 }
 
-async function registerLead(telefone) {
+async function registerLead(telefone, canal = 'whatsapp') {
     stats.received++;
     if (!leadsSet.has(telefone)) {
         leadsSet.add(telefone);
         stats.leads++;
-        await db.run('INSERT INTO leads (telefone) VALUES (?)', telefone);
+        await db.run('INSERT INTO leads (telefone, canal) VALUES (?, ?)', [telefone, canal]);
         io.emit('new_lead', { telefone, data_captura: new Date().toISOString() });
     } else {
         await db.run('UPDATE leads SET mensagens_recebidas = mensagens_recebidas + 1 WHERE telefone = ?', telefone);
     }
     io.emit('stats', stats);
+}
+
+// =====================================
+// INTEGRAÇÃO COM INSTAGRAM (DMs via Meta Graph API)
+// =====================================
+// Token/App Secret/Verify Token ficam em `configuracoes` (tela de
+// Configurações), não em variável de ambiente — dá pra trocar sem redeploy.
+async function obterConfigInstagram() {
+    const rows = await db.all("SELECT chave, valor FROM configuracoes WHERE chave LIKE 'instagram_%'");
+    const config = {};
+    rows.forEach(r => config[r.chave] = r.valor);
+    return {
+        pageAccessToken: config.instagram_page_access_token || null,
+        appSecret: config.instagram_app_secret || null,
+        verifyToken: config.instagram_verify_token || null,
+    };
+}
+
+// Handshake de verificação do webhook — a Meta chama essa rota (GET) uma
+// vez ao salvar a configuração no painel de desenvolvedor dela.
+app.get('/webhook/instagram', async (req, res) => {
+    try {
+        const { verifyToken } = await obterConfigInstagram();
+        const modo = req.query['hub.mode'];
+        const tokenRecebido = req.query['hub.verify_token'];
+        if (modo === 'subscribe' && verifyToken && tokenRecebido === verifyToken) {
+            console.log('✅ Webhook do Instagram verificado pela Meta.');
+            return res.status(200).send(req.query['hub.challenge']);
+        }
+        res.sendStatus(403);
+    } catch (e) {
+        console.error('Erro na verificação do webhook do Instagram:', e.message);
+        res.sendStatus(500);
+    }
+});
+
+// Evento de verdade (nova mensagem etc). `express.raw` só nessa rota — a
+// assinatura (X-Hub-Signature-256) precisa ser calculada sobre o corpo CRU,
+// antes de qualquer JSON.parse; o `express.json()` global do resto do app
+// já teria consumido/parseado o corpo antes da gente conseguir os bytes crus.
+app.post('/webhook/instagram', express.raw({ type: 'application/json' }), async (req, res) => {
+    // Responde 200 JÁ — a Meta reenvia agressivamente se demorar ou não
+    // receber 200 (mesmo padrão "responde na hora, processa depois" já
+    // usado em /api/broadcast/start).
+    res.sendStatus(200);
+    try {
+        const { appSecret } = await obterConfigInstagram();
+        const assinatura = req.headers['x-hub-signature-256'];
+        if (!verificarAssinaturaWebhook(req.body, assinatura, appSecret)) {
+            console.error('⚠️ Webhook do Instagram: assinatura inválida — evento ignorado.');
+            return;
+        }
+        const payload = JSON.parse(req.body.toString('utf8'));
+        await processarWebhookInstagram(payload);
+    } catch (e) {
+        console.error('Erro ao processar webhook do Instagram:', e.message);
+    }
+});
+
+async function processarWebhookInstagram(payload) {
+    if (payload?.object !== 'instagram') return;
+    for (const entry of payload.entry || []) {
+        for (const evento of entry.messaging || []) {
+            try {
+                await processarMensagemInstagram(evento);
+            } catch (e) {
+                console.error('Erro ao processar mensagem do Instagram:', e.message);
+            }
+        }
+    }
+}
+
+// Espelha, pro Instagram, o mesmo fluxo do client.on('message') do WhatsApp
+// (registerLead → salvarNaConversa → conversas_humano → modo humano/robô),
+// só que a entrega final passa por enviarRespostaCanal em vez de
+// enviarResposta(msg,...) direto — ver seção "DESPACHO DE RESPOSTA POR CANAL".
+async function processarMensagemInstagram(evento) {
+    // Ignora eco (mensagem que a própria Página mandou, ecoada de volta) e
+    // qualquer evento sem texto de verdade (read/delivery receipt, postback).
+    if (evento.message?.is_echo) return;
+    const igsid = evento.sender?.id;
+    const texto = evento.message?.text;
+    const mid = evento.message?.mid;
+    if (!igsid || !texto) return;
+
+    if (mid) {
+        const jaProcessado = await db.get('SELECT 1 FROM instagram_mensagens_processadas WHERE mid = ?', mid);
+        if (jaProcessado) return; // reentrega do mesmo evento — Meta não garante entrega única
+        await db.run('INSERT OR IGNORE INTO instagram_mensagens_processadas (mid) VALUES (?)', mid);
+    }
+
+    const { pageAccessToken } = await obterConfigInstagram();
+    const nomeContato = await obterNomeUsuarioInstagram(igsid, pageAccessToken);
+    const textoNormalizado = texto.trim().toLowerCase();
+
+    registerLead(igsid, 'instagram').catch(e => console.error('Erro ao registrar lead do Instagram:', e.message));
+    await salvarNaConversa(igsid, nomeContato, 'in', texto, 'text', null, false, null, 'instagram');
+    io.emit('message_in', { from: igsid, nome: nomeContato, text: texto, ts: Date.now() });
+
+    const assumidaPorHumano = await db.get('SELECT 1 FROM conversas_humano WHERE telefone = ?', igsid);
+    if (assumidaPorHumano) return;
+
+    // Shim: processarComoRobo/agendarFallbackHumano só leem UMA propriedade
+    // do objeto "msg" (msg.body) — tudo o mais que fariam com um Message de
+    // verdade do whatsapp-web.js passa pelo despachante de canal, não pelo
+    // shim. Ver comentário em cima de enviarRespostaCanal.
+    const msgShim = { body: texto };
+
+    const { modo, mensagemHumano, timezone } = await obterModoAtual();
+    if (modo === 'humano') {
+        const hoje = moment.tz(timezone || 'America/Sao_Paulo').format('YYYY-MM-DD');
+        if (mensagemHumano && ultimaMsgModoHumano.get(igsid) !== hoje) {
+            const mensagemHumanoFinal = await substituirPlaceholdersPessoais(mensagemHumano, igsid);
+            const sentHumano = await enviarRespostaCanal('instagram', msgShim, igsid, mensagemHumanoFinal);
+            if (sentHumano) {
+                ultimaMsgModoHumano.set(igsid, hoje);
+                await registrarMensagemEnviada(igsid, mensagemHumanoFinal, nomeContato, null, false, 'text', null, 'instagram');
+            }
+        }
+        await agendarFallbackHumano(msgShim, igsid, textoNormalizado, igsid, nomeContato, 'instagram');
+        return;
+    }
+
+    await processarComoRobo(msgShim, igsid, textoNormalizado, igsid, nomeContato, 'instagram');
 }
 
 // =====================================
@@ -1119,7 +1261,7 @@ app.delete('/api/respostas/:id', async (req, res) => {
 // qualquer um com a URL do painel conseguiria ler a chave da OpenAI/Groq
 // em texto puro. Quem realmente precisa da chave (tela Inteligência
 // Artificial, pra mostrar/editar o que já está salvo) usa /api/ia/config.
-const CONFIG_CHAVES_SENSIVEIS = ['openai_api_key', 'groq_api_key'];
+const CONFIG_CHAVES_SENSIVEIS = ['openai_api_key', 'groq_api_key', 'instagram_page_access_token', 'instagram_app_secret', 'instagram_verify_token'];
 app.get('/api/configuracoes', async (req, res) => {
     const rows = await db.all('SELECT * FROM configuracoes');
     const config = {};
@@ -1143,6 +1285,29 @@ app.get('/api/ia/config', async (req, res) => {
     const config = {};
     rows.forEach(r => config[r.chave] = r.valor);
     res.json(config);
+});
+
+// Config do Instagram (token/secret/verify token em texto puro) — só pra
+// tela de Configurações, que precisa mostrar/editar o que já foi salvo.
+// Mesma separação de /api/ia/config: a rota genérica /api/configuracoes
+// nunca devolve essas chaves.
+app.get('/api/instagram/config', async (req, res) => {
+    const rows = await db.all("SELECT chave, valor FROM configuracoes WHERE chave LIKE 'instagram_%'");
+    const config = {};
+    rows.forEach(r => config[r.chave] = r.valor);
+    res.json({
+        page_access_token: config.instagram_page_access_token || '',
+        app_secret: config.instagram_app_secret || '',
+        verify_token: config.instagram_verify_token || '',
+    });
+});
+
+app.put('/api/instagram/config', async (req, res) => {
+    const { page_access_token, app_secret, verify_token } = req.body;
+    if (page_access_token !== undefined) await db.run('INSERT OR REPLACE INTO configuracoes (chave, valor) VALUES (?, ?)', ['instagram_page_access_token', page_access_token]);
+    if (app_secret !== undefined) await db.run('INSERT OR REPLACE INTO configuracoes (chave, valor) VALUES (?, ?)', ['instagram_app_secret', app_secret]);
+    if (verify_token !== undefined) await db.run('INSERT OR REPLACE INTO configuracoes (chave, valor) VALUES (?, ?)', ['instagram_verify_token', verify_token]);
+    res.json({ success: true });
 });
 
 app.get('/api/ia/exemplos/contagem', async (req, res) => {
@@ -2642,7 +2807,13 @@ async function dispararMensagensDaAutomacao(automacaoId) {
                     const msg = await db.get('SELECT * FROM mensagens_personalizadas WHERE id = ?', mensagemId);
                     if (!msg) return;
                     const numLimpo = estado.telefone;
-                    const chatId = await resolverChatId(client, numLimpo);
+                    // Canal do contato decide COMO entregar — resolverChatId/
+                    // client.sendMessage são específicos do WhatsApp, então só
+                    // roda esse lado pra quem é 'whatsapp' (o normal, canal
+                    // default de quem já existia antes dessa coluna existir).
+                    const leadRow = await db.get('SELECT canal FROM leads WHERE telefone = ?', numLimpo);
+                    const canalContato = leadRow?.canal || 'whatsapp';
+                    const chatId = canalContato === 'instagram' ? null : await resolverChatId(client, numLimpo);
                     const nome = await resolverNomeContato(numLimpo);
                     const primeiroNome = (nome && nome !== numLimpo) ? nome.split(' ')[0] : '';
                     const nomeCompleto = (nome && nome !== numLimpo) ? nome : '';
@@ -2684,7 +2855,20 @@ async function dispararMensagensDaAutomacao(automacaoId) {
                         .replace(/\{professor\}/gi, professorStr).replace(/\[professor\]/gi, professorStr);
 
                     let sucesso = false;
-                    if (msg.media_path) {
+                    if (canalContato === 'instagram') {
+                        // Mídia ainda não é suportada pro Instagram nessa 1ª versão
+                        // (ver plano) — pula a mídia, manda só o texto se tiver.
+                        // Falha aqui (ex: fora da janela de 24h da Meta) sobe pro
+                        // catch de fora igual qualquer outro erro de envio.
+                        if (msg.media_path && !texto) {
+                            console.log(`ℹ️ Automação #${automacaoId}: mensagem só tem mídia (sem texto) e mídia ainda não é suportada pro Instagram — nada enviado pra ${numLimpo}.`);
+                        } else if (texto) {
+                            const { pageAccessToken } = await obterConfigInstagram();
+                            const resultado = await enviarMensagemInstagram(numLimpo, texto, pageAccessToken);
+                            await registrarMensagemEnviada(numLimpo, texto, nome, resultado?.message_id || null, false, 'text', null, 'instagram');
+                            sucesso = true;
+                        }
+                    } else if (msg.media_path) {
                         const mediaFullPath = path.join(__dirname, 'public', msg.media_path.replace(/^\//, ''));
                         if (fs.existsSync(mediaFullPath)) {
                             const media = MessageMedia.fromFilePath(mediaFullPath);
@@ -3452,7 +3636,8 @@ async function listarConversasComEtiquetas() {
             c.ts AS ultimo_ts,
             (SELECT COUNT(*) FROM conversas WHERE telefone = c.telefone AND lida = 0 AND direcao = 'in') AS nao_lidas,
             (CASE WHEN ch.telefone IS NULL THEN 0 ELSE 1 END) AS assumida_humano,
-            COALESCE(cs.status, 'aberta') AS status
+            COALESCE(cs.status, 'aberta') AS status,
+            COALESCE(c.canal, 'whatsapp') AS canal
         FROM conversas c
         INNER JOIN (
             SELECT la.telefone, COALESCE(lr.max_ts, la.max_ts) AS max_ts
@@ -3529,9 +3714,15 @@ const TELEFONE_BR_GLOB_13 = `55${'[0-9]'.repeat(11)}`;
 // mensagem) é o que garante nunca apagar conversa de gente real que teve
 // UMA mensagem vazia no meio de um histórico real (ex: Fulano com "[text]"
 // seguido de "Oi bom dia" continua de fora).
+// Essa heurística é toda baseada em FORMATO de telefone brasileiro — só faz
+// sentido pra conversas do WhatsApp. Um IGSID do Instagram (número longo,
+// ~15-17 dígitos) cairia sempre no "NOT GLOB" e seria marcado como fantasma
+// por engano, canal inteiro incluído. Por isso o filtro por canal vem ANTES
+// de tudo, não só mais uma condição no meio do OR.
 const QUERY_FANTASMAS = `
     SELECT telefone, nome, texto FROM conversas c1
     WHERE id = (SELECT MAX(id) FROM conversas c2 WHERE c2.telefone = c1.telefone)
+      AND (c1.canal IS NULL OR c1.canal = 'whatsapp')
       AND (
         (telefone NOT GLOB ? AND telefone NOT GLOB ?)
         OR NOT EXISTS (
@@ -5808,6 +5999,36 @@ async function enviarResposta(msg, conteudo, opcoes = {}) {
     }
 }
 
+// =====================================
+// DESPACHO DE RESPOSTA POR CANAL
+// =====================================
+// processarComoRobo/agendarFallbackHumano só conhecem "mandar uma resposta"
+// através dessa função — pro WhatsApp, chama o enviarResposta de sempre, sem
+// NENHUMA mudança de comportamento (mesmo objeto msg de verdade do
+// whatsapp-web.js). Pro Instagram, manda pela Graph API; mídia (regra com
+// media_path) ainda não é suportada nesse canal nessa 1ª versão — só pula o
+// envio da mídia (loga, não quebra o resto do fluxo).
+async function enviarRespostaCanal(canal, msg, telefoneReal, conteudo, opcoes = {}) {
+    if (canal !== 'instagram') return enviarResposta(msg, conteudo, opcoes);
+
+    if (typeof conteudo !== 'string') {
+        console.log(`ℹ️ Instagram (${telefoneReal}): mídia em resposta automática ainda não é suportada nesse canal — envio pulado.`);
+        return null;
+    }
+    try {
+        const { pageAccessToken } = await obterConfigInstagram();
+        const resultado = await enviarMensagemInstagram(telefoneReal, conteudo, pageAccessToken);
+        console.log('✅ Resposta entregue via Instagram.');
+        // Formato mínimo compatível com o "sent" que os call sites esperam
+        // (só leem sent.id?._serialized) — a Graph API devolve
+        // { recipient_id, message_id }, sem _serialized de verdade.
+        return { id: { _serialized: resultado?.message_id || null } };
+    } catch (e) {
+        console.error(`❌ Erro ao enviar pelo Instagram (${telefoneReal}):`, e.message);
+        return null;
+    }
+}
+
 // Mensagem "só emoji"/reconhecimento curto (👍, "vlw", "obrigado"...) não
 // precisa de IA — modelos pequenos (ex: llama-3.1-8b-instant) às vezes
 // "viajam" tentando montar uma resposta elaborada pra uma entrada tão vazia
@@ -5860,7 +6081,7 @@ async function encaminharParaHumanoSeEncerrou(texto, numLimpo) {
 // como fallback. Extraído do handler de 'message' pra poder ser chamado tanto
 // na hora (modo robô) quanto adiado (rede de segurança de horário, ver
 // agendarFallbackHumano) sem duplicar a lógica.
-async function processarComoRobo(msg, numLimpo, texto, telefoneReal, nomeContato) {
+async function processarComoRobo(msg, numLimpo, texto, telefoneReal, nomeContato, canal = 'whatsapp') {
     // Sinaliza que o bot está processando ("digitando...")
     io.emit('bot_digitando', { telefone: numLimpo, ativo: true });
 
@@ -6008,10 +6229,10 @@ async function processarComoRobo(msg, numLimpo, texto, telefoneReal, nomeContato
                 global.chatHistory.set(telefoneReal, history);
 
                 console.log(`🤖 IA respondendo para ${numLimpo}`);
-                const sentIA = await enviarResposta(msg, respostaIA);
+                const sentIA = await enviarRespostaCanal(canal, msg, telefoneReal, respostaIA);
                 io.emit('bot_digitando', { telefone: numLimpo, ativo: false });
                 if (sentIA) {
-                    await registrarMensagemEnviada(telefoneReal, respostaIA, nomeContato, sentIA.id?._serialized);
+                    await registrarMensagemEnviada(telefoneReal, respostaIA, nomeContato, sentIA.id?._serialized, false, 'text', null, canal);
                     await encaminharParaHumanoSeEncerrou(respostaIA, numLimpo);
                 }
             } catch (e) {
@@ -6051,10 +6272,10 @@ async function processarComoRobo(msg, numLimpo, texto, telefoneReal, nomeContato
         await aplicarEtiquetaContato(numLimpo, regraAtiva.etiqueta_id);
     }
 
-    const sent = await enviarResposta(msg, textoFinal);
+    const sent = await enviarRespostaCanal(canal, msg, telefoneReal, textoFinal);
     io.emit('bot_digitando', { telefone: numLimpo, ativo: false });
     if (sent) {
-        await registrarMensagemEnviada(telefoneReal, textoFinal, nomeContato, sent.id?._serialized);
+        await registrarMensagemEnviada(telefoneReal, textoFinal, nomeContato, sent.id?._serialized, false, 'text', null, canal);
         await encaminharParaHumanoSeEncerrou(textoFinal, numLimpo);
     }
 
@@ -6066,10 +6287,10 @@ async function processarComoRobo(msg, numLimpo, texto, telefoneReal, nomeContato
         if (fs.existsSync(mediaFullPath)) {
             await delay(500);
             const media = MessageMedia.fromFilePath(mediaFullPath);
-            const sentMedia = await enviarResposta(msg, media);
+            const sentMedia = await enviarRespostaCanal(canal, msg, telefoneReal, media);
             if (sentMedia) {
                 const tipoMedia = regraAtiva.media_tipo === 'file' ? 'document' : (regraAtiva.media_tipo || 'document');
-                await registrarMensagemEnviada(telefoneReal, '[mídia enviada]', nomeContato, sentMedia.id?._serialized, false, tipoMedia, regraAtiva.media_path);
+                await registrarMensagemEnviada(telefoneReal, '[mídia enviada]', nomeContato, sentMedia.id?._serialized, false, tipoMedia, regraAtiva.media_path, canal);
             }
         }
     }
@@ -6083,7 +6304,7 @@ async function processarComoRobo(msg, numLimpo, texto, telefoneReal, nomeContato
 // Reinicia o timer a cada nova mensagem do cliente sem resposta (debounce):
 // só dispara N segundos depois da ÚLTIMA mensagem sem resposta, não da primeira.
 const pendingFallbackTimers = new Map();
-async function agendarFallbackHumano(msg, numLimpo, texto, telefoneReal, nomeContato) {
+async function agendarFallbackHumano(msg, numLimpo, texto, telefoneReal, nomeContato, canal = 'whatsapp') {
     // Cancela o timer anterior JÁ NO INÍCIO, antes de qualquer await — se não
     // fizer isso aqui em cima, duas mensagens quase simultâneas do mesmo
     // contato (comum: cliente manda várias mensagens curtas seguidas) podiam
@@ -6130,7 +6351,7 @@ async function agendarFallbackHumano(msg, numLimpo, texto, telefoneReal, nomeCon
             );
             if (jaRespondida) return; // atendente respondeu a tempo
             console.log(`⏱️ ${segundos}s sem resposta humana pra ${numLimpo} — robô assume como rede de segurança.`);
-            await processarComoRobo(msg, numLimpo, texto, telefoneReal, nomeContato);
+            await processarComoRobo(msg, numLimpo, texto, telefoneReal, nomeContato, canal);
         } catch (e) {
             console.error('Erro no fallback de robô por timeout de horário:', e.message);
         }
