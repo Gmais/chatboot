@@ -186,6 +186,22 @@
                 </div>
             </div>
 
+            <div class="card glass" style="margin-top:1.5rem">
+                <h3 style="margin-bottom:.3rem">📶 Números de Envio (Disparo)</h3>
+                <p style="color:var(--text-3);font-size:.8rem;margin-bottom:1rem">Números extras, dedicados só a mandar Disparos — <strong>nunca respondem clientes</strong>. Isso tira do número principal o risco de ser bloqueado por alto volume de envio.</p>
+                <div id="disparo-numeros-lista" style="display:flex;flex-direction:column;gap:.5rem;margin-bottom:1rem"></div>
+                <div style="display:flex;gap:.6rem;align-items:center;flex-wrap:wrap">
+                    <input type="text" id="disparo-numero-nome" placeholder="Nome pra identificar (ex: Chip 2)" style="flex:1;min-width:200px;background:var(--input-bg);border:1px solid rgba(255,255,255,0.1);border-radius:var(--radius-sm);padding:.55rem .8rem;color:var(--text-1);font-size:.85rem">
+                    <button type="button" class="btn-primary" id="btn-disparo-numero-adicionar" style="padding:.55rem 1rem;font-size:.85rem">➕ Adicionar Número</button>
+                </div>
+            </div>
+
+            <div class="card glass" style="margin-top:1.5rem">
+                <h3 style="margin-bottom:.3rem">🔀 Roteamento por Campanha</h3>
+                <p style="color:var(--text-3);font-size:.8rem;margin-bottom:1rem">Escolha quais números de envio mandam cada tipo de mensagem (Campanha, definida em Mensagens Personalizadas). Nenhum marcado = usa todos os números conectados. 1 marcado = exclusivo desse número. 2+ marcados = revezam só entre eles.</p>
+                <div id="disparo-roteamento-lista" style="display:flex;flex-direction:column;gap:.6rem"></div>
+            </div>
+
             <!-- Estatísticas -->
             <div class="section-header" style="margin-top:1.5rem">
                 <h3>📊 Estatísticas</h3>
@@ -628,22 +644,6 @@
                     <span id="contatos-contador" style="color:var(--text-2);font-size:.85rem">0 contatos selecionados</span>
                     <button class="btn-primary" id="btn-usar-selecionados" style="padding:.5rem 1rem;font-size:.85rem">✅ Usar selecionados no disparo</button>
                 </div>
-            </div>
-
-            <div class="card glass" style="margin-bottom:1.5rem">
-                <h3 style="margin-bottom:.3rem">📶 Números de Envio (Disparo)</h3>
-                <p style="color:var(--text-3);font-size:.8rem;margin-bottom:1rem">Números extras, dedicados só a mandar Disparos — <strong>nunca respondem clientes</strong>. Isso tira do número principal o risco de ser bloqueado por alto volume de envio.</p>
-                <div id="disparo-numeros-lista" style="display:flex;flex-direction:column;gap:.5rem;margin-bottom:1rem"></div>
-                <div style="display:flex;gap:.6rem;align-items:center;flex-wrap:wrap">
-                    <input type="text" id="disparo-numero-nome" placeholder="Nome pra identificar (ex: Chip 2)" style="flex:1;min-width:200px;background:var(--input-bg);border:1px solid rgba(255,255,255,0.1);border-radius:var(--radius-sm);padding:.55rem .8rem;color:var(--text-1);font-size:.85rem">
-                    <button type="button" class="btn-primary" id="btn-disparo-numero-adicionar" style="padding:.55rem 1rem;font-size:.85rem">➕ Adicionar Número</button>
-                </div>
-            </div>
-
-            <div class="card glass" style="margin-bottom:1.5rem">
-                <h3 style="margin-bottom:.3rem">🔀 Roteamento por Campanha</h3>
-                <p style="color:var(--text-3);font-size:.8rem;margin-bottom:1rem">Escolha quais números de envio mandam cada tipo de mensagem (Campanha, definida em Mensagens Personalizadas). Nenhum marcado = usa todos os números conectados. 1 marcado = exclusivo desse número. 2+ marcados = revezam só entre eles.</p>
-                <div id="disparo-roteamento-lista" style="display:flex;flex-direction:column;gap:.6rem"></div>
             </div>
 
             <!-- MODAL: QR / PAIRING CODE DE UM NÚMERO DE ENVIO -->

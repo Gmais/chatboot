@@ -673,7 +673,11 @@ navBtns.forEach(btn => {
         // Título limpo (sem emojis de SVG)
         const text = btn.textContent.trim().split('\n')[0].trim();
         pageTitle.textContent = text;
-        if (targetId === 'dashboard-section') carregarEstatisticas();
+        if (targetId === 'dashboard-section') {
+            carregarEstatisticas();
+            loadDisparoNumeros();
+            loadDisparoRoteamento();
+        }
         if (targetId === 'mensagens-section') loadRegras();
         if (targetId === 'ia-section') { loadIaConfig(); loadIaExemplosContagem(); }
         if (targetId === 'configuracoes-section') { loadHorarioConfig(); loadDelayResposta(); loadProgramacoes(); }
@@ -694,8 +698,6 @@ navBtns.forEach(btn => {
             // ele usa o estado do servidor, não o valor local do campo.
             resetarFormularioDisparo();
             sincronizarEstadoDisparo();
-            loadDisparoNumeros();
-            loadDisparoRoteamento();
         }
         if (targetId === 'relatorio-section') { loadRelatorioErrosWhatsapp(); loadRelatorioSemCadastro(); }
     });
