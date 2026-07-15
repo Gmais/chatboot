@@ -2250,7 +2250,7 @@ function contratosLinhaHtml(c) {
     return `
         <div class="contato-row" data-id="${c.id}" style="display:flex;align-items:center;gap:.8rem;padding:.6rem .7rem;border-radius:8px">
             <div style="flex:1;min-width:0">
-                <div style="font-size:.88rem;color:var(--text-1);font-weight:500">${c.nome}</div>
+                <div class="contratos-linha-nome" style="font-size:.88rem;color:var(--text-1);font-weight:500">${c.nome}</div>
                 <div style="font-size:.75rem;color:var(--text-3)">Matrícula ${c.matricula}${c.telefone ? ` · ${c.telefone}` : ' · sem telefone no relatório'}</div>
             </div>
             <label style="display:flex;align-items:center;gap:.4rem;font-size:.78rem;color:var(--text-3);cursor:pointer;white-space:nowrap">
@@ -2317,6 +2317,15 @@ document.querySelectorAll('[id^="contratos-lista-"]').forEach(lista => {
         if (!chk) return;
         const linha = chk.closest('.contato-row');
         const consultora = lista.id.replace('contratos-lista-', '');
+        // Marcar como assinado tira o aluno da lista na hora e não tem
+        // "desmarcar" na tela — pedir confirmação evita perder um contato da
+        // lista por um clique errado (ex: clicando rápido demais numa lista longa).
+        if (!chk.checked) return;
+        const nomeAluno = linha.querySelector('.contratos-linha-nome')?.textContent || 'esse aluno';
+        if (!confirm(`Marcar "${nomeAluno}" como assinado? Ele sai da lista de pendentes.`)) {
+            chk.checked = false;
+            return;
+        }
         try {
             await fetch(`/api/relatorio/contratos-sem-assinar/${chk.dataset.id}/assinado`, { method: 'POST' });
             linha.remove();
