@@ -62,6 +62,8 @@ try {
 require('dotenv').config();
 const express = require('express');
 const http = require('http');
+const https = require('https');
+const { PDFParse } = require('pdf-parse');
 const { Server } = require('socket.io');
 const path = require('path');
 const os = require('os');
@@ -426,6 +428,22 @@ async function initDB() {
             enviado_em DATETIME DEFAULT CURRENT_TIMESTAMP
         );
         CREATE INDEX IF NOT EXISTS idx_disparo_envios_log_ts ON disparo_envios_log(enviado_em);
+        -- Relatório "Contratos Sem Assinar": lista importada de um PDF do Pacto
+        -- (um link por consultora), com checkbox "Assinado" que tira da lista.
+        -- UNIQUE(consultora, matricula) permite reimportar a mesma lista sem
+        -- duplicar quem já está lá (idempotente) nem perder quem já foi marcado.
+        CREATE TABLE IF NOT EXISTS contratos_sem_assinar (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            consultora TEXT NOT NULL,
+            nome TEXT NOT NULL,
+            matricula TEXT NOT NULL,
+            telefone TEXT,
+            assinado INTEGER DEFAULT 0,
+            assinado_em DATETIME,
+            criado_em DATETIME DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(consultora, matricula)
+        );
+        CREATE INDEX IF NOT EXISTS idx_contratos_sem_assinar_consultora ON contratos_sem_assinar(consultora, assinado);
         -- Números de WhatsApp extras, dedicados só a mandar Disparos em massa
         -- (nunca respondem ninguém) — reduz o risco de o número principal ser
         -- banido pelo alto volume de envio. Cada linha vira uma sessão própria
@@ -1994,6 +2012,155 @@ app.post('/api/relatorio/dispensar', async (req, res) => {
                 [tipo, motivo, telefone]
             );
         }
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// =====================================
+// RELATÓRIO — CONTRATOS SEM ASSINAR (importado de PDF do Pacto)
+// =====================================
+// Cada consultora tem seu próprio relatório "Sem Assinatura de Contrato" no
+// Pacto, exportado como link de PDF temporário — ela cola esse link aqui e a
+// gente baixa/lê o PDF sozinho, sem precisar digitar aluno por aluno.
+const CONTRATOS_CONSULTORAS_VALIDAS = ['juliana', 'isadora'];
+
+// Só aceita baixar PDF do próprio domínio do Pacto — sem essa checagem, esse
+// endpoint vira um "baixador de URL genérico" que aceitaria qualquer link
+// (risco de SSRF: alguém usar esse formulário pra fazer o servidor buscar uma
+// URL arbitrária, inclusive endereços internos da rede do Railway).
+const CONTRATOS_PDF_HOST_PERMITIDO = /(^|\.)pactosolucoes\.com\.br$/i;
+const CONTRATOS_PDF_TAMANHO_MAX = 15 * 1024 * 1024; // 15MB — relatório é só texto, sobra bastante margem
+
+function baixarPdfDoPacto(url) {
+    return new Promise((resolve, reject) => {
+        let parsed;
+        try { parsed = new URL(url); } catch (_) { return reject(new Error('Link inválido.')); }
+        if (parsed.protocol !== 'https:' || !CONTRATOS_PDF_HOST_PERMITIDO.test(parsed.hostname)) {
+            return reject(new Error('Só aceito links do próprio pactosolucoes.com.br.'));
+        }
+        const req = https.get(parsed, { timeout: 20000 }, (res) => {
+            if (res.statusCode < 200 || res.statusCode >= 300) {
+                res.resume();
+                return reject(new Error(`Pacto devolveu HTTP ${res.statusCode} pra esse link — confira se ele ainda não expirou.`));
+            }
+            const chunks = [];
+            let tamanho = 0;
+            res.on('data', (chunk) => {
+                tamanho += chunk.length;
+                if (tamanho > CONTRATOS_PDF_TAMANHO_MAX) {
+                    req.destroy(new Error('Arquivo maior do que o esperado pra esse relatório.'));
+                    return;
+                }
+                chunks.push(chunk);
+            });
+            res.on('end', () => resolve(Buffer.concat(chunks)));
+        });
+        req.on('error', reject);
+        req.on('timeout', () => req.destroy(new Error('Demorou demais pra baixar o PDF do Pacto.')));
+    });
+}
+
+// Telefone da célula pode vir com vários números separados por ";" (aluno com
+// vários contratos, cada um com seu telefone) e às vezes quebrado no meio por
+// causa da quebra de linha do PDF (ex: "(4\n2)999..."). Junta as quebras de
+// linha primeiro, depois testa cada candidato separado por ";" e fica com o
+// primeiro que render um telefone BR válido (10 ou 11 dígitos). Quando o
+// próprio relatório do Pacto exporta o número truncado (acontece, é limitação
+// da fonte, não do parser), fica sem telefone em vez de inventar um número errado.
+function extrairTelefoneDaCelula(celula) {
+    if (!celula) return null;
+    const semQuebraDeLinha = celula.replace(/\r?\n/g, '');
+    const candidatos = semQuebraDeLinha.split(';').map(s => s.trim()).filter(Boolean);
+    for (const candidato of candidatos) {
+        const digitos = candidato.replace(/\D/g, '');
+        if (digitos.length === 10 || digitos.length === 11) return digitos;
+    }
+    return null;
+}
+
+// O nome sai quebrado em duas linhas na célula da tabela (nome + sobrenome
+// visualmente empilhados no PDF) — vira uma só, com espaço normal.
+function limparNomeDaCelula(celula) {
+    return (celula || '').replace(/\r?\n/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+async function parsearContratosSemAssinarPdf(buffer) {
+    const parser = new PDFParse({ data: buffer });
+    let tabelaResultado;
+    try {
+        tabelaResultado = await parser.getTable();
+    } finally {
+        await parser.destroy();
+    }
+    const contatos = [];
+    for (const pagina of tabelaResultado.pages || []) {
+        for (const tabela of pagina.tables || []) {
+            for (const linha of tabela) {
+                // Primeira coluna é o "#" sequencial — cabeçalho repete em toda
+                // página ("#", "Nome", "Matrícula"...), pula essas.
+                if (!linha[0] || !/^\d+$/.test(linha[0].trim())) continue;
+                const nome = limparNomeDaCelula(linha[1]);
+                const matricula = (linha[2] || '').trim();
+                if (!nome || !matricula) continue;
+                const telefone = extrairTelefoneDaCelula(linha[8]);
+                contatos.push({ nome, matricula, telefone });
+            }
+        }
+    }
+    return contatos;
+}
+
+app.post('/api/relatorio/contratos-sem-assinar/importar', async (req, res) => {
+    const { consultora, url } = req.body;
+    if (!CONTRATOS_CONSULTORAS_VALIDAS.includes(consultora)) return res.status(400).json({ error: 'Consultora inválida.' });
+    if (!url) return res.status(400).json({ error: 'Cole o link do relatório antes de importar.' });
+    try {
+        const buffer = await baixarPdfDoPacto(url);
+        const contatos = await parsearContratosSemAssinarPdf(buffer);
+        if (contatos.length === 0) return res.status(400).json({ error: 'Não encontrei nenhum contato nesse PDF — confira se o link é do relatório certo.' });
+
+        let semTelefone = 0;
+        for (const c of contatos) {
+            if (!c.telefone) semTelefone++;
+            // ON CONFLICT + WHERE assinado=0: reimportar a mesma lista atualiza
+            // nome/telefone de quem ainda está pendente, mas nunca "ressuscita"
+            // quem já foi marcado como Assinado (a linha existe, o UPDATE só não
+            // se aplica por causa do WHERE, então o assinado=1 nunca é mexido).
+            await db.run(
+                `INSERT INTO contratos_sem_assinar (consultora, nome, matricula, telefone) VALUES (?, ?, ?, ?)
+                 ON CONFLICT(consultora, matricula) DO UPDATE SET nome = excluded.nome, telefone = excluded.telefone
+                 WHERE contratos_sem_assinar.assinado = 0`,
+                [consultora, c.nome, c.matricula, c.telefone]
+            );
+        }
+        const totalAgora = await db.get('SELECT COUNT(*) AS n FROM contratos_sem_assinar WHERE consultora = ? AND assinado = 0', consultora);
+        io.emit('contratos_sem_assinar_atualizados', { consultora });
+        res.json({ success: true, total_no_pdf: contatos.length, sem_telefone: semTelefone, total_pendente: totalAgora.n });
+    } catch (err) {
+        console.error(`Erro ao importar Contratos Sem Assinar (${consultora}):`, err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.get('/api/relatorio/contratos-sem-assinar', async (req, res) => {
+    const { consultora } = req.query;
+    if (!CONTRATOS_CONSULTORAS_VALIDAS.includes(consultora)) return res.status(400).json({ error: 'Consultora inválida.' });
+    try {
+        const lista = await db.all(
+            'SELECT id, nome, matricula, telefone FROM contratos_sem_assinar WHERE consultora = ? AND assinado = 0 ORDER BY nome ASC',
+            consultora
+        );
+        res.json(lista);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.post('/api/relatorio/contratos-sem-assinar/:id/assinado', async (req, res) => {
+    try {
+        await db.run('UPDATE contratos_sem_assinar SET assinado = 1, assinado_em = CURRENT_TIMESTAMP WHERE id = ?', req.params.id);
         res.json({ success: true });
     } catch (err) {
         res.status(500).json({ error: err.message });
