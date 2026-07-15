@@ -699,7 +699,7 @@ navBtns.forEach(btn => {
             resetarFormularioDisparo();
             sincronizarEstadoDisparo();
         }
-        if (targetId === 'relatorio-section') { loadRelatorioErrosWhatsapp(); loadRelatorioSemCadastro(); loadContratosSemAssinar('juliana'); loadContratosSemAssinar('isadora'); }
+        if (targetId === 'relatorio-section') { loadRelatorioErrosWhatsapp(); loadRelatorioSemCadastro(); }
     });
 });
 
@@ -2236,127 +2236,6 @@ relatorioSemCadastroLista?.addEventListener('click', async (e) => {
     if (!nomeEl) return;
     if (todosContatos.length === 0) await loadContatos();
     abrirEditarContato(nomeEl.dataset.telefone);
-});
-
-// =====================================
-// RELATÓRIO — CONTRATOS SEM ASSINAR
-// =====================================
-// Guarda a última lista carregada de cada consultora — o botão "Exportar pra
-// Disparo" usa esse cache em vez de buscar de novo, já que a lista acabou de
-// ser exibida na tela de qualquer forma.
-const contratosSemAssinarCache = { juliana: [], isadora: [] };
-
-function contratosLinhaHtml(c) {
-    return `
-        <div class="contato-row" data-id="${c.id}" style="display:flex;align-items:center;gap:.8rem;padding:.6rem .7rem;border-radius:8px">
-            <div style="flex:1;min-width:0">
-                <div style="font-size:.88rem;color:var(--text-1);font-weight:500">${c.nome}</div>
-                <div style="font-size:.75rem;color:var(--text-3)">Matrícula ${c.matricula}${c.telefone ? ` · ${c.telefone}` : ' · sem telefone no relatório'}</div>
-            </div>
-            <label style="display:flex;align-items:center;gap:.4rem;font-size:.78rem;color:var(--text-3);cursor:pointer;white-space:nowrap">
-                <input type="checkbox" class="contratos-assinado-check" data-id="${c.id}" style="accent-color:var(--green);width:16px;height:16px">
-                Assinado
-            </label>
-        </div>
-    `;
-}
-
-async function loadContratosSemAssinar(consultora) {
-    const lista = document.getElementById(`contratos-lista-${consultora}`);
-    const contador = document.getElementById(`contratos-count-${consultora}`);
-    if (!lista) return;
-    try {
-        const res = await fetch(`/api/relatorio/contratos-sem-assinar?consultora=${consultora}`);
-        const dados = await res.json();
-        contratosSemAssinarCache[consultora] = dados;
-        if (contador) contador.textContent = dados.length ? `(${dados.length} pendente${dados.length > 1 ? 's' : ''})` : '';
-        lista.innerHTML = dados.length
-            ? dados.map(contratosLinhaHtml).join('')
-            : '<p style="color:var(--text-3);text-align:center;padding:1.5rem">Nenhum contrato pendente. 🎉</p>';
-    } catch (e) {
-        lista.innerHTML = '<p style="color:var(--text-3);text-align:center;padding:1.5rem">Erro ao carregar.</p>';
-    }
-}
-
-document.querySelectorAll('.btn-contratos-importar').forEach(btn => {
-    btn.addEventListener('click', async () => {
-        const consultora = btn.dataset.consultora;
-        const input = document.getElementById(`contratos-url-${consultora}`);
-        const url = (input?.value || '').trim();
-        if (!url) {
-            showToast('Cole o link', 'Cole o link do relatório em PDF antes de importar.', 'error');
-            return;
-        }
-        const textoOriginal = btn.textContent;
-        btn.disabled = true;
-        btn.textContent = '⏳ Importando...';
-        try {
-            const res = await fetch('/api/relatorio/contratos-sem-assinar/importar', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ consultora, url })
-            });
-            const data = await res.json();
-            if (!res.ok) throw new Error(data.error || 'Erro ao importar lista');
-            if (input) input.value = '';
-            await loadContratosSemAssinar(consultora);
-            const avisoSemTelefone = data.sem_telefone > 0 ? ` (${data.sem_telefone} sem telefone legível no PDF)` : '';
-            showToast('Lista importada!', `${data.total_no_pdf} contato(s) no relatório${avisoSemTelefone}.`, 'success', 4000);
-        } catch (err) {
-            showToast('Erro ao importar', err.message, 'error');
-        } finally {
-            btn.disabled = false;
-            btn.textContent = textoOriginal;
-        }
-    });
-});
-
-document.querySelectorAll('[id^="contratos-lista-"]').forEach(lista => {
-    lista.addEventListener('change', async (e) => {
-        const chk = e.target.closest('.contratos-assinado-check');
-        if (!chk) return;
-        const linha = chk.closest('.contato-row');
-        const consultora = lista.id.replace('contratos-lista-', '');
-        try {
-            await fetch(`/api/relatorio/contratos-sem-assinar/${chk.dataset.id}/assinado`, { method: 'POST' });
-            linha.remove();
-            contratosSemAssinarCache[consultora] = contratosSemAssinarCache[consultora].filter(c => String(c.id) !== chk.dataset.id);
-            const contador = document.getElementById(`contratos-count-${consultora}`);
-            const restantes = contratosSemAssinarCache[consultora].length;
-            if (contador) contador.textContent = restantes ? `(${restantes} pendente${restantes > 1 ? 's' : ''})` : '';
-            if (restantes === 0) loadContratosSemAssinar(consultora);
-            showToast('Assinado!', '', 'success', 2000);
-        } catch (err) {
-            chk.checked = false;
-            showToast('Erro', 'Não foi possível marcar como assinado.', 'error');
-        }
-    });
-});
-
-document.querySelectorAll('.btn-contratos-exportar').forEach(btn => {
-    btn.addEventListener('click', () => {
-        const consultora = btn.dataset.consultora;
-        const contatos = contratosSemAssinarCache[consultora] || [];
-        const telefones = contatos.filter(c => c.telefone).map(c => c.telefone);
-        if (telefones.length === 0) {
-            showToast('Nada pra exportar', 'Nenhum contato pendente com telefone legível.', 'error');
-            return;
-        }
-        // Muda pra tela de Disparos primeiro — o próprio clique no menu já limpa
-        // o formulário (resetarFormularioDisparo), então só preenche o campo de
-        // números DEPOIS de disparar esse clique, senão a limpeza apaga o que
-        // acabamos de colocar.
-        document.querySelector('.nav-btn[data-target="disparos-section"]')?.click();
-        const broadcastNumerosEl = document.getElementById('broadcast-numeros');
-        if (broadcastNumerosEl) broadcastNumerosEl.value = telefones.join('\n');
-        const semTelefone = contatos.length - telefones.length;
-        showToast(
-            'Números exportados!',
-            `${telefones.length} número(s) inserido(s) no Disparo${semTelefone > 0 ? ` (${semTelefone} sem telefone ficaram de fora)` : ''}. Agora escolha a mensagem.`,
-            'success', 4500
-        );
-        document.getElementById('broadcast-mensagem-personalizada')?.focus();
-    });
 });
 
 contatosPageTableBody?.addEventListener('click', async (e) => {
@@ -4894,12 +4773,6 @@ socket.on('automacoes_atualizadas', () => {
     }
     if (contatosEtiquetaAutomacaoId && modalContatosEtiqueta?.classList.contains('open')) {
         carregarContatosComEtiqueta();
-    }
-});
-
-socket.on('contratos_sem_assinar_atualizados', ({ consultora }) => {
-    if (document.getElementById('relatorio-section') && !document.getElementById('relatorio-section').classList.contains('hidden')) {
-        loadContratosSemAssinar(consultora);
     }
 });
 
