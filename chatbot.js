@@ -3854,11 +3854,14 @@ function iniciarBroadcast(job) {
 }
 
 app.post('/api/broadcast/start', upload.single('media'), async (req, res) => {
-    // Disparo nunca usa o client principal — só o pool de Números de Envio,
-    // dedicados a isso (ver POOL DE NÚMEROS PARA DISPARO). Se nenhum estiver
-    // conectado, nem entra na fila: teria que aguardar pra sempre.
+    // Disparo é feito pelo pool de Números de Envio, dedicados a isso (ver
+    // POOL DE NÚMEROS PARA DISPARO). TEMPORÁRIO (pedido do usuário): nesse
+    // primeiro momento, enquanto o pool ainda está sendo montado, o
+    // principal também libera o Disparo — ver mesmo fallback em
+    // proximoClienteDoPool. Remover o "|| isConnected" assim que o pool
+    // tiver números suficientes conectados.
     const algumPoolConectado = [...poolClients.values()].some(e => e.status === 'connected');
-    if (!algumPoolConectado) {
+    if (!algumPoolConectado && !isConnected) {
         return res.status(400).json({ error: 'Nenhum número de disparo conectado. Conecte pelo menos um em "Números de Envio" antes de disparar.' });
     }
 
@@ -5089,12 +5092,21 @@ async function reidratarPoolNaInicializacao() {
 // um subconjunto (roteamento por campanha, ver /api/broadcast/start).
 let poolRoundRobinIdx = 0;
 function proximoClienteDoPool(idsPermitidos) {
-    let conectados = [...poolClients.values()].filter(e => e.status === 'connected');
+    let candidatos = [...poolClients.values()].filter(e => e.status === 'connected');
     if (Array.isArray(idsPermitidos) && idsPermitidos.length > 0) {
-        conectados = conectados.filter(e => idsPermitidos.includes(e.dbId));
+        // Roteamento explícito pra essa campanha — respeita à risca, sem
+        // incluir o principal mesmo na fase de transição abaixo.
+        candidatos = candidatos.filter(e => idsPermitidos.includes(e.dbId));
+    } else if (isConnected) {
+        // TEMPORÁRIO (pedido do usuário): enquanto o pool de números de
+        // envio ainda está sendo montado, o principal também entra no
+        // rodízio das campanhas SEM roteamento restrito — só pra não travar
+        // o Disparo nesse primeiro momento. Remover este "else if" assim
+        // que o pool tiver números suficientes conectados.
+        candidatos = [...candidatos, { dbId: null, nome: 'Principal', client }];
     }
-    if (conectados.length === 0) return null;
-    const escolhido = conectados[poolRoundRobinIdx % conectados.length];
+    if (candidatos.length === 0) return null;
+    const escolhido = candidatos[poolRoundRobinIdx % candidatos.length];
     poolRoundRobinIdx++;
     return escolhido;
 }
