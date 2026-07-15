@@ -3898,35 +3898,44 @@ async function listarConversasComEtiquetas() {
             FROM conversas
             WHERE nome GLOB '*[^0-9]*'
             GROUP BY telefone
+        ),
+        base AS (
+            SELECT
+                c.telefone,
+                COALESCE(mn.nome, c.nome) AS nome,
+                c.texto AS ultimo_texto,
+                c.direcao AS ultima_direcao,
+                c.tipo AS ultimo_tipo,
+                c.ts AS ultimo_ts,
+                (SELECT COUNT(*) FROM conversas WHERE telefone = c.telefone AND lida = 0 AND direcao = 'in') AS nao_lidas,
+                (CASE WHEN ch.telefone IS NULL THEN 0 ELSE 1 END) AS assumida_humano,
+                COALESCE(cs.status, 'aberta') AS status,
+                COALESCE(c.canal, 'whatsapp') AS canal
+            FROM conversas c
+            INNER JOIN (
+                SELECT la.telefone, COALESCE(lr.max_ts, la.max_ts) AS max_ts
+                FROM latest_any la
+                LEFT JOIN latest_real lr ON lr.telefone = la.telefone
+            ) latest ON c.telefone = latest.telefone AND c.ts = latest.max_ts
+            LEFT JOIN (
+                SELECT cn.telefone, cn.nome
+                FROM conversas cn
+                INNER JOIN melhor_nome mnn ON mnn.telefone = cn.telefone AND mnn.max_ts = cn.ts
+                GROUP BY cn.telefone
+            ) mn ON mn.telefone = c.telefone
+            LEFT JOIN conversas_humano ch ON ch.telefone = c.telefone
+            LEFT JOIN conversas_status cs ON cs.telefone = c.telefone
+            GROUP BY c.telefone
         )
-        SELECT
-            c.telefone,
-            COALESCE(mn.nome, c.nome) AS nome,
-            c.texto AS ultimo_texto,
-            c.direcao AS ultima_direcao,
-            c.tipo AS ultimo_tipo,
-            c.ts AS ultimo_ts,
-            (SELECT COUNT(*) FROM conversas WHERE telefone = c.telefone AND lida = 0 AND direcao = 'in') AS nao_lidas,
-            (CASE WHEN ch.telefone IS NULL THEN 0 ELSE 1 END) AS assumida_humano,
-            COALESCE(cs.status, 'aberta') AS status,
-            COALESCE(c.canal, 'whatsapp') AS canal
-        FROM conversas c
-        INNER JOIN (
-            SELECT la.telefone, COALESCE(lr.max_ts, la.max_ts) AS max_ts
-            FROM latest_any la
-            LEFT JOIN latest_real lr ON lr.telefone = la.telefone
-        ) latest ON c.telefone = latest.telefone AND c.ts = latest.max_ts
-        LEFT JOIN (
-            SELECT cn.telefone, cn.nome
-            FROM conversas cn
-            INNER JOIN melhor_nome mnn ON mnn.telefone = cn.telefone AND mnn.max_ts = cn.ts
-            GROUP BY cn.telefone
-        ) mn ON mn.telefone = c.telefone
-        LEFT JOIN conversas_humano ch ON ch.telefone = c.telefone
-        LEFT JOIN conversas_status cs ON cs.telefone = c.telefone
-        GROUP BY c.telefone
-        ORDER BY c.ts DESC
-        LIMIT 200
+        -- O corte de 200 só vale pras conversas JÁ FECHADAS (histórico, menos
+        -- urgente) — uma "Aberta" nunca pode ficar de fora, senão ela some da
+        -- lista pro atendente mesmo tendo mensagem não lida de verdade (foi
+        -- exatamente o bug relatado: com mais de 200 conversas no total, mais
+        -- da metade sumia da tela a cada refresh/reconexão, aberta ou não).
+        SELECT * FROM base WHERE status = 'aberta'
+        UNION ALL
+        SELECT * FROM (SELECT * FROM base WHERE status != 'aberta' ORDER BY ultimo_ts DESC LIMIT 200)
+        ORDER BY ultimo_ts DESC
     `);
 
     const etiquetasRows = await db.all(`

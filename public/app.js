@@ -3168,6 +3168,18 @@ const CM = (() => {
     let activeTab = 'aberta'; // 'aberta' | 'fechada'
     let notifMuted = localStorage.getItem('chatNotifMuted') === '1';
 
+    // ---- Corrida entre loadHistory (busca no banco) e mensagem ao vivo ----
+    // loadHistory busca o histórico no banco; se uma mensagem nova chegar via
+    // socket ENQUANTO essa busca ainda está no ar, a busca não inclui ela
+    // (rodou antes dela existir) — quando a resposta chega e substitui
+    // chatMessages.innerHTML, a bolha que acabou de ser adicionada ao vivo
+    // some da tela, mesmo a mensagem estando salva certinho no banco. Guarda
+    // um token pra descartar respostas desatualizadas, e um buffer pra
+    // reaplicar por cima qualquer mensagem ao vivo que chegou durante a busca.
+    let cargaHistoricoToken = 0;
+    let cargaHistoricoTelefone = null;
+    let mensagensAoVivoDuranteCarga = [];
+
     // ---- Referências DOM ----
     const contactList    = document.getElementById('chat-contact-list');
     const chatEmpty      = document.getElementById('chat-list-empty');
@@ -3502,26 +3514,52 @@ const CM = (() => {
     // ---- Carrega e exibe histórico de mensagens ----
     async function loadHistory(telefone) {
         if (!chatMessages) return;
+        const meuToken = ++cargaHistoricoToken;
+        cargaHistoricoTelefone = telefone;
+        mensagensAoVivoDuranteCarga = [];
         try {
             const res  = await fetch(`/api/conversas/${encodeURIComponent(telefone)}?limit=150`);
             const msgs = await res.json();
 
+            // Se o usuário já trocou de conversa (ou reabriu essa de novo)
+            // enquanto esse fetch estava no ar, essa resposta é velha —
+            // aplicar ela agora sobrescreveria a conversa certa com dado
+            // desatualizado.
+            if (meuToken !== cargaHistoricoToken || activePhone !== telefone) return;
+
             chatMessages.innerHTML = '';
             if (!msgs || msgs.length === 0) {
                 chatMessages.innerHTML = '<div style="text-align:center;color:var(--text-3);padding:3rem;font-size:.82rem">Nenhuma mensagem ainda.</div>';
-                return;
+            } else {
+                let lastDate = null;
+                msgs.forEach(m => {
+                    // Separador de data
+                    const dateSep = formatDataSep(m.ts);
+                    if (dateSep !== lastDate) {
+                        const sep = document.createElement('div');
+                        sep.className = 'chat-date-sep';
+                        sep.textContent = dateSep;
+                        chatMessages.appendChild(sep);
+                        lastDate = dateSep;
+                    }
+                    appendBubble(m);
+                });
             }
 
-            let lastDate = null;
-            msgs.forEach(m => {
-                // Separador de data
+            // Qualquer mensagem que chegou AO VIVO (via socket) enquanto esse
+            // fetch estava em andamento não está em "msgs" (a busca no banco
+            // rodou antes dela existir) — reaplica por cima, na ordem que
+            // chegaram, senão ela simplesmente some da tela (o dado tá salvo
+            // certinho no banco, só não aparece nessa conversa aberta).
+            mensagensAoVivoDuranteCarga.forEach(m => {
                 const dateSep = formatDataSep(m.ts);
-                if (dateSep !== lastDate) {
+                const seps = chatMessages.querySelectorAll('.chat-date-sep');
+                const lastSep = seps[seps.length - 1];
+                if (!lastSep || lastSep.textContent !== dateSep) {
                     const sep = document.createElement('div');
                     sep.className = 'chat-date-sep';
                     sep.textContent = dateSep;
                     chatMessages.appendChild(sep);
-                    lastDate = dateSep;
                 }
                 appendBubble(m);
             });
@@ -3529,7 +3567,10 @@ const CM = (() => {
             // Scrolla para o fundo
             chatMessages.scrollTop = chatMessages.scrollHeight;
         } catch(err) {
+            if (meuToken !== cargaHistoricoToken || activePhone !== telefone) return;
             chatMessages.innerHTML = '<div style="text-align:center;color:var(--red);padding:2rem;font-size:.82rem">Erro ao carregar histórico.</div>';
+        } finally {
+            if (cargaHistoricoTelefone === telefone) cargaHistoricoTelefone = null;
         }
     }
 
@@ -3829,6 +3870,12 @@ const CM = (() => {
             renderContactList();
 
             if (data.direcao === 'in' && activePhone !== data.telefone) tocarNotificacao();
+
+            // Se um loadHistory pra esse mesmo contato ainda está no ar, essa
+            // mensagem chegou depois da busca no banco ter rodado — quando a
+            // resposta (desatualizada) chegar e limpar chatMessages, ela
+            // precisa ser reaplicada por cima, senão some da tela (ver loadHistory).
+            if (cargaHistoricoTelefone === data.telefone) mensagensAoVivoDuranteCarga.push(data);
 
             // Se é a conversa ativa, adiciona a bolha
             if (activePhone === data.telefone && chatMessages && chatMessages.style.display !== 'none') {
