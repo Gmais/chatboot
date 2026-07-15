@@ -694,6 +694,8 @@ navBtns.forEach(btn => {
             // ele usa o estado do servidor, não o valor local do campo.
             resetarFormularioDisparo();
             sincronizarEstadoDisparo();
+            loadDisparoNumeros();
+            loadDisparoRoteamento();
         }
         if (targetId === 'relatorio-section') { loadRelatorioErrosWhatsapp(); loadRelatorioSemCadastro(); }
     });
@@ -2505,6 +2507,231 @@ broadcastMensagemSelect?.addEventListener('change', () => {
     if (m.media_path && broadcastMensagemAviso) broadcastMensagemAviso.style.display = 'block';
 });
 
+// =====================================
+// NÚMEROS DE ENVIO (POOL DE DISPARO) + ROTEAMENTO POR CAMPANHA
+// =====================================
+const disparoNumerosLista = document.getElementById('disparo-numeros-lista');
+const disparoNumeroNomeInput = document.getElementById('disparo-numero-nome');
+const btnDisparoNumeroAdicionar = document.getElementById('btn-disparo-numero-adicionar');
+const disparoRoteamentoLista = document.getElementById('disparo-roteamento-lista');
+const modalDisparoNumeroQr = document.getElementById('modal-disparo-numero-qr-overlay');
+const disparoNumeroQrTitulo = document.getElementById('modal-disparo-numero-qr-titulo');
+const disparoNumeroQrIdInput = document.getElementById('disparo-numero-qr-id');
+const disparoNumeroQrImagem = document.getElementById('disparo-numero-qr-imagem');
+const disparoNumeroPairingTelefone = document.getElementById('disparo-numero-pairing-telefone');
+const btnDisparoNumeroPairing = document.getElementById('btn-disparo-numero-pairing');
+const disparoNumeroPairingResultado = document.getElementById('disparo-numero-pairing-resultado');
+
+let disparoNumerosCache = [];
+let disparoRoteamentoCache = {};
+
+const DISPARO_NUMERO_STATUS_LABEL = {
+    dormant: { texto: 'Não conectado', cor: 'var(--text-3)' },
+    initializing: { texto: 'Conectando...', cor: 'var(--amber)' },
+    qr: { texto: 'Aguardando QR', cor: 'var(--amber)' },
+    connected: { texto: 'Online', cor: 'var(--green)' },
+    disconnected: { texto: 'Desconectado', cor: 'var(--red)' },
+};
+
+function renderDisparoNumerosLista() {
+    if (!disparoNumerosLista) return;
+    if (disparoNumerosCache.length === 0) {
+        disparoNumerosLista.innerHTML = '<p style="color:var(--text-3);font-size:.82rem;text-align:center;padding:1rem">Nenhum número de envio cadastrado ainda.</p>';
+        return;
+    }
+    disparoNumerosLista.innerHTML = disparoNumerosCache.map(n => {
+        const statusInfo = DISPARO_NUMERO_STATUS_LABEL[n.status] || DISPARO_NUMERO_STATUS_LABEL.dormant;
+        const podeConectar = n.status === 'dormant' || n.status === 'disconnected';
+        const podeDesconectar = n.status === 'connected';
+        return `
+            <div class="disparo-numero-row" data-id="${n.id}" style="display:flex;align-items:center;gap:.7rem;padding:.6rem;background:rgba(255,255,255,0.03);border-radius:8px;flex-wrap:wrap">
+                <div style="flex:1;min-width:140px">
+                    <div style="font-size:.88rem;color:var(--text-1);font-weight:500">${n.nome}</div>
+                    <div style="font-size:.75rem;color:${statusInfo.cor}">● ${statusInfo.texto}${n.numeroConectado ? ` (${n.numeroConectado})` : ''}</div>
+                </div>
+                ${podeConectar ? `<button type="button" class="btn-secondary btn-disparo-numero-conectar" data-id="${n.id}" data-nome="${n.nome}" style="padding:.4rem .7rem;font-size:.75rem">📲 Conectar</button>` : ''}
+                ${podeDesconectar ? `<button type="button" class="btn-secondary btn-disparo-numero-desconectar" data-id="${n.id}" style="padding:.4rem .7rem;font-size:.75rem">⏸️ Desconectar</button>` : ''}
+                <button type="button" class="btn-danger btn-disparo-numero-remover" data-id="${n.id}" data-nome="${n.nome}" style="padding:.4rem .6rem;font-size:.75rem" title="Remover de vez">🗑️</button>
+            </div>
+        `;
+    }).join('');
+}
+
+async function loadDisparoNumeros() {
+    if (!disparoNumerosLista) return;
+    try {
+        const res = await fetch('/api/disparo-numeros');
+        disparoNumerosCache = await res.json();
+        renderDisparoNumerosLista();
+        renderDisparoRoteamentoLista();
+    } catch (e) {
+        console.error('Erro ao carregar números de envio', e);
+    }
+}
+
+async function loadDisparoRoteamento() {
+    if (!disparoRoteamentoLista) return;
+    try {
+        const res = await fetch('/api/disparo-roteamento');
+        disparoRoteamentoCache = await res.json();
+        renderDisparoRoteamentoLista();
+    } catch (e) {
+        console.error('Erro ao carregar roteamento de disparo', e);
+    }
+}
+
+function renderDisparoRoteamentoLista() {
+    if (!disparoRoteamentoLista) return;
+    if (disparoNumerosCache.length === 0) {
+        disparoRoteamentoLista.innerHTML = '<p style="color:var(--text-3);font-size:.82rem;text-align:center;padding:1rem">Cadastre pelo menos um número de envio pra configurar o roteamento.</p>';
+        return;
+    }
+    disparoRoteamentoLista.innerHTML = Object.entries(CAMPANHAS_INFO).map(([chave, info]) => {
+        const selecionados = disparoRoteamentoCache[chave] || [];
+        return `
+            <div class="disparo-roteamento-row" data-campanha="${chave}" style="display:flex;align-items:center;gap:.8rem;flex-wrap:wrap;padding:.5rem 0;border-bottom:1px solid rgba(255,255,255,0.05)">
+                <span style="min-width:180px;font-size:.85rem;color:var(--text-1)">${info.icon} ${info.label}</span>
+                <div style="display:flex;gap:.8rem;flex-wrap:wrap">
+                    ${disparoNumerosCache.map(n => `
+                        <label style="display:flex;align-items:center;gap:.3rem;cursor:pointer;font-size:.8rem;color:var(--text-2)">
+                            <input type="checkbox" class="disparo-roteamento-check" data-campanha="${chave}" data-numero-id="${n.id}" ${selecionados.includes(n.id) ? 'checked' : ''} style="accent-color:var(--green)">
+                            ${n.nome}
+                        </label>
+                    `).join('')}
+                </div>
+            </div>
+        `;
+    }).join('');
+}
+
+disparoRoteamentoLista?.addEventListener('change', async (e) => {
+    const check = e.target.closest('.disparo-roteamento-check');
+    if (!check) return;
+    const campanha = check.dataset.campanha;
+    const row = check.closest('.disparo-roteamento-row');
+    const idsMarcados = [...row.querySelectorAll('.disparo-roteamento-check:checked')].map(c => Number(c.dataset.numeroId));
+    disparoRoteamentoCache[campanha] = idsMarcados;
+    try {
+        await fetch(`/api/disparo-roteamento/${campanha}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ numeros_ids: idsMarcados }),
+        });
+    } catch (err) {
+        showToast('Erro', 'Não foi possível salvar o roteamento.', 'error');
+    }
+});
+
+btnDisparoNumeroAdicionar?.addEventListener('click', async () => {
+    const nome = (disparoNumeroNomeInput?.value || '').trim();
+    if (!nome) { showToast('Erro', 'Digite um nome pro número.', 'error'); return; }
+    try {
+        const res = await fetch('/api/disparo-numeros', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ nome }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Erro ao adicionar número');
+        if (disparoNumeroNomeInput) disparoNumeroNomeInput.value = '';
+        await loadDisparoNumeros();
+        showToast('Número adicionado!', 'Clique em "Conectar" pra escanear o QR Code.', 'success');
+    } catch (e) {
+        showToast('Erro', e.message, 'error');
+    }
+});
+
+function abrirModalDisparoNumeroQr(id, nome) {
+    if (disparoNumeroQrIdInput) disparoNumeroQrIdInput.value = id;
+    if (disparoNumeroQrTitulo) disparoNumeroQrTitulo.textContent = `📲 Conectar — ${nome}`;
+    if (disparoNumeroQrImagem) disparoNumeroQrImagem.innerHTML = '<span style="color:var(--text-3);font-size:.85rem">⏳ Gerando QR Code...</span>';
+    if (disparoNumeroPairingResultado) disparoNumeroPairingResultado.textContent = '';
+    if (disparoNumeroPairingTelefone) disparoNumeroPairingTelefone.value = '';
+    modalDisparoNumeroQr?.classList.add('open');
+}
+
+document.getElementById('modal-disparo-numero-qr-fechar')?.addEventListener('click', () => modalDisparoNumeroQr?.classList.remove('open'));
+modalDisparoNumeroQr?.addEventListener('click', (e) => { if (e.target === modalDisparoNumeroQr) modalDisparoNumeroQr.classList.remove('open'); });
+
+disparoNumerosLista?.addEventListener('click', async (e) => {
+    const btnConectar = e.target.closest('.btn-disparo-numero-conectar');
+    const btnDesconectar = e.target.closest('.btn-disparo-numero-desconectar');
+    const btnRemover = e.target.closest('.btn-disparo-numero-remover');
+
+    if (btnConectar) {
+        const id = btnConectar.dataset.id;
+        abrirModalDisparoNumeroQr(id, btnConectar.dataset.nome);
+        try { await fetch(`/api/disparo-numeros/${id}/conectar`, { method: 'POST' }); }
+        catch (err) { showToast('Erro', 'Não foi possível iniciar a conexão.', 'error'); }
+        return;
+    }
+    if (btnDesconectar) {
+        const id = btnDesconectar.dataset.id;
+        try {
+            await fetch(`/api/disparo-numeros/${id}/desconectar`, { method: 'POST' });
+            showToast('Número desconectado', '', 'info', 3000);
+            await loadDisparoNumeros();
+        } catch (err) {
+            showToast('Erro', 'Não foi possível desconectar.', 'error');
+        }
+        return;
+    }
+    if (btnRemover) {
+        const id = btnRemover.dataset.id;
+        const nome = btnRemover.dataset.nome;
+        if (!confirm(`Remover o número "${nome}" de vez? Vai precisar escanear o QR de novo se você quiser adicioná-lo outra vez.`)) return;
+        try {
+            await fetch(`/api/disparo-numeros/${id}`, { method: 'DELETE' });
+            await loadDisparoNumeros();
+            showToast('Número removido', '', 'info', 3000);
+        } catch (err) {
+            showToast('Erro', 'Não foi possível remover o número.', 'error');
+        }
+    }
+});
+
+btnDisparoNumeroPairing?.addEventListener('click', async () => {
+    const id = disparoNumeroQrIdInput?.value;
+    const telefone = (disparoNumeroPairingTelefone?.value || '').trim();
+    if (!telefone) { showToast('Erro', 'Informe o número com DDD.', 'error'); return; }
+    try {
+        const res = await fetch(`/api/disparo-numeros/${id}/pairing-code`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ telefone }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Erro ao gerar código');
+        if (disparoNumeroPairingResultado) disparoNumeroPairingResultado.textContent = data.code;
+    } catch (e) {
+        showToast('Erro', e.message, 'error');
+    }
+});
+
+socket.on('pool_qr', ({ dbId, qrDataUrl }) => {
+    const entry = disparoNumerosCache.find(n => n.id === dbId);
+    if (entry) { entry.status = 'qr'; entry.qrDataUrl = qrDataUrl; renderDisparoNumerosLista(); }
+    if (disparoNumeroQrIdInput?.value == dbId && disparoNumeroQrImagem) {
+        disparoNumeroQrImagem.innerHTML = `<img src="${qrDataUrl}" alt="QR Code" style="max-width:220px">`;
+    }
+});
+
+socket.on('pool_ready', ({ dbId, numero }) => {
+    const entry = disparoNumerosCache.find(n => n.id === dbId);
+    if (entry) { entry.status = 'connected'; entry.numeroConectado = numero; renderDisparoNumerosLista(); }
+    if (disparoNumeroQrIdInput?.value == dbId) {
+        modalDisparoNumeroQr?.classList.remove('open');
+        showToast('Número conectado!', numero ? `WhatsApp ${numero} pronto pra disparar.` : '', 'success');
+    }
+});
+
+socket.on('pool_disconnected', ({ dbId }) => {
+    const entry = disparoNumerosCache.find(n => n.id === dbId);
+    if (entry) { entry.status = 'disconnected'; renderDisparoNumerosLista(); }
+});
+
+socket.on('pool_list_updated', () => loadDisparoNumeros());
+
 // Limpa só números/mensagem/mídia — usado tanto depois que um disparo
 // termina quanto logo que um novo é enfileirado (ver btnDisparar), pra não
 // deixar o campo com o texto de uma lista que já foi capturada.
@@ -2634,7 +2861,7 @@ async function renderDisparoDetalhe(filtro) {
         disparoDetalheLista.innerHTML = linhas.length
             ? linhas.map(l => `
                 <div style="display:flex;justify-content:space-between;gap:.6rem;font-size:.78rem;padding:.3rem 0;border-bottom:1px solid rgba(255,255,255,0.05)">
-                    <span style="color:var(--text-1);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${l.nome || l.telefone}${l.nome ? ` <span style="color:var(--text-3)">· ${l.telefone}</span>` : ''}</span>
+                    <span style="color:var(--text-1);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${l.nome || l.telefone}${l.nome ? ` <span style="color:var(--text-3)">· ${l.telefone}</span>` : ''}${l.numeroEnvio ? ` <span style="color:var(--text-3)">· via ${l.numeroEnvio}</span>` : ''}</span>
                     <span style="color:${l.sucesso ? 'var(--green)' : 'var(--red)'};overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:right;flex-shrink:0;margin-left:.6rem">${l.sucesso ? '✅ Enviado' : `❌ ${l.erro || 'Falhou'}`}</span>
                 </div>
             `).join('')
@@ -2677,6 +2904,11 @@ btnDisparar?.addEventListener('click', async () => {
     const formData = new FormData();
     formData.append('numeros', numeros);
     formData.append('mensagem', mensagem);
+    // Categoria da Mensagem Personalizada selecionada (se houver) — decide o
+    // roteamento por número de envio configurado em "Roteamento por Campanha".
+    const mensagemSelecionadaId = Number(broadcastMensagemSelect?.value);
+    const mensagemSelecionada = mensagemSelecionadaId ? mensagensPersonalizadasParaDisparo.find(m => m.id === mensagemSelecionadaId) : null;
+    if (mensagemSelecionada?.categoria) formData.append('categoria', mensagemSelecionada.categoria);
     if (broadcastDelayModo?.value === 'aleatorio') {
         formData.append('delay_modo', 'aleatorio');
         formData.append('delay_velocidade', document.getElementById('broadcast-delay-velocidade')?.value || 'medio');

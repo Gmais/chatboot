@@ -424,6 +424,27 @@ async function initDB() {
             enviado_em DATETIME DEFAULT CURRENT_TIMESTAMP
         );
         CREATE INDEX IF NOT EXISTS idx_disparo_envios_log_ts ON disparo_envios_log(enviado_em);
+        -- Números de WhatsApp extras, dedicados só a mandar Disparos em massa
+        -- (nunca respondem ninguém) — reduz o risco de o número principal ser
+        -- banido pelo alto volume de envio. Cada linha vira uma sessão própria
+        -- do whatsapp-web.js (LocalAuth clientId = client_id), independente da
+        -- sessão do número principal.
+        CREATE TABLE IF NOT EXISTS disparo_numeros (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            nome TEXT NOT NULL,
+            client_id TEXT NOT NULL UNIQUE,
+            ativo INTEGER DEFAULT 1,
+            criado_em DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+        -- Qual(is) número(s) do pool de Disparo mandam cada campanha (mesma
+        -- chave de CAMPANHAS_INFO / mensagens_personalizadas.categoria).
+        -- numeros_ids é um CSV de disparo_numeros.id: 1 id = exclusivo desse
+        -- número; 2+ ids = revezam (round-robin) só entre eles. Sem linha pra
+        -- uma campanha = usa todos os números do pool conectados.
+        CREATE TABLE IF NOT EXISTS disparo_roteamento (
+            campanha_chave TEXT PRIMARY KEY,
+            numeros_ids TEXT NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS programacoes (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             nome TEXT NOT NULL,
@@ -481,6 +502,11 @@ async function initDB() {
     // escolhida pelo atalho "Disparo" — só pra reabrir o seletor certo ao
     // editar; a automação-alvo em si já está resolvida em automacao_id.
     try { await db.exec(`ALTER TABLE programacao_acoes ADD COLUMN campanha_chave TEXT DEFAULT NULL`); } catch (e) { }
+    // Nome do número do pool de Disparo que mandou aquela mensagem (não o id
+    // — assim o relatório continua mostrando quem mandou mesmo se o número
+    // for removido do pool depois). NULL pros envios antigos, de antes dessa
+    // feature existir.
+    try { await db.exec(`ALTER TABLE disparo_envios_log ADD COLUMN numero_envio TEXT DEFAULT NULL`); } catch (e) { }
 
     // Semeia as programações automáticas que antes eram horários fixos no
     // código (Agenda de Avaliação às 06:00, Situação Financeira às 06:05,
@@ -2616,7 +2642,7 @@ async function dispararMensagensDaAutomacao(automacaoId) {
                     const msg = await db.get('SELECT * FROM mensagens_personalizadas WHERE id = ?', mensagemId);
                     if (!msg) return;
                     const numLimpo = estado.telefone;
-                    const chatId = await resolverChatId(numLimpo);
+                    const chatId = await resolverChatId(client, numLimpo);
                     const nome = await resolverNomeContato(numLimpo);
                     const primeiroNome = (nome && nome !== numLimpo) ? nome.split(' ')[0] : '';
                     const nomeCompleto = (nome && nome !== numLimpo) ? nome : '';
@@ -3591,7 +3617,7 @@ app.post('/api/conversas/:telefone/enviar', async (req, res) => {
         // que já existe pra Regras/Automação — sem isso, digitar {nome} na
         // caixa de texto manual manda a chave crua pro cliente em vez do nome dele.
         const textoFinal = await substituirPlaceholdersPessoais(texto.trim(), telefone);
-        const chatId = telefone.includes('@') ? telefone : await resolverChatId(telefone);
+        const chatId = telefone.includes('@') ? telefone : await resolverChatId(client, telefone);
         const sentMsg = await client.sendMessage(chatId, textoFinal);
         const nome = await resolverNomeContato(telefone);
         await registrarMensagemEnviada(telefone, textoFinal, nome, sentMsg.id?._serialized, true);
@@ -3654,7 +3680,7 @@ app.post('/api/conversas/:telefone/enviar-arquivo', upload.single('arquivo'), as
     if (!req.file) return res.status(400).json({ error: 'Nenhum arquivo enviado.' });
     if (!isConnected) return res.status(400).json({ error: 'WhatsApp não está conectado.' });
     try {
-        const chatId = telefone.includes('@') ? telefone : await resolverChatId(telefone);
+        const chatId = telefone.includes('@') ? telefone : await resolverChatId(client, telefone);
         const media = MessageMedia.fromFilePath(req.file.path);
         const legendaBruta = (req.body.legenda || '').trim();
         // Mesma substituição de {nome}/{matricula}/{saudacao} do envio manual de
@@ -3715,7 +3741,7 @@ app.get('/api/broadcast/detalhe', async (req, res) => {
     if (!ultimoDisparoIniciadoEm) return res.json([]);
     const filtro = req.query.filtro;
     try {
-        let sql = 'SELECT telefone, sucesso, erro, enviado_em FROM disparo_envios_log WHERE enviado_em >= ?';
+        let sql = 'SELECT telefone, sucesso, erro, numero_envio, enviado_em FROM disparo_envios_log WHERE enviado_em >= ?';
         const params = [ultimoDisparoIniciadoEm];
         if (filtro === 'enviados') sql += ' AND sucesso = 1';
         else if (filtro === 'falhas') sql += ' AND sucesso = 0';
@@ -3735,6 +3761,7 @@ app.get('/api/broadcast/detalhe', async (req, res) => {
             nome: nomePorTelefone.get(numerosNormalizados[i]) || null,
             sucesso: !!l.sucesso,
             erro: l.erro,
+            numeroEnvio: l.numero_envio || null,
         })));
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -3765,30 +3792,46 @@ function iniciarBroadcast(job) {
     io.emit('broadcast_progress', broadcastProgress);
     io.emit('broadcast_started', broadcastProgress);
 
-    // Executa o broadcast de forma assíncrona
+    // Executa o broadcast de forma assíncrona. Disparo nunca usa o client
+    // principal — só números do pool de Disparo (ver POOL DE NÚMEROS PARA
+    // DISPARO), pra tirar esse risco de banimento do número principal.
     (async () => {
         for (const numero of listaNumeros) {
             if (!broadcastRunning) break;
+
+            const entryEnvio = proximoClienteDoPool(job.numerosPermitidosIds);
+            if (!entryEnvio) {
+                // Nenhum número do pool (elegível pra essa campanha) segue
+                // conectado — aborta o resto da lista em vez de gastar o
+                // delay inteiro só pra logar falha contato por contato.
+                console.error('❌ Disparo abortado: nenhum número de disparo conectado.');
+                db.run('INSERT INTO disparo_envios_log (telefone, sucesso, erro) VALUES (?, 0, ?)', [numero, 'Nenhum número de disparo conectado.']).catch(() => { });
+                broadcastProgress.failed++;
+                io.emit('broadcast_progress', broadcastProgress);
+                broadcastRunning = false;
+                break;
+            }
+
             try {
                 const numeroCompleto = numero.startsWith('55') ? numero : `55${numero}`;
-                const chatId = await resolverChatId(numeroCompleto);
+                const chatId = await resolverChatId(entryEnvio.client, numeroCompleto);
                 // Cada número da lista tem seu próprio nome/matrícula — substitui
                 // {nome}/{matricula}/{saudacao} POR DESTINATÁRIO (mesmo texto
                 // "mensagem" cru, mas personalizado a cada envio do laço).
                 const textoPersonalizado = await substituirPlaceholdersPessoais(mensagem, numeroCompleto);
-                await client.sendMessage(chatId, textoPersonalizado);
+                await entryEnvio.client.sendMessage(chatId, textoPersonalizado);
 
                 if (mediaFile) {
                     const media = MessageMedia.fromFilePath(mediaFile.path);
-                    await client.sendMessage(chatId, media);
+                    await entryEnvio.client.sendMessage(chatId, media);
                 }
 
                 broadcastProgress.sent++;
-                db.run('INSERT INTO disparo_envios_log (telefone, sucesso) VALUES (?, 1)', numero).catch(() => { });
+                db.run('INSERT INTO disparo_envios_log (telefone, sucesso, numero_envio) VALUES (?, 1, ?)', [numero, entryEnvio.nome]).catch(() => { });
             } catch (err) {
                 console.error(`❌ Falha ao enviar para ${numero}:`, err.message);
                 broadcastProgress.failed++;
-                db.run('INSERT INTO disparo_envios_log (telefone, sucesso, erro) VALUES (?, 0, ?)', [numero, err.message]).catch(() => { });
+                db.run('INSERT INTO disparo_envios_log (telefone, sucesso, erro, numero_envio) VALUES (?, 0, ?, ?)', [numero, err.message, entryEnvio.nome]).catch(() => { });
             }
             io.emit('broadcast_progress', broadcastProgress);
             await delay(proximoDelay());
@@ -3811,16 +3854,32 @@ function iniciarBroadcast(job) {
 }
 
 app.post('/api/broadcast/start', upload.single('media'), async (req, res) => {
-    if (!isConnected) return res.status(400).json({ error: 'WhatsApp não está conectado.' });
+    // Disparo nunca usa o client principal — só o pool de Números de Envio,
+    // dedicados a isso (ver POOL DE NÚMEROS PARA DISPARO). Se nenhum estiver
+    // conectado, nem entra na fila: teria que aguardar pra sempre.
+    const algumPoolConectado = [...poolClients.values()].some(e => e.status === 'connected');
+    if (!algumPoolConectado) {
+        return res.status(400).json({ error: 'Nenhum número de disparo conectado. Conecte pelo menos um em "Números de Envio" antes de disparar.' });
+    }
 
-    const { numeros, mensagem, delay_ms, delay_modo, delay_velocidade } = req.body;
+    const { numeros, mensagem, delay_ms, delay_modo, delay_velocidade, categoria } = req.body;
     const listaNumeros = numeros.split('\n').map(n => n.trim().replace(/\D/g, '')).filter(n => n.length >= 10);
 
     if (listaNumeros.length === 0) return res.status(400).json({ error: 'Nenhum número válido encontrado.' });
     if (!mensagem) return res.status(400).json({ error: 'Mensagem obrigatória.' });
 
+    // Roteamento por campanha: se a mensagem usada tem uma categoria (ver
+    // Mensagens Personalizadas) e existe uma regra configurada em
+    // disparo_roteamento pra ela, restringe o rodízio a só os números
+    // atribuídos (1 = exclusivo daquele número; 2+ = revezam só entre eles).
+    let numerosPermitidosIds = null;
+    if (categoria) {
+        const regra = await db.get('SELECT numeros_ids FROM disparo_roteamento WHERE campanha_chave = ?', categoria);
+        if (regra?.numeros_ids) numerosPermitidosIds = regra.numeros_ids.split(',').filter(Boolean).map(Number);
+    }
+
     const mediaFile = req.file ? { path: req.file.path, mimetype: req.file.mimetype, filename: req.file.originalname } : null;
-    const job = { listaNumeros, mensagem, mediaFile, delay_ms, delay_modo, delay_velocidade };
+    const job = { listaNumeros, mensagem, mediaFile, delay_ms, delay_modo, delay_velocidade, numerosPermitidosIds };
 
     if (broadcastRunning) {
         filaDisparos.push(job);
@@ -4716,46 +4775,60 @@ const chromiumPath = (() => {
 })();
 if (chromiumPath) console.log(`🌐 Usando Chromium do sistema: ${chromiumPath}`);
 
-const client = new Client({
-    authStrategy: new LocalAuth({ dataPath: path.join(DATA_DIR, '.wwebjs_auth') }),
-    puppeteer: {
-        headless: true,
-        protocolTimeout: 180000,
-        ...(chromiumPath && { executablePath: chromiumPath }),
-        args: [
-            '--no-sandbox',
-            '--disable-setuid-sandbox',
-            '--disable-dev-shm-usage',
-            '--disable-gpu',
-            '--no-zygote',
-            '--disable-extensions',
-            '--disable-background-networking',
-            '--disable-default-apps',
-            '--disable-sync',
-            '--disable-translate',
-            '--metrics-recording-only',
-            '--mute-audio',
-            '--no-first-run',
-            '--disable-backgrounding-occluded-windows',
-            '--disable-renderer-backgrounding',
-            '--disable-features=TranslateUI,BlinkGenPropertyTrees',
-            '--disable-hang-monitor',
-            '--disable-prompt-on-repost',
-            '--disable-domain-reliability',
-            '--disable-component-update',
-            '--disable-client-side-phishing-detection',
-            '--disable-popup-blocking',
-            '--disable-breakpad',
-            '--disable-crash-reporter',
-            '--disable-in-process-stack-traces',
-            '--disable-logging',
-            '--memory-pressure-off',
-            '--disable-low-res-tiling',
-            '--disable-smooth-scrolling',
-            '--js-flags=--max-old-space-size=350 --optimize-for-size --gc-interval=100',
-        ],
-    },
-});
+// Fábrica compartilhada entre o client principal (atendimento) e os clients
+// do pool de Disparo (só envio — ver seção "POOL DE NÚMEROS PARA DISPARO"
+// mais abaixo). Sem clientId (client principal), o LocalAuth usa a pasta
+// 'session/' de sempre — comportamento idêntico ao de antes dessa função
+// existir, sem risco nenhum de forçar um novo QR do número principal. Com
+// clientId (números do pool), cada um ganha sua própria pasta
+// 'session-<clientId>/', totalmente isolada.
+function criarClienteWhatsApp(clientId) {
+    return new Client({
+        authStrategy: new LocalAuth({
+            dataPath: path.join(DATA_DIR, '.wwebjs_auth'),
+            ...(clientId && { clientId }),
+        }),
+        puppeteer: {
+            headless: true,
+            protocolTimeout: 180000,
+            ...(chromiumPath && { executablePath: chromiumPath }),
+            args: [
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-gpu',
+                '--no-zygote',
+                '--disable-extensions',
+                '--disable-background-networking',
+                '--disable-default-apps',
+                '--disable-sync',
+                '--disable-translate',
+                '--metrics-recording-only',
+                '--mute-audio',
+                '--no-first-run',
+                '--disable-backgrounding-occluded-windows',
+                '--disable-renderer-backgrounding',
+                '--disable-features=TranslateUI,BlinkGenPropertyTrees',
+                '--disable-hang-monitor',
+                '--disable-prompt-on-repost',
+                '--disable-domain-reliability',
+                '--disable-component-update',
+                '--disable-client-side-phishing-detection',
+                '--disable-popup-blocking',
+                '--disable-breakpad',
+                '--disable-crash-reporter',
+                '--disable-in-process-stack-traces',
+                '--disable-logging',
+                '--memory-pressure-off',
+                '--disable-low-res-tiling',
+                '--disable-smooth-scrolling',
+                '--js-flags=--max-old-space-size=350 --optimize-for-size --gc-interval=100',
+            ],
+        },
+    });
+}
+
+const client = criarClienteWhatsApp();
 
 let currentQR = null;
 let isConnected = false;
@@ -4787,6 +4860,13 @@ io.on('connection', async (socket) => {
     if (isConnected) socket.emit('ready');
     else if (currentQR) socket.emit('qr', currentQR);
     else socket.emit('loading', 'Iniciando o WhatsApp...');
+
+    // Replay do estado atual de cada número do pool de Disparo, pra uma aba
+    // recém-aberta já ver o status certo sem esperar o próximo evento.
+    for (const entry of poolClients.values()) {
+        if (entry.status === 'connected') socket.emit('pool_ready', { dbId: entry.dbId, numero: entry.numeroConectado });
+        else if (entry.status === 'qr' && entry.qrDataUrl) socket.emit('pool_qr', { dbId: entry.dbId, qrDataUrl: entry.qrDataUrl });
+    }
 });
 
 // =====================================
@@ -4890,6 +4970,252 @@ client.on('disconnected', (reason) => {
 });
 
 // =====================================
+// POOL DE NÚMEROS PARA DISPARO (só envio — nunca responde ninguém)
+// =====================================
+// Números extras de WhatsApp dedicados só a mandar Disparos em massa, pra
+// tirar esse risco (banimento por volume) do número principal — que continua
+// só atendendo/automação, nunca mandando disparo. Cada entrada aqui é uma
+// sessão whatsapp-web.js própria e independente da do client principal.
+const poolClients = new Map(); // client_id -> entry
+
+function pastaSessaoPool(clientId) {
+    return path.join(DATA_DIR, '.wwebjs_auth', `session-${clientId}`);
+}
+
+function wireEventosPoolClient(entry) {
+    const c = entry.client;
+    c.on('qr', async (qr) => {
+        entry.status = 'qr';
+        entry.readyForPairing = true;
+        try {
+            entry.qrDataUrl = await qrcode.toDataURL(qr);
+            io.emit('pool_qr', { dbId: entry.dbId, qrDataUrl: entry.qrDataUrl });
+        } catch (err) {
+            console.error(`Erro ao gerar QR do número de disparo "${entry.nome}":`, err.message);
+        }
+    });
+    c.on('ready', () => {
+        entry.status = 'connected';
+        entry.qrDataUrl = null;
+        entry.readyForPairing = false;
+        try { entry.numeroConectado = c.info?.wid?.user || null; } catch (_) { entry.numeroConectado = null; }
+        console.log(`✅ Número de disparo "${entry.nome}" conectado${entry.numeroConectado ? ` (${entry.numeroConectado})` : ''}.`);
+        io.emit('pool_ready', { dbId: entry.dbId, numero: entry.numeroConectado });
+    });
+    c.on('disconnected', (reason) => {
+        entry.status = 'disconnected';
+        entry.qrDataUrl = null;
+        io.emit('pool_disconnected', { dbId: entry.dbId, reason: String(reason) });
+    });
+    c.on('auth_failure', (msg) => {
+        entry.status = 'disconnected';
+        io.emit('pool_disconnected', { dbId: entry.dbId, reason: 'auth_failure: ' + msg });
+    });
+}
+
+// Cria (se ainda não existe) e inicializa o client daquele número — chamado
+// só quando o admin clica "Conectar" ou, no boot, pra número que já tem
+// sessão salva (ver reidratarPoolNaInicializacao). Nunca roda sozinho pra um
+// número recém-cadastrado sem sessão — isso é o que mantém o custo de RAM
+// zero até o admin realmente vincular aquele número.
+function iniciarClientePool(row) {
+    let entry = poolClients.get(row.client_id);
+    if (!entry) {
+        entry = { dbId: row.id, nome: row.nome, client: null, status: 'dormant', qrDataUrl: null, readyForPairing: false, numeroConectado: null };
+        poolClients.set(row.client_id, entry);
+    }
+    if (entry.client) return entry; // já inicializado ou inicializando
+    entry.client = criarClienteWhatsApp(row.client_id);
+    entry.status = 'initializing';
+    wireEventosPoolClient(entry);
+    entry.client.initialize().catch(err => {
+        console.error(`Erro ao inicializar número de disparo "${row.nome}":`, err.message);
+        entry.status = 'disconnected';
+        io.emit('pool_disconnected', { dbId: row.id, reason: err.message });
+    });
+    return entry;
+}
+
+// "Pausa" em processo — nunca process.exit, nunca mexe na sessão do client
+// principal nem na de outros números do pool. Mantém a sessão salva (dá pra
+// reconectar sem escanear QR de novo).
+async function desconectarClientePool(entry) {
+    if (!entry.client) return;
+    try { await entry.client.destroy(); } catch (_) { }
+    entry.status = 'disconnected';
+    entry.qrDataUrl = null;
+}
+
+// Remoção definitiva: logout (ou destroy se o logout travar) + apaga só a
+// pasta de sessão DESSE número + tira do mapa em memória.
+async function removerClientePool(row, entry) {
+    if (entry?.client) {
+        try {
+            await Promise.race([
+                entry.client.logout(),
+                new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 4000)),
+            ]);
+        } catch (_) {
+            try { await entry.client.destroy(); } catch (__) { }
+        }
+    }
+    try {
+        const pasta = pastaSessaoPool(row.client_id);
+        if (fs.existsSync(pasta)) fs.rmSync(pasta, { recursive: true, force: true });
+    } catch (_) { }
+    poolClients.delete(row.client_id);
+}
+
+// No boot: número que já tem sessão salva reconecta sozinho (igual ao
+// principal); número nunca vinculado fica 'dormant' até o admin conectar.
+async function reidratarPoolNaInicializacao() {
+    if (!db) return;
+    try {
+        const linhas = await db.all('SELECT * FROM disparo_numeros WHERE ativo = 1');
+        for (const row of linhas) {
+            const temSessao = fs.existsSync(pastaSessaoPool(row.client_id));
+            if (temSessao) {
+                iniciarClientePool(row);
+            } else {
+                poolClients.set(row.client_id, { dbId: row.id, nome: row.nome, client: null, status: 'dormant', qrDataUrl: null, readyForPairing: false, numeroConectado: null });
+            }
+        }
+    } catch (e) {
+        console.error('Erro ao reidratar pool de números de disparo:', e.message);
+    }
+}
+
+// Round-robin — só entre números CONECTADOS agora, opcionalmente restrito a
+// um subconjunto (roteamento por campanha, ver /api/broadcast/start).
+let poolRoundRobinIdx = 0;
+function proximoClienteDoPool(idsPermitidos) {
+    let conectados = [...poolClients.values()].filter(e => e.status === 'connected');
+    if (Array.isArray(idsPermitidos) && idsPermitidos.length > 0) {
+        conectados = conectados.filter(e => idsPermitidos.includes(e.dbId));
+    }
+    if (conectados.length === 0) return null;
+    const escolhido = conectados[poolRoundRobinIdx % conectados.length];
+    poolRoundRobinIdx++;
+    return escolhido;
+}
+
+app.get('/api/disparo-numeros', async (req, res) => {
+    try {
+        const linhas = await db.all('SELECT * FROM disparo_numeros ORDER BY criado_em ASC');
+        res.json(linhas.map(row => {
+            const entry = poolClients.get(row.client_id);
+            return {
+                id: row.id,
+                nome: row.nome,
+                ativo: !!row.ativo,
+                status: entry?.status || 'dormant',
+                numeroConectado: entry?.numeroConectado || null,
+                qrDataUrl: entry?.qrDataUrl || null,
+            };
+        }));
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.post('/api/disparo-numeros', async (req, res) => {
+    const nome = (req.body?.nome || '').trim();
+    if (!nome) return res.status(400).json({ error: 'Nome é obrigatório.' });
+    try {
+        const clientId = require('crypto').randomUUID();
+        const result = await db.run('INSERT INTO disparo_numeros (nome, client_id) VALUES (?, ?)', [nome, clientId]);
+        poolClients.set(clientId, { dbId: result.lastID, nome, client: null, status: 'dormant', qrDataUrl: null, readyForPairing: false, numeroConectado: null });
+        io.emit('pool_list_updated');
+        res.json({ success: true, id: result.lastID });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.post('/api/disparo-numeros/:id/conectar', async (req, res) => {
+    try {
+        const row = await db.get('SELECT * FROM disparo_numeros WHERE id = ?', req.params.id);
+        if (!row) return res.status(404).json({ error: 'Número não encontrado.' });
+        iniciarClientePool(row);
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.post('/api/disparo-numeros/:id/desconectar', async (req, res) => {
+    try {
+        const row = await db.get('SELECT * FROM disparo_numeros WHERE id = ?', req.params.id);
+        if (!row) return res.status(404).json({ error: 'Número não encontrado.' });
+        const entry = poolClients.get(row.client_id);
+        if (!entry) return res.status(400).json({ error: 'Esse número não está conectado.' });
+        await desconectarClientePool(entry);
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.post('/api/disparo-numeros/:id/pairing-code', async (req, res) => {
+    const { telefone } = req.body;
+    if (!telefone) return res.status(400).json({ error: 'Informe o número de telefone.' });
+    try {
+        const row = await db.get('SELECT * FROM disparo_numeros WHERE id = ?', req.params.id);
+        if (!row) return res.status(404).json({ error: 'Número não encontrado.' });
+        const entry = poolClients.get(row.client_id);
+        if (!entry?.readyForPairing) return res.status(400).json({ error: 'Aguarde o QR Code aparecer antes de solicitar o código.' });
+        const numero = String(telefone).replace(/\D/g, '');
+        const code = await entry.client.requestPairingCode(numero);
+        res.json({ code });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.delete('/api/disparo-numeros/:id', async (req, res) => {
+    try {
+        const row = await db.get('SELECT * FROM disparo_numeros WHERE id = ?', req.params.id);
+        if (!row) return res.status(404).json({ error: 'Número não encontrado.' });
+        const entry = poolClients.get(row.client_id);
+        await removerClientePool(row, entry);
+        await db.run('DELETE FROM disparo_numeros WHERE id = ?', row.id);
+        io.emit('pool_list_updated');
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.get('/api/disparo-roteamento', async (req, res) => {
+    try {
+        const linhas = await db.all('SELECT * FROM disparo_roteamento');
+        const mapa = {};
+        linhas.forEach(l => { mapa[l.campanha_chave] = l.numeros_ids.split(',').filter(Boolean).map(Number); });
+        res.json(mapa);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.put('/api/disparo-roteamento/:campanha_chave', async (req, res) => {
+    try {
+        const ids = Array.isArray(req.body?.numeros_ids) ? req.body.numeros_ids.filter(n => Number.isInteger(n) || /^\d+$/.test(n)) : [];
+        if (ids.length === 0) {
+            await db.run('DELETE FROM disparo_roteamento WHERE campanha_chave = ?', req.params.campanha_chave);
+        } else {
+            await db.run(
+                `INSERT INTO disparo_roteamento (campanha_chave, numeros_ids) VALUES (?, ?)
+                 ON CONFLICT(campanha_chave) DO UPDATE SET numeros_ids = excluded.numeros_ids`,
+                [req.params.campanha_chave, ids.join(',')]
+            );
+        }
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// =====================================
 // INTEGRAÇÃO PACTO — VÍNCULO TELEFONE x ALUNO
 // =====================================
 async function getVinculo(telefone) {
@@ -4929,7 +5255,7 @@ function ehIntencaoPacto(texto) {
 // o chat id de verdade pra ENVIAR, sem contaminar o que é salvo no banco.
 async function enviarEregistrar(telefone, conteudo) {
     const numLimpoCheck = telefone.replace('@c.us', '').replace('@lid', '');
-    const chatId = telefone.includes('@') ? telefone : await resolverChatId(numLimpoCheck);
+    const chatId = telefone.includes('@') ? telefone : await resolverChatId(client, numLimpoCheck);
     const delayConfigurado = await obterDelayRespostaConfigurado();
     if (delayConfigurado > 0) await delay(delayConfigurado * 1000);
     if (typeof conteudo === 'string') {
@@ -5327,10 +5653,13 @@ async function resolvePhone(msg) {
 // mesmo quando o número é válido. Se getNumberId não achar nada, o número
 // realmente não tem WhatsApp — cair pra um "@c.us" às cegas ia falhar do
 // mesmo jeito, só que com um erro mais confuso.
+// Cache compartilhado entre qualquer client (principal ou do pool de
+// Disparo) — o chat id resolvido é intrínseco ao número de destino, não
+// depende de quem pergunta.
 const chatIdCache = new Map();
-async function resolverChatId(numeroLimpo) {
+async function resolverChatId(clienteWpp, numeroLimpo) {
     if (chatIdCache.has(numeroLimpo)) return chatIdCache.get(numeroLimpo);
-    const contato = await client.getNumberId(numeroLimpo);
+    const contato = await clienteWpp.getNumberId(numeroLimpo);
     if (!contato) throw new Error(`O número ${numeroLimpo} não tem WhatsApp.`);
     chatIdCache.set(numeroLimpo, contato._serialized);
     return contato._serialized;
@@ -5935,6 +6264,7 @@ client.on('message_reaction', async (reaction) => {
 (async () => {
     await initDB();
     client.initialize();
+    await reidratarPoolNaInicializacao();
     const PORT = process.env.PORT || 3000;
     server.listen(PORT, () => console.log(`🌐 Painel rodando em: http://localhost:${PORT}`));
 })();
@@ -5942,6 +6272,9 @@ client.on('message_reaction', async (reaction) => {
 const shutdown = async () => {
     console.log('⏳ Desligando robô de forma segura...');
     await client.destroy();
+    for (const entry of poolClients.values()) {
+        if (entry.client) { try { await entry.client.destroy(); } catch (_) { } }
+    }
     if (db) await db.close();
     process.exit(0);
 };

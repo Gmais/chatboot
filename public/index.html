@@ -630,6 +630,44 @@
                 </div>
             </div>
 
+            <div class="card glass" style="margin-bottom:1.5rem">
+                <h3 style="margin-bottom:.3rem">📶 Números de Envio (Disparo)</h3>
+                <p style="color:var(--text-3);font-size:.8rem;margin-bottom:1rem">Números extras, dedicados só a mandar Disparos — <strong>nunca respondem clientes</strong>. Isso tira do número principal o risco de ser bloqueado por alto volume de envio.</p>
+                <div id="disparo-numeros-lista" style="display:flex;flex-direction:column;gap:.5rem;margin-bottom:1rem"></div>
+                <div style="display:flex;gap:.6rem;align-items:center;flex-wrap:wrap">
+                    <input type="text" id="disparo-numero-nome" placeholder="Nome pra identificar (ex: Chip 2)" style="flex:1;min-width:200px;background:var(--input-bg);border:1px solid rgba(255,255,255,0.1);border-radius:var(--radius-sm);padding:.55rem .8rem;color:var(--text-1);font-size:.85rem">
+                    <button type="button" class="btn-primary" id="btn-disparo-numero-adicionar" style="padding:.55rem 1rem;font-size:.85rem">➕ Adicionar Número</button>
+                </div>
+            </div>
+
+            <div class="card glass" style="margin-bottom:1.5rem">
+                <h3 style="margin-bottom:.3rem">🔀 Roteamento por Campanha</h3>
+                <p style="color:var(--text-3);font-size:.8rem;margin-bottom:1rem">Escolha quais números de envio mandam cada tipo de mensagem (Campanha, definida em Mensagens Personalizadas). Nenhum marcado = usa todos os números conectados. 1 marcado = exclusivo desse número. 2+ marcados = revezam só entre eles.</p>
+                <div id="disparo-roteamento-lista" style="display:flex;flex-direction:column;gap:.6rem"></div>
+            </div>
+
+            <!-- MODAL: QR / PAIRING CODE DE UM NÚMERO DE ENVIO -->
+            <div class="modal-overlay" id="modal-disparo-numero-qr-overlay">
+                <div class="modal">
+                    <h3 id="modal-disparo-numero-qr-titulo">📲 Conectar Número</h3>
+                    <input type="hidden" id="disparo-numero-qr-id">
+                    <div id="disparo-numero-qr-imagem" style="text-align:center;padding:1rem;min-height:200px;display:flex;align-items:center;justify-content:center">
+                        <span style="color:var(--text-3);font-size:.85rem">⏳ Gerando QR Code...</span>
+                    </div>
+                    <div style="margin-top:1rem">
+                        <label style="display:block;font-size:.78rem;color:var(--text-3);margin-bottom:.4rem">Ou parear por código — informe o número com DDD</label>
+                        <div style="display:flex;gap:.6rem">
+                            <input type="text" id="disparo-numero-pairing-telefone" placeholder="46999998888" style="flex:1;background:var(--input-bg);border:1px solid rgba(255,255,255,0.1);border-radius:var(--radius-sm);padding:.55rem .8rem;color:var(--text-1);font-size:.85rem">
+                            <button type="button" class="btn-secondary" id="btn-disparo-numero-pairing">Gerar Código</button>
+                        </div>
+                        <p id="disparo-numero-pairing-resultado" style="margin-top:.6rem;font-size:1.1rem;font-weight:700;color:var(--green);text-align:center"></p>
+                    </div>
+                    <div class="modal-footer">
+                        <button class="btn-cancel" id="modal-disparo-numero-qr-fechar">Fechar</button>
+                    </div>
+                </div>
+            </div>
+
             <div class="disparo-config-grid">
                 <div class="card glass">
                     <h3>Configurar Disparo</h3>
