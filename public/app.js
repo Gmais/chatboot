@@ -2257,6 +2257,7 @@ function contratosLinhaHtml(c) {
                 <input type="checkbox" class="contratos-assinado-check" data-id="${c.id}" style="accent-color:var(--green);width:16px;height:16px">
                 Assinado
             </label>
+            <button type="button" class="btn-danger btn-contratos-excluir-linha" data-id="${c.id}" style="padding:.3rem .5rem;font-size:.72rem" title="Tira esse contato da lista sem marcar como assinado">🗑️</button>
         </div>
     `;
 }
@@ -2338,6 +2339,42 @@ document.querySelectorAll('[id^="contratos-lista-"]').forEach(lista => {
         } catch (err) {
             chk.checked = false;
             showToast('Erro', 'Não foi possível marcar como assinado.', 'error');
+        }
+    });
+
+    lista.addEventListener('click', async (e) => {
+        const btn = e.target.closest('.btn-contratos-excluir-linha');
+        if (!btn) return;
+        const linha = btn.closest('.contato-row');
+        const consultora = lista.id.replace('contratos-lista-', '');
+        const nomeAluno = linha.querySelector('.contratos-linha-nome')?.textContent || 'esse contato';
+        if (!confirm(`Tirar "${nomeAluno}" da lista? Isso NÃO marca como assinado — só remove esse contato (ex: entrou errado na importação).`)) return;
+        try {
+            await fetch(`/api/relatorio/contratos-sem-assinar/${btn.dataset.id}`, { method: 'DELETE' });
+            linha.remove();
+            contratosSemAssinarCache[consultora] = contratosSemAssinarCache[consultora].filter(c => String(c.id) !== btn.dataset.id);
+            const contador = document.getElementById(`contratos-count-${consultora}`);
+            const restantes = contratosSemAssinarCache[consultora].length;
+            if (contador) contador.textContent = restantes ? `(${restantes} pendente${restantes > 1 ? 's' : ''})` : '';
+            if (restantes === 0) loadContratosSemAssinar(consultora);
+            showToast('Removido da lista', '', 'success', 2000);
+        } catch (err) {
+            showToast('Erro', 'Não foi possível remover esse contato.', 'error');
+        }
+    });
+});
+
+document.querySelectorAll('.btn-contratos-limpar').forEach(btn => {
+    btn.addEventListener('click', async () => {
+        const consultora = btn.dataset.consultora;
+        const total = (contratosSemAssinarCache[consultora] || []).length;
+        if (!confirm(`Apagar a lista INTEIRA da ${consultora === 'juliana' ? 'Juliana' : 'Isadora'} (${total} pendente${total !== 1 ? 's' : ''})? Isso NÃO marca ninguém como assinado — é só pra recomeçar do zero (ex: lista de teste). Não tem como desfazer.`)) return;
+        try {
+            await fetch(`/api/relatorio/contratos-sem-assinar?consultora=${consultora}`, { method: 'DELETE' });
+            await loadContratosSemAssinar(consultora);
+            showToast('Lista limpa!', '', 'success', 2500);
+        } catch (err) {
+            showToast('Erro', 'Não foi possível limpar a lista.', 'error');
         }
     });
 });

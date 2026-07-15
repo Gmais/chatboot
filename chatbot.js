@@ -2228,6 +2228,34 @@ app.post('/api/relatorio/contratos-sem-assinar/:id/assinado', async (req, res) =
     }
 });
 
+// Tira um contato da lista SEM marcar como assinado — pro caso de o parser ter
+// pego alguém errado, ou de corrigir uma importação de teste sem "assinar" o
+// contrato de ninguém à toa (assinado é uma afirmação de que o aluno realmente
+// assinou, não um jeito de tirar da lista).
+app.delete('/api/relatorio/contratos-sem-assinar/:id', async (req, res) => {
+    try {
+        await db.run('DELETE FROM contratos_sem_assinar WHERE id = ?', req.params.id);
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Limpa a lista inteira de uma consultora (ex: importou uma lista de teste
+// por engano) — apaga tudo dela, inclusive quem já tinha sido marcado como
+// assinado, pra dar pra começar do zero com uma importação de verdade.
+app.delete('/api/relatorio/contratos-sem-assinar', async (req, res) => {
+    const { consultora } = req.query;
+    if (!CONTRATOS_CONSULTORAS_VALIDAS.includes(consultora)) return res.status(400).json({ error: 'Consultora inválida.' });
+    try {
+        const resultado = await db.run('DELETE FROM contratos_sem_assinar WHERE consultora = ?', consultora);
+        io.emit('contratos_sem_assinar_atualizados', { consultora });
+        res.json({ success: true, removidos: resultado.changes });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
 // Exclui um contato da Audiência — some da lista de Contatos, das etiquetas
 // aplicadas e de qualquer automação em andamento. Não apaga o histórico de
 // conversa (isso é outra ação, no Bate Papo ao Vivo).
