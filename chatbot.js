@@ -4969,6 +4969,28 @@ const chromiumPath = (() => {
 })();
 if (chromiumPath) console.log(`🌐 Usando Chromium do sistema: ${chromiumPath}`);
 
+// Chrome grava um SingletonLock (symlink com hostname+PID do processo que
+// abriu o profile) na pasta de perfil, pra impedir duas instâncias abrindo o
+// mesmo profile ao mesmo tempo. Só que a sessão do WhatsApp fica num volume
+// PERSISTENTE (sobrevive a redeploy), enquanto cada redeploy/restart do
+// Railway sobe um CONTAINER NOVO (hostname/PID novos) — o lock de um
+// container anterior nunca é liberado de verdade, e o Chrome se recusa a
+// abrir achando que "outro processo" ainda está usando o profile ("Failed to
+// launch... Code: 21" / "profile appears to be in use by another Chromium
+// process"). Uma vez que isso trava, TODA tentativa de reconectar falha pra
+// sempre, inclusive as tentativas automáticas do watchdog — foi exatamente o
+// loop infinito relatado ("mesmo erro" de ficar preso em "Iniciando
+// conexão..." depois de reiniciar). Remover esses arquivos antes de cada
+// initialize() é seguro: só rodamos 1 processo Node por vez (Railway), nunca
+// existe de verdade um outro processo vivo usando esse profile — o lock
+// encontrado é sempre lixo de um container anterior que já morreu.
+function removerLocksChromeStale(clientId) {
+    const sessionDir = path.join(DATA_DIR, '.wwebjs_auth', clientId ? `session-${clientId}` : 'session');
+    for (const arquivo of ['SingletonLock', 'SingletonCookie', 'SingletonSocket']) {
+        try { fs.rmSync(path.join(sessionDir, arquivo), { force: true }); } catch (_) { }
+    }
+}
+
 // Fábrica compartilhada entre o client principal (atendimento) e os clients
 // do pool de Disparo (só envio — ver seção "POOL DE NÚMEROS PARA DISPARO"
 // mais abaixo). Sem clientId (client principal), o LocalAuth usa a pasta
@@ -5056,6 +5078,7 @@ function armarInitWatchdog() {
         }
         console.log('🔁 Reiniciando o client em processo (tentativa automática do watchdog)...');
         try { await client.destroy(); } catch (_) { }
+        removerLocksChromeStale();
         armarInitWatchdog();
         client.initialize().catch(err => console.error('Erro ao reinicializar client pelo watchdog:', err.message));
     }, INIT_WATCHDOG_MS);
@@ -5179,6 +5202,7 @@ client.on('ready', async () => {
                 // Aguarda 4s e reinicializa — sem matar o processo Node!
                 setTimeout(async () => {
                     try {
+                        removerLocksChromeStale();
                         armarInitWatchdog(); // protege esse initialize() também, não só o do boot
                         await client.initialize();
                         console.log('🔁 Cliente reinicializado com sucesso.');
@@ -5262,6 +5286,7 @@ function iniciarClientePool(row) {
     entry.client = criarClienteWhatsApp(row.client_id);
     entry.status = 'initializing';
     wireEventosPoolClient(entry);
+    removerLocksChromeStale(row.client_id);
     entry.client.initialize().catch(err => {
         console.error(`Erro ao inicializar número de disparo "${row.nome}":`, err.message);
         entry.status = 'disconnected';
@@ -6474,6 +6499,19 @@ client.on('message', async (msg) => {
             return;
         }
 
+        // Mensagem "atrasada" (WhatsApp Web reenvia um lote de mensagens antigas
+        // ao reconectar — reconhecido pelo próprio msg.timestamp, não pela hora
+        // que chegou aqui): a conversa acima de já foi salva/fica visível pro
+        // operador, mas o robô NÃO responde algo que o cliente mandou há muito
+        // tempo — foi exatamente o bug relatado ("quando reconecta, o robô
+        // responde mensagem antiga"), o WhatsApp Web sincronizando o histórico
+        // como se fossem mensagens novas de verdade.
+        const IDADE_MAXIMA_MSG_MS = 5 * 60 * 1000;
+        if (msg.timestamp && (Date.now() - msg.timestamp * 1000) > IDADE_MAXIMA_MSG_MS) {
+            console.log(`⏳ Mensagem antiga de ${numLimpo} (reenvio do WhatsApp ao reconectar) — robô não responde, só fica registrada.`);
+            return;
+        }
+
         // Conversa assumida manualmente por um humano (botão "Assumir Conversa"
         // em Conversas): tem prioridade sobre horário e sobre o override global
         // "Ativar Robô" — enquanto assumida, o robô nunca responde esse contato.
@@ -6536,6 +6574,7 @@ client.on('message_reaction', async (reaction) => {
 // =====================================
 (async () => {
     await initDB();
+    removerLocksChromeStale();
     armarInitWatchdog();
     client.initialize();
     await reidratarPoolNaInicializacao();
