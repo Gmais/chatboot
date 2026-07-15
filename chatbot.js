@@ -2874,6 +2874,13 @@ async function dispararMensagensDaAutomacao(automacaoId) {
                         if (fs.existsSync(mediaFullPath)) {
                             const media = MessageMedia.fromFilePath(mediaFullPath);
                             const sent = await client.sendMessage(chatId, media, texto ? { caption: texto } : undefined);
+                            // client.sendMessage devolve undefined (sem lançar erro) quando o
+                            // WhatsApp Web não acha um chat existente pra esse contato — ler
+                            // sent.id direto quebrava com "Cannot read properties of undefined
+                            // (reading 'id')", e sem esse guard o contato ainda seria marcado
+                            // como sucesso=true (saía da fila) mesmo sem a mensagem ter sido
+                            // entregue de verdade.
+                            if (!sent) throw new Error('WhatsApp não encontrou uma conversa existente com esse número — mensagem não enviada.');
                             const tipoMedia = msg.media_tipo === 'file' ? 'document' : (msg.media_tipo || 'document');
                             await registrarMensagemEnviada(numLimpo, texto || '[mídia]', nome, sent.id?._serialized, false, tipoMedia, msg.media_path);
                             sucesso = true;
@@ -2882,6 +2889,7 @@ async function dispararMensagensDaAutomacao(automacaoId) {
                         }
                     } else if (texto) {
                         const sent = await client.sendMessage(chatId, texto);
+                        if (!sent) throw new Error('WhatsApp não encontrou uma conversa existente com esse número — mensagem não enviada.');
                         await registrarMensagemEnviada(numLimpo, texto, nome, sent.id?._serialized);
                         sucesso = true;
                     }
@@ -3811,6 +3819,7 @@ app.post('/api/conversas/:telefone/enviar', async (req, res) => {
         const textoFinal = await substituirPlaceholdersPessoais(texto.trim(), telefone);
         const chatId = telefone.includes('@') ? telefone : await resolverChatId(client, telefone);
         const sentMsg = await client.sendMessage(chatId, textoFinal);
+        if (!sentMsg) throw new Error('WhatsApp não encontrou uma conversa existente com esse número — mensagem não enviada.');
         const nome = await resolverNomeContato(telefone);
         await registrarMensagemEnviada(telefone, textoFinal, nome, sentMsg.id?._serialized, true);
         res.json({ success: true });
@@ -3879,6 +3888,7 @@ app.post('/api/conversas/:telefone/enviar-arquivo', upload.single('arquivo'), as
         // texto — legenda de arquivo é digitada pelo mesmo operador do mesmo jeito.
         const legenda = legendaBruta ? await substituirPlaceholdersPessoais(legendaBruta, telefone) : legendaBruta;
         const sentMsg = await client.sendMessage(chatId, media, legenda ? { caption: legenda } : undefined);
+        if (!sentMsg) throw new Error('WhatsApp não encontrou uma conversa existente com esse número — mensagem não enviada.');
         // Mantém o arquivo em public/uploads (não apaga mais) — é o que permite
         // reabrir a imagem/documento clicando na bolha depois.
         const mediaUrl = '/uploads/' + req.file.filename;
@@ -4011,11 +4021,13 @@ function iniciarBroadcast(job) {
                 // {nome}/{matricula}/{saudacao} POR DESTINATÁRIO (mesmo texto
                 // "mensagem" cru, mas personalizado a cada envio do laço).
                 const textoPersonalizado = await substituirPlaceholdersPessoais(mensagem, numeroCompleto);
-                await entryEnvio.client.sendMessage(chatId, textoPersonalizado);
+                const sentMsg = await entryEnvio.client.sendMessage(chatId, textoPersonalizado);
+                if (!sentMsg) throw new Error('WhatsApp não encontrou uma conversa existente com esse número — mensagem não enviada.');
 
                 if (mediaFile) {
                     const media = MessageMedia.fromFilePath(mediaFile.path);
-                    await entryEnvio.client.sendMessage(chatId, media);
+                    const sentMedia = await entryEnvio.client.sendMessage(chatId, media);
+                    if (!sentMedia) throw new Error('WhatsApp não encontrou uma conversa existente com esse número — mídia não enviada.');
                 }
 
                 broadcastProgress.sent++;
@@ -5557,6 +5569,7 @@ async function enviarEregistrar(telefone, conteudo) {
         return null;
     }
     const resultado = await client.sendMessage(chatId, conteudo);
+    if (!resultado) throw new Error('WhatsApp não encontrou uma conversa existente com esse número — mensagem não enviada.');
     await registrarMensagemEnviada(numLimpoCheck, typeof conteudo === 'string' ? conteudo : '[mídia]', null, resultado.id?._serialized);
     return resultado;
 }
