@@ -4838,6 +4838,43 @@ let isConnected = false;
 let clientReadyForPairing = false;
 let restartInProgress = false; // Evita loop de restart: só uma reinicialização por vez
 
+// Watchdog de inicialização: algumas vezes o Puppeteer/Chromium trava no
+// meio do boot e o client nunca chega a emitir NEM 'qr' NEM 'ready' — o
+// painel fica preso em "Iniciando conexão..." pra sempre, sem nenhum
+// mecanismo existente pra detectar isso (o crash-recovery do handler
+// 'ready' só cobre travamento DEPOIS de já ter conectado uma vez). Sem
+// esse watchdog, alguém precisa notar manualmente e reiniciar. Com ele,
+// se o client não sair do estado inicial dentro do prazo, tenta reiniciar
+// sozinho em processo; se travar de novo na 2ª tentativa, derruba o
+// processo inteiro (Railway sobe um container novo do zero — resolve
+// travamentos mais teimosos que o restart em processo não resolve).
+const INIT_WATCHDOG_MS = 90 * 1000;
+let initWatchdogTimer = null;
+let initWatchdogTentativas = 0;
+
+function armarInitWatchdog() {
+    if (initWatchdogTimer) clearTimeout(initWatchdogTimer);
+    initWatchdogTimer = setTimeout(async () => {
+        initWatchdogTentativas++;
+        console.error(`⏱️ WhatsApp não saiu de "iniciando" em ${INIT_WATCHDOG_MS / 1000}s (tentativa ${initWatchdogTentativas}).`);
+        registrarEventoConexao('watchdog_timeout', `tentativa ${initWatchdogTentativas}`);
+        if (initWatchdogTentativas >= 2) {
+            console.error('🔄 Já travou 2x seguidas — reiniciando o processo inteiro.');
+            process.exit(1);
+            return;
+        }
+        console.log('🔁 Reiniciando o client em processo (tentativa automática do watchdog)...');
+        try { await client.destroy(); } catch (_) { }
+        armarInitWatchdog();
+        client.initialize().catch(err => console.error('Erro ao reinicializar client pelo watchdog:', err.message));
+    }, INIT_WATCHDOG_MS);
+}
+
+function desarmarInitWatchdog() {
+    if (initWatchdogTimer) { clearTimeout(initWatchdogTimer); initWatchdogTimer = null; }
+    initWatchdogTentativas = 0;
+}
+
 // =====================================
 // EVENTOS DO SOCKET.IO (PAINEL WEB)
 // =====================================
@@ -4877,6 +4914,7 @@ io.on('connection', async (socket) => {
 // =====================================
 client.on('qr', async (qr) => {
     console.log('📲 Novo QR Code gerado! Acesse o painel web para escanear.');
+    desarmarInitWatchdog(); // chegou até aqui — Puppeteer/Chromium subiram normalmente
     sessionWasFresh = true; // a QR/pairing flow is happening — not a silent restore
     clientReadyForPairing = true;
     try {
@@ -4908,6 +4946,7 @@ client.on('auth_failure', (msg) => {
 
 client.on('ready', async () => {
     console.log('✅ Tudo certo! WhatsApp conectado.');
+    desarmarInitWatchdog(); // conectou (sessão restaurada sem precisar de QR) — não estava travado
     registrarEventoConexao('conectado');
     try {
         const info = client.info;
@@ -4949,6 +4988,7 @@ client.on('ready', async () => {
                 // Aguarda 4s e reinicializa — sem matar o processo Node!
                 setTimeout(async () => {
                     try {
+                        armarInitWatchdog(); // protege esse initialize() também, não só o do boot
                         await client.initialize();
                         console.log('🔁 Cliente reinicializado com sucesso.');
                     } catch (e) {
@@ -6275,6 +6315,7 @@ client.on('message_reaction', async (reaction) => {
 // =====================================
 (async () => {
     await initDB();
+    armarInitWatchdog();
     client.initialize();
     await reidratarPoolNaInicializacao();
     const PORT = process.env.PORT || 3000;
