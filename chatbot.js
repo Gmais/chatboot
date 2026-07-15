@@ -3,6 +3,7 @@
 // PATCH (deve rodar ANTES de qualquer require do whatsapp-web.js)
 
 // Ignora erro "already exists" ao registrar funções do Puppeteer.
+
 // Ocorre quando whatsapp-web.js reexpõe os mesmos bindings (ex: onAddMessageEvent,
 // onAuthAppStateChangedEvent) durante reinicializações internas do Store.
 //
@@ -4151,61 +4152,61 @@ async function processarImportacaoPactoContatos() {
     io.emit('pacto_import_progress', pactoImportProgress);
 
     async function processarMatricula(numero) {
-            const matricula = String(numero).padStart(6, '0');
-            try {
-                const aluno = await buscarAlunoPorMatricula(matricula);
-                if (!aluno) { pactoImportProgress.nao_encontrados++; return; }
+        const matricula = String(numero).padStart(6, '0');
+        try {
+            const aluno = await buscarAlunoPorMatricula(matricula);
+            if (!aluno) { pactoImportProgress.nao_encontrados++; return; }
 
-                const telefone = normalizarTelefoneImportado(aluno.pessoa?.telefones?.[0]?.numero);
-                if (!telefone) { pactoImportProgress.sem_telefone++; return; }
+            const telefone = normalizarTelefoneImportado(aluno.pessoa?.telefones?.[0]?.numero);
+            if (!telefone) { pactoImportProgress.sem_telefone++; return; }
 
-                const dataNascimento = aluno.pessoa?.datanasc ? String(aluno.pessoa.datanasc).slice(0, 10) : null;
+            const dataNascimento = aluno.pessoa?.datanasc ? String(aluno.pessoa.datanasc).slice(0, 10) : null;
 
-                const existente = await db.get(
-                    'SELECT telefone, data_nascimento FROM leads WHERE telefone = ? OR telefone = ? OR telefone = ?',
-                    [telefone, `${telefone}@c.us`, `${telefone}@lid`]
-                );
+            const existente = await db.get(
+                'SELECT telefone, data_nascimento FROM leads WHERE telefone = ? OR telefone = ? OR telefone = ?',
+                [telefone, `${telefone}@c.us`, `${telefone}@lid`]
+            );
 
-                // UPSERT atômico (em vez do antigo "confere, depois decide INSERT
-                // ou UPDATE" em dois passos separados) — fecha uma janela de
-                // corrida real: se uma mensagem de WhatsApp desse mesmo aluno
-                // chegasse (registerLead) bem entre o SELECT acima e um INSERT
-                // separado, os dois processos inseriam ao mesmo tempo e criavam
-                // DUAS linhas pro mesmo telefone — foi exatamente o que aconteceu
-                // com pelo menos 3 contatos (telefone é PRIMARY KEY, mas com dois
-                // INSERTs concorrentes sem essa proteção, ambos passavam). Só
-                // completa data_nascimento se estiver faltando, sem tocar em
-                // nome/matrícula pra não sobrescrever edição manual de quem já existia.
-                await db.run(
-                    `INSERT INTO leads (telefone, nome, origem, matricula, data_nascimento) VALUES (?, ?, 'pacto', ?, ?)
+            // UPSERT atômico (em vez do antigo "confere, depois decide INSERT
+            // ou UPDATE" em dois passos separados) — fecha uma janela de
+            // corrida real: se uma mensagem de WhatsApp desse mesmo aluno
+            // chegasse (registerLead) bem entre o SELECT acima e um INSERT
+            // separado, os dois processos inseriam ao mesmo tempo e criavam
+            // DUAS linhas pro mesmo telefone — foi exatamente o que aconteceu
+            // com pelo menos 3 contatos (telefone é PRIMARY KEY, mas com dois
+            // INSERTs concorrentes sem essa proteção, ambos passavam). Só
+            // completa data_nascimento se estiver faltando, sem tocar em
+            // nome/matrícula pra não sobrescrever edição manual de quem já existia.
+            await db.run(
+                `INSERT INTO leads (telefone, nome, origem, matricula, data_nascimento) VALUES (?, ?, 'pacto', ?, ?)
                      ON CONFLICT(telefone) DO UPDATE SET data_nascimento = excluded.data_nascimento
                      WHERE leads.data_nascimento IS NULL AND excluded.data_nascimento IS NOT NULL`,
-                    [telefone, aluno.pessoa?.nome || null, aluno.matricula || matricula, dataNascimento]
-                );
+                [telefone, aluno.pessoa?.nome || null, aluno.matricula || matricula, dataNascimento]
+            );
 
-                if (existente) {
-                    pactoImportProgress.ja_existiam++;
-                } else {
-                    leadsSet.add(telefone);
-                    stats.leads++;
-                    pactoImportProgress.importados++;
-                }
-            } catch (err) {
-                console.error(`❌ Erro ao importar matrícula ${matricula} do Pacto:`, err.message);
-                pactoImportProgress.nao_encontrados++;
+            if (existente) {
+                pactoImportProgress.ja_existiam++;
+            } else {
+                leadsSet.add(telefone);
+                stats.leads++;
+                pactoImportProgress.importados++;
             }
+        } catch (err) {
+            console.error(`❌ Erro ao importar matrícula ${matricula} do Pacto:`, err.message);
+            pactoImportProgress.nao_encontrados++;
         }
+    }
 
-        let atual = PACTO_IMPORT_MATRICULA_MIN;
-        while (atual <= PACTO_IMPORT_MATRICULA_MAX && pactoImportRunning) {
-            const lote = [];
-            for (let i = 0; i < PACTO_IMPORT_CONCORRENCIA && atual <= PACTO_IMPORT_MATRICULA_MAX; i++, atual++) {
-                lote.push(processarMatricula(atual));
-            }
-            await Promise.all(lote);
-            pactoImportProgress.verificadas += lote.length;
-            io.emit('pacto_import_progress', pactoImportProgress);
+    let atual = PACTO_IMPORT_MATRICULA_MIN;
+    while (atual <= PACTO_IMPORT_MATRICULA_MAX && pactoImportRunning) {
+        const lote = [];
+        for (let i = 0; i < PACTO_IMPORT_CONCORRENCIA && atual <= PACTO_IMPORT_MATRICULA_MAX; i++, atual++) {
+            lote.push(processarMatricula(atual));
         }
+        await Promise.all(lote);
+        pactoImportProgress.verificadas += lote.length;
+        io.emit('pacto_import_progress', pactoImportProgress);
+    }
 
     pactoImportProgress.running = false;
     pactoImportRunning = false;
@@ -4790,8 +4791,16 @@ async function checarProgramacoes() {
             if (!dias.includes(diaAtual)) continue;
             const [h, m] = prog.horario.split(':').map(Number);
             if (minutoAtual < h * 60 + m) continue; // ainda não chegou o horário
-            await db.run('UPDATE programacoes SET ultima_execucao_em = ? WHERE id = ?', [hojeYMD, prog.id]);
             console.log(`🗓️ Programação "${prog.nome}": disparando...`);
+            // Só marca "já rodou hoje" se o WhatsApp estava conectado na hora —
+            // sem isso, uma Programação que cai bem na janela de uma reconexão
+            // travada (ex: deploy, crash) falha silenciosamente e ainda assim
+            // fica marcada como "rodou hoje", sem tentar de novo até o dia
+            // seguinte (foi o que aconteceu com a Aniversariante das 08:00 no
+            // meio do loop de reconexão). Falha por outro motivo (pausada, fora
+            // do horário da própria automação) não vale a pena tentar de novo
+            // no mesmo dia, mas continua marcando — só a desconexão é transitória.
+            let falhouPorDesconexao = false;
             const acoes = await db.all('SELECT automacao_id, intervalo_depois_segundos, tipo FROM programacao_acoes WHERE programacao_id = ? ORDER BY ordem ASC', prog.id);
             for (let i = 0; i < acoes.length; i++) {
                 const acao = acoes[i];
@@ -4822,7 +4831,10 @@ async function checarProgramacoes() {
                         console.log(`⚠️ Programação "${prog.nome}": erro ao importar lista da automação #${acao.automacao_id} antes do disparo — ${e.message}`);
                     }
                     const resultado = await dispararAutomacaoComGuardas(acao.automacao_id, `Programação "${prog.nome}"`);
-                    if (!resultado.ok) console.log(`⚠️ Programação "${prog.nome}": automação #${acao.automacao_id} não disparou — ${resultado.error}`);
+                    if (!resultado.ok) {
+                        console.log(`⚠️ Programação "${prog.nome}": automação #${acao.automacao_id} não disparou — ${resultado.error}`);
+                        if (resultado.error === 'WhatsApp não está conectado.') falhouPorDesconexao = true;
+                    }
                 }
                 // Espera o intervalo configurado ANTES da próxima ação da mesma
                 // programação — não espera a ação atual terminar (o disparo roda
@@ -4830,6 +4842,11 @@ async function checarProgramacoes() {
                 // INÍCIO de uma ação e da próxima (ex: dar tempo do import
                 // acontecer antes do disparo seguinte tentar mandar mensagem).
                 if (i < acoes.length - 1) await delay((acao.intervalo_depois_segundos || 60) * 1000);
+            }
+            if (falhouPorDesconexao) {
+                console.log(`⏳ Programação "${prog.nome}": WhatsApp estava desconectado — não marca como rodada hoje, tenta de novo no próximo check (5min).`);
+            } else {
+                await db.run('UPDATE programacoes SET ultima_execucao_em = ? WHERE id = ?', [hojeYMD, prog.id]);
             }
         }
     } catch (e) {
