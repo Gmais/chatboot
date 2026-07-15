@@ -6159,24 +6159,36 @@ function extensaoPorMimetype(mimetype) {
 // salva em public/uploads (volume persistente) — devolve a URL pública pra
 // gravar em conversas.media_path, pra dar pra abrir a mídia clicando na bolha
 // do Bate Papo ao Vivo. Antes disso a mídia recebida nunca era baixada, só
-// classificada por tipo. Timeout curto: se travar, a mensagem salva do mesmo
-// jeito, só sem anexo clicável (mesmo padrão de transcreverAudio acima).
+// classificada por tipo. Se travar/falhar, a mensagem salva do mesmo jeito,
+// só sem anexo clicável (mesmo padrão de transcreverAudio acima).
+//
+// 15s (valor original) era curto demais na prática: medindo os documentos e
+// imagens recebidos de verdade, boa parte vinha com media_path nulo (arquivo
+// nunca baixado) — documento em especial, por ser tipicamente maior que foto
+// (WhatsApp comprime foto automaticamente, documento vai no tamanho original).
+// Timeout maior + 1 tentativa extra (falha de download costuma ser uma
+// demora pontual do WhatsApp Web pra liberar a chave de descriptografia da
+// mídia, não uma falha permanente — tentar de novo depois de uma pausa curta
+// resolve na maioria dos casos).
 async function baixarMidiaRecebida(msg) {
-    try {
-        const media = await Promise.race([
-            msg.downloadMedia(),
-            new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 15000))
-        ]);
-        if (!media || !media.data) return null;
-        const ext = extensaoPorMimetype(media.mimetype);
-        const nomeArquivo = `recebido_${Date.now()}_${Math.round(Math.random() * 1e9)}.${ext}`;
-        const destino = path.join(__dirname, 'public', 'uploads', nomeArquivo);
-        fs.writeFileSync(destino, Buffer.from(media.data, 'base64'));
-        return '/uploads/' + nomeArquivo;
-    } catch (e) {
-        console.error('Erro ao baixar mídia recebida:', e.message);
-        return null;
+    for (let tentativa = 1; tentativa <= 2; tentativa++) {
+        try {
+            const media = await Promise.race([
+                msg.downloadMedia(),
+                new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 45000))
+            ]);
+            if (!media || !media.data) throw new Error('downloadMedia devolveu vazio');
+            const ext = extensaoPorMimetype(media.mimetype);
+            const nomeArquivo = `recebido_${Date.now()}_${Math.round(Math.random() * 1e9)}.${ext}`;
+            const destino = path.join(__dirname, 'public', 'uploads', nomeArquivo);
+            fs.writeFileSync(destino, Buffer.from(media.data, 'base64'));
+            return '/uploads/' + nomeArquivo;
+        } catch (e) {
+            console.error(`Erro ao baixar mídia recebida (tentativa ${tentativa}/2):`, e.message);
+            if (tentativa < 2) await delay(3000);
+        }
     }
+    return null;
 }
 
 // Quando o WhatsApp usa @lid (privacidade), resolve o número de telefone real.
