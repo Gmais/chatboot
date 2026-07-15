@@ -2151,6 +2151,13 @@ function parsearContratosSemAssinarTexto(texto) {
                 j++;
             }
             let k = 0;
+            // Às vezes um fragmento de telefone/duração de OUTRO contrato do
+            // aluno anterior (ex: "(42)999949098" ou "12" sozinho) sobra e cai
+            // no início do bloco desse aluno, antes do nome de verdade — nome
+            // sempre tem letra, então pula qualquer coisa sem letra ANTES de
+            // começar a juntar o nome (esse lixo já não tem como ser
+            // reatribuído com confiança a quem era, então só é descartado).
+            while (k < bloco.length && !/[A-Za-zÀ-ÿ]/.test(bloco[k])) k++;
             const nomeLinhas = [];
             while (k < bloco.length && !/^\d{3,7}$/.test(bloco[k])) { nomeLinhas.push(bloco[k]); k++; }
             const matricula = bloco[k];
