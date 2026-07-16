@@ -558,6 +558,12 @@ async function initDB() {
     // esse contato e pra filtrar relatórios/limpezas específicas de canal.
     try { await db.exec(`ALTER TABLE leads ADD COLUMN canal TEXT DEFAULT 'whatsapp'`); } catch (e) { }
     try { await db.exec(`ALTER TABLE conversas ADD COLUMN canal TEXT DEFAULT 'whatsapp'`); } catch (e) { }
+    // ID da mensagem de verdade no WhatsApp — sem isso não tinha como editar
+    // ou excluir depois uma mensagem já enviada (precisa desse id pra achar a
+    // mensagem de novo no WhatsApp Web e chamar edit()/delete() nela). Só fica
+    // populado pra mensagens enviadas DEPOIS dessa coluna existir — histórico
+    // antigo não tem como ganhar editar/excluir retroativamente.
+    try { await db.exec(`ALTER TABLE conversas ADD COLUMN msg_id TEXT DEFAULT NULL`); } catch (e) { }
     // Dedup de mensagens do webhook do Instagram — a Meta não garante entrega
     // única, pode reenviar o MESMO evento se a resposta demorar/falhar. Sem
     // isso, uma reentrega processava a mensagem de novo (lead duplicado,
@@ -880,13 +886,30 @@ const TIPO_LABEL_FALLBACK = {
 // segundos) — quando informado, usa esse em vez de "agora". Sem isso, uma
 // mensagem sincronizada em lote (ex: reconexão trazendo histórico) fica com
 // o horário de quando o robô processou, não o horário real da mensagem.
-async function salvarNaConversa(telefone, nome, direcao, texto, tipo = 'text', tsReal = null, manual = false, mediaPath = null, canal = 'whatsapp') {
+async function salvarNaConversa(telefone, nome, direcao, texto, tipo = 'text', tsReal = null, manual = false, mediaPath = null, canal = 'whatsapp', msgId = null) {
     const num = telefone.replace('@c.us', '').replace('@lid', '');
     const ts = tsReal ? new Date(tsReal * 1000).toISOString() : new Date().toISOString();
     const lida = direcao === 'out' ? 1 : 0;
+    // Guarda universal contra duplicata técnica: a MESMA mensagem (mesmo
+    // telefone, direção e texto) chegando aqui de novo em menos de 2s quase
+    // certamente é o mesmo envio processado duas vezes (double-submit do
+    // formulário, eco do celular não reconhecido, automação disparando duas
+    // vezes) — ninguém manda a mesma frase duas vezes de propósito tão rápido.
+    // Fica como última linha de defesa, cobrindo qualquer chamador (o dedup
+    // específico de cada rota é mais preciso, mas nem sempre pega tudo).
+    if (texto) {
+        const duplicataRecente = await db.get(
+            `SELECT 1 FROM conversas WHERE telefone = ? AND direcao = ? AND texto = ? AND ts >= datetime('now', '-2 seconds') LIMIT 1`,
+            [num, direcao, texto]
+        );
+        if (duplicataRecente) {
+            console.log(`⚠️ Mensagem duplicada descartada (${num}, ${direcao}): "${texto.slice(0, 40)}"`);
+            return null;
+        }
+    }
     const resultado = await db.run(
-        'INSERT INTO conversas (telefone, nome, direcao, texto, tipo, ts, lida, manual, media_path, canal) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-        [num, nome || num, direcao, texto, tipo, ts, lida, manual ? 1 : 0, mediaPath, canal]
+        'INSERT INTO conversas (telefone, nome, direcao, texto, tipo, ts, lida, manual, media_path, canal, msg_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        [num, nome || num, direcao, texto, tipo, ts, lida, manual ? 1 : 0, mediaPath, canal, msgId]
     );
     // Conta não lidas deste telefone
     const naoLidas = await db.get('SELECT COUNT(*) as c FROM conversas WHERE telefone=? AND lida=0 AND direcao="in"', num);
@@ -1037,7 +1060,7 @@ async function registrarMensagemEnviada(telefone, texto, nome, msgId = null, man
     marcarMensagemComoDoSistema(msgId, numeroLimpo, texto);
     await db.run('INSERT INTO mensagens_enviadas (telefone, texto) VALUES (?, ?)', [numeroLimpo, texto]);
     stats.sent++;
-    await salvarNaConversa(numeroLimpo, nome, 'out', texto, tipo, null, manual, mediaPath, canal);
+    await salvarNaConversa(numeroLimpo, nome, 'out', texto, tipo, null, manual, mediaPath, canal, msgId);
     io.emit('message_out', { to: numeroLimpo, text: texto, ts: Date.now() });
     io.emit('stats', stats);
     if (manual) indexarExemploConsultora(numeroLimpo, texto).catch(e => console.error('Erro ao indexar exemplo (fire-and-forget):', e.message));
@@ -4237,6 +4260,60 @@ app.post('/api/conversas/:telefone/enviar', async (req, res) => {
     }
 });
 
+// Edita uma mensagem já enviada — só funciona pra mensagens enviadas DEPOIS
+// que a coluna msg_id passou a existir (histórico antigo não tem como ganhar
+// isso retroativamente) e dentro da janela de tempo que o próprio WhatsApp
+// permite editar (alguns minutos — regra da Meta, não nossa).
+app.put('/api/conversas/:telefone/mensagem/:id', async (req, res) => {
+    const { id } = req.params;
+    const { texto } = req.body;
+    if (!texto || !texto.trim()) return res.status(400).json({ error: 'Texto obrigatório.' });
+    try {
+        const linha = await db.get('SELECT * FROM conversas WHERE id = ?', id);
+        if (!linha) return res.status(404).json({ error: 'Mensagem não encontrada.' });
+        if (linha.direcao !== 'out') return res.status(400).json({ error: 'Só é possível editar mensagens enviadas.' });
+        if (!linha.msg_id) return res.status(400).json({ error: 'Essa mensagem é antiga demais (enviada antes desse recurso existir) — não dá pra editar.' });
+        if (!isConnected) return res.status(400).json({ error: 'WhatsApp não está conectado.' });
+        const msg = await client.getMessageById(linha.msg_id);
+        if (!msg) return res.status(404).json({ error: 'Não encontrei essa mensagem no WhatsApp — pode ter passado da janela de edição.' });
+        const editada = await msg.edit(texto.trim());
+        if (!editada) return res.status(400).json({ error: 'O WhatsApp recusou a edição (mensagem antiga demais, ou tipo que não pode ser editado).' });
+        await db.run('UPDATE conversas SET texto = ? WHERE id = ?', [texto.trim(), id]);
+        io.emit('mensagem_editada', { id: Number(id), telefone: linha.telefone, texto: texto.trim() });
+        res.json({ success: true });
+    } catch (err) {
+        console.error('Erro ao editar mensagem:', err.message);
+        res.status(500).json({ error: 'Não foi possível editar essa mensagem no WhatsApp.' });
+    }
+});
+
+// Exclui uma mensagem já enviada — tenta apagar pra todo mundo no WhatsApp
+// (se ainda tiver o msg_id e estiver dentro da janela que a Meta permite);
+// de qualquer forma, sempre some do histórico daqui, mesmo se a exclusão no
+// WhatsApp falhar (mensagem antiga demais pra ter msg_id salvo, por exemplo).
+app.delete('/api/conversas/:telefone/mensagem/:id', async (req, res) => {
+    const { id } = req.params;
+    try {
+        const linha = await db.get('SELECT * FROM conversas WHERE id = ?', id);
+        if (!linha) return res.status(404).json({ error: 'Mensagem não encontrada.' });
+        if (linha.direcao !== 'out') return res.status(400).json({ error: 'Só é possível excluir mensagens enviadas.' });
+        let excluidaNoWhatsapp = false;
+        if (linha.msg_id && isConnected) {
+            try {
+                const msg = await client.getMessageById(linha.msg_id);
+                if (msg) { await msg.delete(true); excluidaNoWhatsapp = true; }
+            } catch (e) {
+                console.error('Erro ao excluir mensagem no WhatsApp (removendo só do histórico):', e.message);
+            }
+        }
+        await db.run('DELETE FROM conversas WHERE id = ?', id);
+        io.emit('mensagem_excluida', { id: Number(id), telefone: linha.telefone });
+        res.json({ success: true, excluida_no_whatsapp: excluidaNoWhatsapp });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
 // Marca todas as mensagens de um contato como lidas
 app.post('/api/conversas/:telefone/lida', async (req, res) => {
     const { telefone } = req.params;
@@ -4310,7 +4387,7 @@ app.post('/api/conversas/:telefone/enviar-arquivo', upload.single('arquivo'), as
         // trazer no message_create, vazio se não teve legenda) — não o nome do
         // arquivo, que só é usado como texto de exibição quando falta legenda.
         marcarMensagemComoDoSistema(sentMsg?.id?._serialized, numeroLimpo, legenda);
-        await salvarNaConversa(numeroLimpo, nome, 'out', legenda || req.file.originalname, tipo, null, true, mediaUrl);
+        await salvarNaConversa(numeroLimpo, nome, 'out', legenda || req.file.originalname, tipo, null, true, mediaUrl, 'whatsapp', sentMsg?.id?._serialized);
         io.emit('stats', stats);
         res.json({ success: true });
     } catch (err) {

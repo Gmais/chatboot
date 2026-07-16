@@ -3667,11 +3667,21 @@ const CM = (() => {
                 : `<div class="bubble-sender">🤖 Bot</div>`;
         }
 
+        // Editar/excluir só faz sentido pra mensagem que a gente mandou —
+        // editar só pra texto puro (mídia não dá pra editar a legenda depois
+        // pelo WhatsApp), excluir vale pra qualquer tipo enviado.
+        let acoesHtml = '';
+        if (m.direcao === 'out' && m.id) {
+            const btnEditar = m.tipo === 'text' ? `<button type="button" class="bubble-btn-editar" title="Editar mensagem">✏️</button>` : '';
+            acoesHtml = `<div class="bubble-acoes">${btnEditar}<button type="button" class="bubble-btn-excluir" title="Excluir mensagem">🗑️</button></div>`;
+        }
+
         wrap.innerHTML = `
             <div class="${bubbleClass}">
                 ${senderLabel}
                 ${buildBubbleBodyHtml(m)}
                 <div class="bubble-time">${formatHoraCompleta(m.ts)}</div>
+                ${acoesHtml}
             </div>
         `;
 
@@ -3814,6 +3824,49 @@ const CM = (() => {
         // Recarregar histórico
         btnReload?.addEventListener('click', () => {
             if (activePhone) loadHistory(activePhone);
+        });
+
+        // Editar/excluir mensagem enviada — botões só aparecem nas bolhas
+        // "out" (ver appendBubble), delegado num único listener no container.
+        chatMessages?.addEventListener('click', async (e) => {
+            const bolha = e.target.closest('.chat-bubble-wrap');
+            if (!bolha || !activePhone) return;
+            const msgId = bolha.dataset.msgId;
+            if (!msgId) return;
+
+            if (e.target.closest('.bubble-btn-excluir')) {
+                if (!confirm('Excluir essa mensagem? Se ainda estiver dentro da janela que o WhatsApp permite, ela some pra todo mundo na conversa, não só daqui.')) return;
+                try {
+                    const res = await fetch(`/api/conversas/${encodeURIComponent(activePhone)}/mensagem/${msgId}`, { method: 'DELETE' });
+                    const data = await res.json();
+                    if (!res.ok) throw new Error(data.error || 'Erro ao excluir');
+                    bolha.remove();
+                    showToast(data.excluida_no_whatsapp ? 'Excluída!' : 'Removida daqui', data.excluida_no_whatsapp ? '' : 'Não deu pra excluir no WhatsApp (mensagem antiga), mas saiu do histórico.', 'success', 3000);
+                } catch (err) {
+                    showToast('Erro ao excluir', err.message, 'error');
+                }
+                return;
+            }
+
+            if (e.target.closest('.bubble-btn-editar')) {
+                const corpo = bolha.querySelector('.bubble-text');
+                const textoAtual = corpo ? corpo.textContent : '';
+                const novoTexto = prompt('Editar mensagem:', textoAtual);
+                if (novoTexto === null || !novoTexto.trim() || novoTexto.trim() === textoAtual.trim()) return;
+                try {
+                    const res = await fetch(`/api/conversas/${encodeURIComponent(activePhone)}/mensagem/${msgId}`, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ texto: novoTexto.trim() })
+                    });
+                    const data = await res.json();
+                    if (!res.ok) throw new Error(data.error || 'Erro ao editar');
+                    if (corpo) corpo.textContent = novoTexto.trim();
+                    showToast('Mensagem editada!', '', 'success', 2500);
+                } catch (err) {
+                    showToast('Erro ao editar', err.message, 'error');
+                }
+            }
         });
 
         // Abas Abertas / Fechadas
@@ -3964,7 +4017,21 @@ const CM = (() => {
             if (!corpo) return;
             const tempoHtml = corpo.querySelector('.bubble-time')?.outerHTML || '';
             const senderHtml = corpo.querySelector('.bubble-sender')?.outerHTML || '';
-            corpo.innerHTML = `${senderHtml}${buildBubbleBodyHtml(data)}${tempoHtml}`;
+            const acoesHtml = corpo.querySelector('.bubble-acoes')?.outerHTML || '';
+            corpo.innerHTML = `${senderHtml}${buildBubbleBodyHtml(data)}${tempoHtml}${acoesHtml}`;
+        });
+
+        // Mensagem editada/excluída em OUTRA aba/sessão — reflete aqui também.
+        socket.on('mensagem_editada', ({ id, telefone, texto }) => {
+            if (activePhone !== telefone) return;
+            const bolha = chatMessages?.querySelector(`.chat-bubble-wrap[data-msg-id="${id}"]`);
+            const corpo = bolha?.querySelector('.bubble-text');
+            if (corpo) corpo.textContent = texto;
+        });
+
+        socket.on('mensagem_excluida', ({ id, telefone }) => {
+            if (activePhone !== telefone) return;
+            chatMessages?.querySelector(`.chat-bubble-wrap[data-msg-id="${id}"]`)?.remove();
         });
 
         socket.on('bot_digitando', ({ telefone, ativo }) => {

@@ -1035,6 +1035,33 @@ header h1 {
     line-height: 1;
 }
 
+/* Editar/excluir — fica discreto no canto, some parte do fundo do balão até
+   passar o mouse (desktop) ou tocar (celular já mostra fraco de propósito,
+   pra dar pra usar sem precisar de hover). */
+.bubble-acoes {
+    position: absolute;
+    top: -8px;
+    left: -6px;
+    transform: translateX(-100%);
+    display: flex;
+    gap: 2px;
+    background: var(--card-bg);
+    border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 8px;
+    padding: 2px 4px;
+    opacity: 0.45;
+    transition: opacity 0.15s;
+}
+.chat-bubble:hover .bubble-acoes { opacity: 1; }
+.bubble-acoes button {
+    background: none;
+    border: none;
+    cursor: pointer;
+    font-size: 0.78rem;
+    line-height: 1;
+    padding: 2px;
+}
+
 /* Tipo de mensagem não-texto */
 .bubble-type-badge {
     display: inline-flex;
