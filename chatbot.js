@@ -859,13 +859,13 @@ async function salvarNaConversa(telefone, nome, direcao, texto, tipo = 'text', t
     const num = telefone.replace('@c.us', '').replace('@lid', '');
     const ts = tsReal ? new Date(tsReal * 1000).toISOString() : new Date().toISOString();
     const lida = direcao === 'out' ? 1 : 0;
-    await db.run(
+    const resultado = await db.run(
         'INSERT INTO conversas (telefone, nome, direcao, texto, tipo, ts, lida, manual, media_path, canal) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
         [num, nome || num, direcao, texto, tipo, ts, lida, manual ? 1 : 0, mediaPath, canal]
     );
     // Conta não lidas deste telefone
     const naoLidas = await db.get('SELECT COUNT(*) as c FROM conversas WHERE telefone=? AND lida=0 AND direcao="in"', num);
-    io.emit('nova_mensagem', { telefone: num, nome: nome || num, texto, direcao, tipo, ts, nao_lidas: naoLidas.c, manual, media_path: mediaPath, canal });
+    io.emit('nova_mensagem', { id: resultado.lastID, telefone: num, nome: nome || num, texto, direcao, tipo, ts, nao_lidas: naoLidas.c, manual, media_path: mediaPath, canal });
 
     // Qualquer mensagem nova (do cliente OU pro cliente — bot, automação,
     // envio manual) reabre a conversa se ela tinha sido finalizada. "Finalizada"
@@ -879,6 +879,7 @@ async function salvarNaConversa(telefone, nome, direcao, texto, tipo = 'text', t
         );
         io.emit('conversa_status_atualizada', { telefone: num, status: 'aberta' });
     }
+    return resultado.lastID;
 }
 
 // =====================================
@@ -6166,12 +6167,21 @@ function extensaoPorMimetype(mimetype) {
 // imagens recebidos de verdade, boa parte vinha com media_path nulo (arquivo
 // nunca baixado) — documento em especial, por ser tipicamente maior que foto
 // (WhatsApp comprime foto automaticamente, documento vai no tamanho original).
-// Timeout maior + 1 tentativa extra (falha de download costuma ser uma
-// demora pontual do WhatsApp Web pra liberar a chave de descriptografia da
-// mídia, não uma falha permanente — tentar de novo depois de uma pausa curta
-// resolve na maioria dos casos).
+//
+// Achado um segundo motivo de falha, mais profundo: por baixo do
+// downloadMedia(), o whatsapp-web.js tenta achar a mensagem em memória
+// (rápido) e só cai pra uma busca no IndexedDB do próprio WhatsApp Web
+// quando não acha (comum em chats novos/pouco estabelecidos, ex: contato
+// que acabou de mandar a primeira mensagem) — e essa busca no IndexedDB
+// está batendo num bug de verdade do WhatsApp Web ("Failed to execute get
+// on IDBObjectStore: No key or key range specified"), fora do nosso
+// controle. Dar um respiro ANTES de tentar (dá tempo do Store terminar de
+// indexar a mensagem em memória) aumenta a chance do caminho rápido
+// funcionar e nunca cair nesse bug. Só ajuda, não resolve 100% — é um bug
+// de verdade do WhatsApp Web, não vamos conseguir eliminar por completo.
 async function baixarMidiaRecebida(msg) {
-    for (let tentativa = 1; tentativa <= 2; tentativa++) {
+    for (let tentativa = 1; tentativa <= 3; tentativa++) {
+        await delay(tentativa === 1 ? 1500 : 5000);
         try {
             const media = await Promise.race([
                 msg.downloadMedia(),
@@ -6184,11 +6194,26 @@ async function baixarMidiaRecebida(msg) {
             fs.writeFileSync(destino, Buffer.from(media.data, 'base64'));
             return '/uploads/' + nomeArquivo;
         } catch (e) {
-            console.error(`Erro ao baixar mídia recebida (tentativa ${tentativa}/2):`, e.message);
-            if (tentativa < 2) await delay(3000);
+            console.error(`Erro ao baixar mídia recebida (tentativa ${tentativa}/3):`, e.message);
         }
     }
     return null;
+}
+
+// Roda baixarMidiaRecebida em background, sem segurar quem chamou — a
+// mensagem já foi salva e exibida (com media_path nulo); se o download
+// terminar bem, atualiza essa mesma linha em "conversas" e avisa o painel
+// pra trocar o selo de tipo pelo anexo de verdade na bolha já exibida.
+function baixarMidiaEAtualizarEmBackground(msg, idConversa, telefone) {
+    baixarMidiaRecebida(msg).then(async (mediaPath) => {
+        if (!mediaPath || !idConversa) return;
+        await db.run('UPDATE conversas SET media_path = ? WHERE id = ?', [mediaPath, idConversa]);
+        // Manda a linha inteira (não só media_path) — o painel monta o corpo
+        // da bolha (imagem/vídeo/documento) a partir de tipo+texto+media_path
+        // juntos, mesmo formato de nova_mensagem.
+        const linha = await db.get('SELECT tipo, texto, direcao, manual FROM conversas WHERE id = ?', idConversa);
+        io.emit('midia_atualizada', { id: idConversa, telefone, media_path: mediaPath, ...linha });
+    }).catch(e => console.error('Erro ao baixar mídia em background:', e.message));
 }
 
 // Quando o WhatsApp usa @lid (privacidade), resolve o número de telefone real.
@@ -6287,13 +6312,13 @@ client.on('message_create', async (msg) => {
         if (tipoMsg === 'text' && !msg.body) return;
         const textoExibir = msg.body || TIPO_LABEL_FALLBACK[tipoMsg] || '[mensagem sem texto]';
         const nome = await resolverNomeContato(numLimpo);
-        let mediaPath = null;
-        if (msg.hasMedia && ['image', 'video', 'document', 'sticker'].includes(tipoMsg)) {
-            mediaPath = await baixarMidiaRecebida(msg);
-        }
         // Chegou aqui = mandada direto do celular vinculado, não pelo robô nem
         // pelo painel — é sempre um atendente humano respondendo por fora.
-        await salvarNaConversa(numLimpo, nome, 'out', textoExibir, tipoMsg, msg.timestamp, true, mediaPath);
+        // Mídia baixa em background (ver comentário em baixarMidiaRecebida).
+        const idConversa = await salvarNaConversa(numLimpo, nome, 'out', textoExibir, tipoMsg, msg.timestamp, true, null);
+        if (msg.hasMedia && ['image', 'video', 'document', 'sticker'].includes(tipoMsg)) {
+            baixarMidiaEAtualizarEmBackground(msg, idConversa, numLimpo);
+        }
     } catch (e) {
         console.error('Erro ao registrar mensagem enviada pelo celular:', e.message);
     }
@@ -6763,16 +6788,18 @@ client.on('message', async (msg) => {
         if (tipoMsg === 'text' && !msg.body && !transcricaoAudio) return;
 
         // Salva na tabela de conversas (mensagens recebidas) — salvarNaConversa já
-        // reabre a conversa automaticamente se ela tinha sido finalizada.
+        // reabre a conversa automaticamente se ela tinha sido finalizada. A
+        // mensagem aparece JÁ (com o texto/selo do tipo) sem esperar a mídia
+        // baixar — baixarMidiaRecebida pode levar bastante tempo (retentativas
+        // + timeout, ver comentário na função), e segurar a exibição da
+        // mensagem inteira até isso terminar deixava a conversa "atrasada" no
+        // painel. A mídia entra depois, em background, atualizando o balão já
+        // exibido assim que (e se) o download terminar.
         const textoExibir = transcricaoAudio ? `🎤 ${transcricaoAudio}` : (msg.body || TIPO_LABEL_FALLBACK[tipoMsg] || '[mensagem sem texto]');
-        // Baixa a mídia (menos áudio — já foi baixado à parte pra transcrição
-        // acima, baixar de novo aqui seria redundante) pra dar pra abrir a
-        // imagem/documento/vídeo/figurinha clicando na bolha do painel.
-        let mediaPath = null;
+        const idConversa = await salvarNaConversa(numLimpo, nomeContato, 'in', textoExibir, tipoMsg, msg.timestamp, false, null);
         if (msg.hasMedia && ['image', 'video', 'document', 'sticker'].includes(tipoMsg)) {
-            mediaPath = await baixarMidiaRecebida(msg);
+            baixarMidiaEAtualizarEmBackground(msg, idConversa, numLimpo);
         }
-        await salvarNaConversa(numLimpo, nomeContato, 'in', textoExibir, tipoMsg, msg.timestamp, false, mediaPath);
 
         // Ignora mensagens sem texto (stickers, imagens sem legenda, áudio sem transcrição)
         if (!texto && !msg.body) return;

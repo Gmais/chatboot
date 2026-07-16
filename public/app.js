@@ -3575,14 +3575,44 @@ const CM = (() => {
     }
 
     // ---- Cria e adiciona uma bolha de mensagem ----
+    // ---- Monta o HTML do "corpo" da bolha (texto, mídia ou selo do tipo) ----
+    // Extraído do appendBubble pra poder ser reaproveitado quando a mídia
+    // termina de baixar DEPOIS da bolha já estar na tela (ver evento
+    // 'midia_atualizada') — nesse caso só troca esse pedaço, sem recriar a bolha.
+    function buildBubbleBodyHtml(m) {
+        const icon = tipoIcon(m.tipo);
+        // Áudio transcrito e outras mídias com legenda têm texto real além do
+        // tipo — mostra o selo do tipo E o texto, não só o selo (senão a
+        // transcrição do áudio nunca aparece na bolha).
+        const temTextoReal = m.texto && !/^\[.*\]$/.test(m.texto.trim());
+        const legendaHtml = temTextoReal ? `<div class="bubble-text">${escapeHtml(m.texto.replace(/^🎤\s*/, ''))}</div>` : '';
+
+        if (m.media_path && m.tipo === 'image') {
+            // Clica na miniatura e abre a imagem em tamanho real numa aba nova.
+            return `<a href="${m.media_path}" target="_blank" rel="noopener" class="bubble-media-link" title="Abrir imagem"><img src="${m.media_path}" class="bubble-image" alt="Imagem" loading="lazy"></a>${legendaHtml}`;
+        } else if (m.media_path && m.tipo === 'video') {
+            return `<video src="${m.media_path}" class="bubble-video" controls preload="metadata"></video>${legendaHtml}`;
+        } else if (m.media_path) {
+            // Documento, figurinha etc. — abre/baixa numa aba nova.
+            const rotulo = m.tipo === 'document' ? 'Abrir documento' : 'Abrir anexo';
+            const emojiLink = m.tipo === 'sticker' ? '🎭' : m.tipo === 'document' ? '📄' : '📎';
+            return `<a href="${m.media_path}" target="_blank" rel="noopener" class="bubble-doc-link">${emojiLink} ${rotulo}</a>${legendaHtml}`;
+        } else if (icon && temTextoReal) {
+            return `<span class="bubble-type-badge">${icon}</span>${legendaHtml}`;
+        } else if (icon) {
+            return `<span class="bubble-type-badge">${icon}</span>`;
+        }
+        return `<div class="bubble-text">${escapeHtml(m.texto || '')}</div>`;
+    }
+
     function appendBubble(m, scroll = false) {
         if (!chatMessages) return;
         const wrap = document.createElement('div');
         wrap.className = `chat-bubble-wrap ${m.direcao}`;
+        if (m.id) wrap.dataset.msgId = m.id;
 
         const isManual = m.manual === true;
         const bubbleClass = `chat-bubble ${m.direcao}${isManual ? ' manual' : ''}`;
-        const icon = tipoIcon(m.tipo);
 
         let senderLabel = '';
         if (m.direcao === 'out') {
@@ -3591,35 +3621,10 @@ const CM = (() => {
                 : `<div class="bubble-sender">🤖 Bot</div>`;
         }
 
-        // Áudio transcrito e outras mídias com legenda têm texto real além do
-        // tipo — mostra o selo do tipo E o texto, não só o selo (senão a
-        // transcrição do áudio nunca aparece na bolha).
-        const temTextoReal = m.texto && !/^\[.*\]$/.test(m.texto.trim());
-        const legendaHtml = temTextoReal ? `<div class="bubble-text">${escapeHtml(m.texto.replace(/^🎤\s*/, ''))}</div>` : '';
-
-        let bodyHtml;
-        if (m.media_path && m.tipo === 'image') {
-            // Clica na miniatura e abre a imagem em tamanho real numa aba nova.
-            bodyHtml = `<a href="${m.media_path}" target="_blank" rel="noopener" class="bubble-media-link" title="Abrir imagem"><img src="${m.media_path}" class="bubble-image" alt="Imagem" loading="lazy"></a>${legendaHtml}`;
-        } else if (m.media_path && m.tipo === 'video') {
-            bodyHtml = `<video src="${m.media_path}" class="bubble-video" controls preload="metadata"></video>${legendaHtml}`;
-        } else if (m.media_path) {
-            // Documento, figurinha etc. — abre/baixa numa aba nova.
-            const rotulo = m.tipo === 'document' ? 'Abrir documento' : 'Abrir anexo';
-            const emojiLink = m.tipo === 'sticker' ? '🎭' : m.tipo === 'document' ? '📄' : '📎';
-            bodyHtml = `<a href="${m.media_path}" target="_blank" rel="noopener" class="bubble-doc-link">${emojiLink} ${rotulo}</a>${legendaHtml}`;
-        } else if (icon && temTextoReal) {
-            bodyHtml = `<span class="bubble-type-badge">${icon}</span>${legendaHtml}`;
-        } else if (icon) {
-            bodyHtml = `<span class="bubble-type-badge">${icon}</span>`;
-        } else {
-            bodyHtml = `<div class="bubble-text">${escapeHtml(m.texto || '')}</div>`;
-        }
-
         wrap.innerHTML = `
             <div class="${bubbleClass}">
                 ${senderLabel}
-                ${bodyHtml}
+                ${buildBubbleBodyHtml(m)}
                 <div class="bubble-time">${formatHoraCompleta(m.ts)}</div>
             </div>
         `;
@@ -3898,6 +3903,22 @@ const CM = (() => {
                     fetch(`/api/conversas/${data.telefone}/lida`, { method: 'POST' }).catch(() => {});
                 }
             }
+        });
+
+        // Mídia (imagem/documento/vídeo) baixa em background depois da
+        // mensagem já ter aparecido na tela — quando termina, troca só o
+        // corpo da bolha já exibida pelo anexo de verdade (sem recarregar a
+        // conversa inteira). Se a conversa não estiver aberta, não tem bolha
+        // pra atualizar agora — na próxima vez que abrir, loadHistory já
+        // busca o media_path certo do banco.
+        socket.on('midia_atualizada', (data) => {
+            if (activePhone !== data.telefone) return;
+            const bolha = chatMessages?.querySelector(`.chat-bubble-wrap[data-msg-id="${data.id}"]`);
+            const corpo = bolha?.querySelector('.chat-bubble');
+            if (!corpo) return;
+            const tempoHtml = corpo.querySelector('.bubble-time')?.outerHTML || '';
+            const senderHtml = corpo.querySelector('.bubble-sender')?.outerHTML || '';
+            corpo.innerHTML = `${senderHtml}${buildBubbleBodyHtml(data)}${tempoHtml}`;
         });
 
         socket.on('bot_digitando', ({ telefone, ativo }) => {
