@@ -5790,6 +5790,11 @@ function wireEventosPoolClient(entry) {
         entry.status = 'disconnected';
         io.emit('pool_disconnected', { dbId: entry.dbId, reason: 'auth_failure: ' + msg });
     });
+    // Número de disparo nunca RESPONDE cliente (só manda a leva de
+    // broadcast), mas se o cliente responder a mensagem, essa resposta tem
+    // que aparecer no Bate Papo ao Vivo — e dali em diante quem atende (robô
+    // ou humano) é o número principal, nunca esse. Ver processarMensagemRecebida.
+    c.on('message', async (msg) => { await processarMensagemRecebida(msg, 'whatsapp_pool'); });
 }
 
 // Cria (se ainda não existe) e inicializa o client daquele número — chamado
@@ -6615,6 +6620,33 @@ async function enviarResposta(msg, conteudo, opcoes = {}) {
     }
 }
 
+// Resposta a uma mensagem que chegou por um número de disparo (pool), mas
+// precisa sair pelo número PRINCIPAL — msg.reply() usaria o client do próprio
+// pool (o número de disparo nunca responde cliente, ver comentário na tela de
+// Integração), então manda direto pelo `client` principal via chat id
+// resolvido, igual ao que enviarResposta faz, só que sem o msg.reply().
+async function enviarRespostaPeloClientePrincipal(telefoneReal, conteudo, opcoes = {}) {
+    try {
+        const delayConfigurado = await obterDelayRespostaConfigurado();
+        if (delayConfigurado > 0) await delay(delayConfigurado * 1000);
+        const numLimpo = telefoneReal.replace('@c.us', '').replace('@lid', '');
+        if (typeof conteudo === 'string') {
+            await delay(calcularDelayDigitacao(conteudo));
+        }
+        if (await db.get('SELECT 1 FROM conversas_humano WHERE telefone = ?', numLimpo)) {
+            console.log(`⏸️ Envio cancelado — conversa com ${numLimpo} foi assumida por humano durante o atraso configurado.`);
+            return null;
+        }
+        const chatId = await resolverChatId(client, numLimpo);
+        const sent = await client.sendMessage(chatId, conteudo, opcoes);
+        console.log(`✅ Resposta entregue pelo número principal (contato veio de um número de disparo).`);
+        return sent;
+    } catch (e) {
+        console.error('❌ Erro ao enviar pelo número principal:', e.message);
+        return null;
+    }
+}
+
 // =====================================
 // DESPACHO DE RESPOSTA POR CANAL
 // =====================================
@@ -6623,8 +6655,10 @@ async function enviarResposta(msg, conteudo, opcoes = {}) {
 // NENHUMA mudança de comportamento (mesmo objeto msg de verdade do
 // whatsapp-web.js). Pro Instagram, manda pela Graph API; mídia (regra com
 // media_path) ainda não é suportada nesse canal nessa 1ª versão — só pula o
-// envio da mídia (loga, não quebra o resto do fluxo).
+// envio da mídia (loga, não quebra o resto do fluxo). "whatsapp_pool" é
+// mensagem que chegou por um número de disparo — responde pelo principal.
 async function enviarRespostaCanal(canal, msg, telefoneReal, conteudo, opcoes = {}) {
+    if (canal === 'whatsapp_pool') return enviarRespostaPeloClientePrincipal(telefoneReal, conteudo, opcoes);
     if (canal !== 'instagram') return enviarResposta(msg, conteudo, opcoes);
 
     if (typeof conteudo !== 'string') {
@@ -6975,7 +7009,14 @@ async function agendarFallbackHumano(msg, numLimpo, texto, telefoneReal, nomeCon
     pendingFallbackTimers.set(numLimpo, timer);
 }
 
-client.on('message', async (msg) => {
+// Compartilhado entre o client principal e os clients de número de disparo
+// (pool) — só muda o `canal`: 'whatsapp' responde pelo próprio client de
+// quem recebeu (msg.reply), 'whatsapp_pool' responde SEMPRE pelo número
+// principal (ver enviarRespostaCanal) — um número de disparo nunca deve
+// manter conversa de verdade com o cliente, só serve pra mandar a leva de
+// broadcast; a partir da primeira resposta do cliente, a conversa passa a
+// ser tratada (e respondida) pelo número principal.
+async function processarMensagemRecebida(msg, canal = 'whatsapp') {
     try {
         if (!msg.from || msg.from.endsWith('@g.us') || msg.from.endsWith('@broadcast')) return;
         if (!TIPOS_MSG_VALIDOS.has(msg.type)) return; // ruído de protocolo — nunca vira conversa
@@ -7061,7 +7102,7 @@ client.on('message', async (msg) => {
         // Ignora mensagens sem texto (stickers, imagens sem legenda, áudio sem transcrição)
         if (!texto && !msg.body) return;
 
-        console.log(`📨 Mensagem de ${numLimpo} (${nomeContato}): "${textoExibir}"`);
+        console.log(`📨 Mensagem de ${numLimpo} (${nomeContato}) via ${canal}: "${textoExibir}"`);
         io.emit('message_in', { from: numLimpo, nome: nomeContato, text: textoExibir, ts: Date.now() });
 
         // Comando interno TEMPORÁRIO de teste — não documentado pra clientes.
@@ -7069,7 +7110,9 @@ client.on('message', async (msg) => {
         // descobrir onde está o link/QR Code do Pix antes de expor isso de
         // verdade aos alunos. Roda sempre (ignora horário/modo humano) pra
         // facilitar teste. Remover depois que o campo do link for identificado.
-        if (msg.body && msg.body.trim().toLowerCase().startsWith('/testepix')) {
+        // Só faz sentido no client principal — número de disparo não precisa
+        // desse atalho de debug.
+        if (canal === 'whatsapp' && msg.body && msg.body.trim().toLowerCase().startsWith('/testepix')) {
             const matricula = msg.body.trim().slice('/testepix'.length).trim();
             if (!matricula) {
                 await enviarResposta(msg, '❌ Uso: /testepix <matrícula>');
@@ -7131,21 +7174,23 @@ client.on('message', async (msg) => {
             const hoje = moment.tz(timezone || 'America/Sao_Paulo').format('YYYY-MM-DD');
             if (mensagemHumano && ultimaMsgModoHumano.get(numLimpo) !== hoje) {
                 const mensagemHumanoFinal = await substituirPlaceholdersPessoais(mensagemHumano, numLimpo);
-                const sentHumano = await enviarResposta(msg, mensagemHumanoFinal);
+                const sentHumano = await enviarRespostaCanal(canal, msg, telefoneReal, mensagemHumanoFinal);
                 if (sentHumano) {
                     ultimaMsgModoHumano.set(numLimpo, hoje);
-                    await registrarMensagemEnviada(telefoneReal, mensagemHumanoFinal, nomeContato, sentHumano.id?._serialized);
+                    await registrarMensagemEnviada(telefoneReal, mensagemHumanoFinal, nomeContato, sentHumano.id?._serialized, false, 'text', null, canal);
                 }
             }
-            await agendarFallbackHumano(msg, numLimpo, texto, telefoneReal, nomeContato);
+            await agendarFallbackHumano(msg, numLimpo, texto, telefoneReal, nomeContato, canal);
             return;
         }
 
-        await processarComoRobo(msg, numLimpo, texto, telefoneReal, nomeContato);
+        await processarComoRobo(msg, numLimpo, texto, telefoneReal, nomeContato, canal);
     } catch (error) {
-        console.error('❌ Erro no processamento da mensagem:', error);
+        console.error(`❌ Erro no processamento da mensagem (${canal}):`, error);
     }
-});
+}
+
+client.on('message', async (msg) => { await processarMensagemRecebida(msg, 'whatsapp'); });
 
 // Reação a uma mensagem (❤️, 👍 etc) é um evento SEPARADO no WhatsApp — não
 // passa por 'message'/'message_create'. Sem esse handler, uma conversa cuja
