@@ -2406,7 +2406,7 @@ app.delete('/api/contatos/:telefone', async (req, res) => {
 // mesmo caminho de dados de quem chega pelo WhatsApp: fica disponível na hora
 // pra Disparos e Automação.
 app.post('/api/contatos', async (req, res) => {
-    const { nome, telefone, data_nascimento, etiqueta_id } = req.body;
+    const { nome, telefone, matricula, data_nascimento, etiqueta_id } = req.body;
     if (!nome || !nome.trim()) return res.status(400).json({ error: 'Nome é obrigatório.' });
     const telefoneNormalizado = normalizarTelefoneImportado(telefone);
     if (!telefoneNormalizado) return res.status(400).json({ error: 'Telefone inválido. Informe com DDD (ex: 46999998888).' });
@@ -2417,8 +2417,8 @@ app.post('/api/contatos', async (req, res) => {
         );
         if (existente) return res.status(400).json({ error: 'Já existe um contato com esse telefone.' });
         await db.run(
-            'INSERT INTO leads (telefone, nome, origem, data_nascimento) VALUES (?, ?, ?, ?)',
-            [telefoneNormalizado, nome.trim(), 'manual', (data_nascimento || '').trim() || null]
+            'INSERT INTO leads (telefone, nome, origem, matricula, data_nascimento) VALUES (?, ?, ?, ?, ?)',
+            [telefoneNormalizado, nome.trim(), 'manual', (matricula || '').toString().trim() || null, (data_nascimento || '').trim() || null]
         );
         leadsSet.add(telefoneNormalizado);
         stats.leads++;
@@ -3604,6 +3604,16 @@ async function importarContatosParaAutomacao(automacaoId) {
         }
     }
 
+    // Importar Lista roda de novo várias vezes no mesmo dia (clique manual +
+    // Programação de 5 em 5 min) — pra automação cuja etiqueta fica o dia
+    // INTEIRO no contato (ex: Agendamento AF, que só sai quando a avaliação
+    // deixa de estar na agenda de HOJE), um contato já enviado com sucesso
+    // ainda "qualifica" (tem a etiqueta) e voltava pra fila sozinho a cada
+    // reimportação, tomando uma segunda mensagem idêntica no mesmo dia. Antes
+    // de readicionar, confere se já não foi enviado por essa automação hoje.
+    const hojeInicio = moment.tz('America/Sao_Paulo').startOf('day').utc().format('YYYY-MM-DD HH:mm:ss');
+    const hojeFim = moment.tz('America/Sao_Paulo').endOf('day').utc().format('YYYY-MM-DD HH:mm:ss');
+
     let importados = 0;
     for (const c of contatos) {
         const jaMatriculado = await db.get(
@@ -3611,6 +3621,11 @@ async function importarContatosParaAutomacao(automacaoId) {
             [c.telefone, automacaoId]
         );
         if (jaMatriculado) continue;
+        const jaEnviadoHoje = await db.get(
+            'SELECT 1 FROM automacao_envios_log WHERE automacao_id = ? AND telefone = ? AND enviado_em BETWEEN ? AND ?',
+            [automacaoId, c.telefone, hojeInicio, hojeFim]
+        );
+        if (jaEnviadoHoje) continue;
         await db.run(
             `INSERT INTO contato_automacao_estado (telefone, automacao_id, etapa_atual, entrou_em, proxima_execucao_em)
              VALUES (?, ?, 0, CURRENT_TIMESTAMP, NULL)`,
@@ -6419,10 +6434,14 @@ client.on('message_create', async (msg) => {
         // chegar antes disso) — sem essa espera, mensagem do próprio bot/dashboard
         // é tratada como "eco do celular" e duplica no histórico do Bate Papo ao Vivo.
         await delay(400);
-        if (idsMensagensDoSistema.has(msgId)) {
-            idsMensagensDoSistema.delete(msgId);
-            return; // já registrada pelo próprio sistema
-        }
+        // NÃO apaga a marca ao bater — mensagem de mídia (imagem/documento)
+        // costuma disparar message_create MAIS DE UMA VEZ pro mesmo envio
+        // (ciclo de upload: "enviando" e depois "enviado"). Apagar na primeira
+        // batida fazia a SEGUNDA disparada (a mesma mensagem de novo) não achar
+        // mais a marca e duplicar mesmo assim — foi exatamente o caso visto
+        // (uma legenda com foto duplicando: uma linha "Operador", outra sem
+        // marca de manual). Deixa expirar sozinha pelo setTimeout (60s).
+        if (idsMensagensDoSistema.has(msgId)) return;
     }
 
     try {
@@ -6435,10 +6454,10 @@ client.on('message_create', async (msg) => {
         // id acima nunca bate, e essa mensagem (que JÁ foi salva por quem a
         // mandou) duplicava aqui, tratada como "eco do celular". telefone+texto
         // é mais grosseiro que o id, mas só entra em jogo quando o id faltou.
+        // Mesmo motivo de não apagar ao bater: pode disparar mais de uma vez.
         if (msg.body) {
             const chaveConteudo = `${numLimpo}|${msg.body}`;
             if (conteudosMensagensDoSistema.has(chaveConteudo)) {
-                conteudosMensagensDoSistema.delete(chaveConteudo);
                 return;
             }
         }

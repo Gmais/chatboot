@@ -2565,6 +2565,7 @@ btnImportarContatosEnviar?.addEventListener('click', async () => {
 const modalNovoContato = document.getElementById('modal-novo-contato-overlay');
 const novoContatoNome = document.getElementById('novo-contato-nome');
 const novoContatoTelefone = document.getElementById('novo-contato-telefone');
+const novoContatoMatricula = document.getElementById('novo-contato-matricula');
 const novoContatoNascimento = document.getElementById('novo-contato-nascimento');
 const novoContatoEtiqueta = document.getElementById('novo-contato-etiqueta');
 const btnNovoContatoSalvar = document.getElementById('btn-novo-contato-salvar');
@@ -2572,6 +2573,7 @@ const btnNovoContatoSalvar = document.getElementById('btn-novo-contato-salvar');
 async function abrirModalNovoContato() {
     if (novoContatoNome) novoContatoNome.value = '';
     if (novoContatoTelefone) novoContatoTelefone.value = '';
+    if (novoContatoMatricula) novoContatoMatricula.value = '';
     if (novoContatoNascimento) novoContatoNascimento.value = '';
     if (novoContatoEtiqueta) {
         await loadEtiquetas();
@@ -2590,6 +2592,7 @@ document.getElementById('modal-novo-contato-fechar')?.addEventListener('click', 
 btnNovoContatoSalvar?.addEventListener('click', async () => {
     const nome = (novoContatoNome?.value || '').trim();
     const telefone = (novoContatoTelefone?.value || '').trim();
+    const matricula = (novoContatoMatricula?.value || '').trim() || null;
     const data_nascimento = (novoContatoNascimento?.value || '').trim() || null;
     const etiqueta_id = novoContatoEtiqueta?.value;
     if (!nome) { showToast('Nome obrigatório', 'Digite o nome do contato.', 'error'); return; }
@@ -2599,7 +2602,7 @@ btnNovoContatoSalvar?.addEventListener('click', async () => {
         const res = await fetch('/api/contatos', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ nome, telefone, data_nascimento, etiqueta_id: etiqueta_id ? Number(etiqueta_id) : null })
+            body: JSON.stringify({ nome, telefone, matricula, data_nascimento, etiqueta_id: etiqueta_id ? Number(etiqueta_id) : null })
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || 'Erro ao criar contato');
@@ -2628,6 +2631,18 @@ btnUsarSelecionados?.addEventListener('click', () => {
     const broadcastNumeros = document.getElementById('broadcast-numeros');
     if (broadcastNumeros) broadcastNumeros.value = Array.from(contatosSelecionados).join('\n');
     showToast('Contatos aplicados!', `${contatosSelecionados.size} número(s) inserido(s) no campo de disparo.`, 'success');
+});
+
+// A seleção só limpa sozinha quando um disparo TERMINA (resetarFormularioDisparo,
+// ver broadcast_done) — se o disparo anterior ainda está rodando (ex: intervalo
+// "Muito Longo" levando horas) e o usuário quer montar uma lista nova, os
+// contatos do disparo anterior continuavam marcados, misturados com os novos.
+// Esse botão dá um jeito manual de começar do zero a qualquer momento.
+document.getElementById('btn-limpar-selecao')?.addEventListener('click', () => {
+    if (contatosSelecionados.size === 0) return;
+    contatosSelecionados.clear();
+    renderContatos();
+    showToast('Seleção limpa', '', 'success', 2000);
 });
 
 // =====================================
