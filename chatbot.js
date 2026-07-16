@@ -6701,8 +6701,15 @@ client.on('message', async (msg) => {
         // manda texto em branco pelo WhatsApp) — é ruído de sincronização
         // entre aparelhos disfarçado de mensagem de texto legítima.
         if (msg.type === 'chat' && !msg.body) return;
-        const chat = await msg.getChat();
-        if (chat.isGroup) return;
+        // Grupo já foi descartado pelo "@g.us" da checagem lá em cima — chamar
+        // msg.getChat() aqui de novo só pra reconferir isGroup era redundante,
+        // e client.getChatById() (por baixo do getChat()) passou a rejeitar
+        // pra TODA mensagem recebida (bug/incompatibilidade da lib com essa
+        // versão do WhatsApp Web) — como esse await não tinha proteção própria,
+        // a exceção estourava pro catch de fora e abortava a mensagem inteira
+        // ANTES de salvarNaConversa, ou seja, a mensagem nunca aparecia no
+        // Bate Papo ao Vivo (nem texto, nem mídia) mesmo chegando certinho no
+        // WhatsApp de verdade.
 
         const telefoneReal = await resolvePhone(msg);  // número limpo para salvar no banco
         const numLimpo = telefoneReal.replace('@c.us', '').replace('@lid', '');
