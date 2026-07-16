@@ -1306,7 +1306,7 @@ app.delete('/api/respostas/:id', async (req, res) => {
 // qualquer um com a URL do painel conseguiria ler a chave da OpenAI/Groq
 // em texto puro. Quem realmente precisa da chave (tela Inteligência
 // Artificial, pra mostrar/editar o que já está salvo) usa /api/ia/config.
-const CONFIG_CHAVES_SENSIVEIS = ['openai_api_key', 'groq_api_key', 'instagram_page_access_token', 'instagram_app_secret', 'instagram_verify_token'];
+const CONFIG_CHAVES_SENSIVEIS = ['openai_api_key', 'groq_api_key', 'instagram_page_access_token', 'instagram_app_secret', 'instagram_verify_token', 'gympulse_webhook_key'];
 app.get('/api/configuracoes', async (req, res) => {
     const rows = await db.all('SELECT * FROM configuracoes');
     const config = {};
@@ -1353,6 +1353,102 @@ app.put('/api/instagram/config', async (req, res) => {
     if (app_secret !== undefined) await db.run('INSERT OR REPLACE INTO configuracoes (chave, valor) VALUES (?, ?)', ['instagram_app_secret', app_secret]);
     if (verify_token !== undefined) await db.run('INSERT OR REPLACE INTO configuracoes (chave, valor) VALUES (?, ?)', ['instagram_verify_token', verify_token]);
     res.json({ success: true });
+});
+
+// =====================================
+// INTEGRAÇÃO COM GYMPULSE (resumo diário de treino → WhatsApp do aluno)
+// =====================================
+// A chave fica salva em "configuracoes" (mesmo padrão do resto das
+// integrações) em vez de variável de ambiente — assim dá pra ver/regerar
+// pela tela de Integração sem precisar mexer no Railway. Gera sozinha na
+// primeira vez que alguém pede a config, pra já vir com um valor pronto pra
+// colar no Gympulse sem precisar de um passo manual de "criar senha".
+async function obterConfigGympulse() {
+    const row = await db.get("SELECT valor FROM configuracoes WHERE chave = 'gympulse_webhook_key'");
+    if (row?.valor) return { webhookKey: row.valor };
+    const novaChave = require('crypto').randomBytes(24).toString('hex');
+    await db.run('INSERT OR REPLACE INTO configuracoes (chave, valor) VALUES (?, ?)', ['gympulse_webhook_key', novaChave]);
+    return { webhookKey: novaChave };
+}
+
+app.get('/api/gympulse/config', async (req, res) => {
+    const { webhookKey } = await obterConfigGympulse();
+    res.json({ webhook_key: webhookKey });
+});
+
+// Regenerar invalida a chave antiga na hora — quem ainda usa a velha do lado
+// do Gympulse passa a tomar 401 até atualizarem lá também.
+app.put('/api/gympulse/config', async (req, res) => {
+    const novaChave = require('crypto').randomBytes(24).toString('hex');
+    await db.run('INSERT OR REPLACE INTO configuracoes (chave, valor) VALUES (?, ?)', ['gympulse_webhook_key', novaChave]);
+    res.json({ success: true, webhook_key: novaChave });
+});
+
+// Chamado pelo Gympulse toda vez que um aluno termina o treino do dia.
+// matricula é a chave de ligação entre os dois sistemas — o BotPro já
+// conhece o telefone de cada aluno pela matrícula (mesmo cadastro usado em
+// Regras/Automação/Relatório).
+app.post('/webhooks/gympulse-daily-report', async (req, res) => {
+    try {
+        const { webhookKey } = await obterConfigGympulse();
+        const auth = req.headers['authorization'] || '';
+        const tokenRecebido = auth.startsWith('Bearer ') ? auth.slice('Bearer '.length) : '';
+        if (!webhookKey || tokenRecebido !== webhookKey) {
+            return res.status(401).json({ error: 'Não autorizado.' });
+        }
+
+        const { matricula, studentName, totalCalories, totalPoints, totalDurationMin, zoneData } = req.body || {};
+        if (!matricula) return res.status(400).json({ error: 'Campo "matricula" é obrigatório.' });
+
+        // Mesmo padrão leading-zero-safe usado em /api/contatos/resolver-lista —
+        // leads.matricula é TEXT e pode estar com ou sem zeros à esquerda
+        // ("4284" vs "004284"), então compara tanto o texto quanto o número.
+        const lead = await db.get(
+            `SELECT telefone, nome FROM leads
+             WHERE matricula IS NOT NULL AND TRIM(matricula) != '' AND (
+                TRIM(matricula) = ?
+                OR CAST(matricula AS INTEGER) = CAST(? AS INTEGER)
+             )`,
+            [String(matricula), String(matricula)]
+        );
+        if (!lead) return res.status(404).json({ error: 'Aluno não encontrado para esta matrícula.' });
+
+        if (!isConnected) return res.status(503).json({ error: 'WhatsApp não está conectado no momento.' });
+
+        let chatId;
+        try {
+            chatId = await resolverChatId(client, lead.telefone);
+        } catch (e) {
+            return res.status(422).json({ error: 'Aluno sem WhatsApp cadastrado.' });
+        }
+
+        const nomeExibir = studentName || lead.nome || lead.telefone;
+        const primeiroNome = (nomeExibir.split(' ')[0] || nomeExibir);
+
+        let mensagem = `Oi ${primeiroNome}! 💪 Resumo do seu treino de hoje:\n`;
+        mensagem += `🔥 ${totalCalories ?? '-'} kcal\n`;
+        mensagem += `🏆 ${totalPoints ?? '-'} pontos\n`;
+        mensagem += `⏱️ ${totalDurationMin ?? '-'} min\n`;
+        if (Array.isArray(zoneData) && zoneData.length > 0) {
+            mensagem += `\n📊 Zonas de frequência:\n`;
+            zoneData.forEach(z => {
+                mensagem += `• ${z.name}: ${z.minutes} min (${z.percent}%)\n`;
+            });
+        }
+        mensagem += `\nContinue assim! 🎉`;
+
+        // Mesmo caminho de envio usado pelo disparo de Automação (direto,
+        // sem o delay/digitando/pausa-por-humano do fluxo conversacional do
+        // robô — isso é uma notificação de sistema, não uma resposta a algo
+        // que o aluno perguntou).
+        const sentMsg = await client.sendMessage(chatId, mensagem);
+        await registrarMensagemEnviada(lead.telefone, mensagem, nomeExibir, sentMsg?.id?._serialized);
+
+        res.json({ success: true });
+    } catch (err) {
+        console.error('Erro no webhook do Gympulse:', err.message);
+        res.status(500).json({ error: err.message });
+    }
 });
 
 app.get('/api/ia/exemplos/contagem', async (req, res) => {

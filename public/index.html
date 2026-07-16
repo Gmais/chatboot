@@ -1086,6 +1086,29 @@ Sempre tente agendar uma aula experimental."></textarea>
                     </div>
                 </div>
 
+                <div class="card glass">
+                    <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:.8rem;margin-bottom:1rem">
+                        <div>
+                            <h3 style="margin-bottom:.3rem">🏋️ GympulsePro (resumo diário de treino)</h3>
+                            <p style="color:var(--text-2);font-size:.85rem;max-width:560px">Toda vez que um aluno termina o treino do dia, o GympulsePro chama a URL abaixo com os dados do treino (calorias, pontos, duração, zonas de frequência) — o BotPro acha o aluno pela matrícula e manda um resumo automático pra ele no WhatsApp. Cole a URL e a chave abaixo na configuração do GympulsePro.</p>
+                        </div>
+                    </div>
+
+                    <div class="form-group">
+                        <label>URL do Webhook</label>
+                        <input type="text" id="gympulse-webhook-url" readonly style="width:100%;background:var(--input-bg);border:1px solid rgba(255,255,255,0.1);border-radius:var(--radius-sm);padding:.6rem .8rem;color:var(--text-2);font-family:monospace;font-size:.82rem">
+                    </div>
+
+                    <div class="form-group">
+                        <label>Chave da API (Authorization: Bearer)</label>
+                        <div style="display:flex;gap:.5rem">
+                            <input type="text" id="gympulse-webhook-key" readonly style="flex:1;background:var(--input-bg);border:1px solid rgba(255,255,255,0.1);border-radius:var(--radius-sm);padding:.6rem .8rem;color:var(--text-2);font-family:monospace;font-size:.82rem">
+                            <button type="button" class="btn-secondary" id="btn-gympulse-gerar-chave" style="padding:.6rem 1rem;font-size:.82rem;white-space:nowrap" title="Gera uma chave nova — a antiga para de funcionar na hora">🔄 Gerar Nova Chave</button>
+                        </div>
+                        <span style="color:var(--text-3);font-size:.78rem">Já vem pronta sozinha — só copiar e colar no GympulsePro. Gerar uma nova invalida a antiga na hora.</span>
+                    </div>
+                </div>
+
                 <div class="card glass" style="opacity:.6">
                     <h3 style="margin-bottom:.3rem">➕ Mais integrações em breve</h3>
                     <p style="color:var(--text-2);font-size:.85rem">Outros canais e sistemas serão adicionados aqui conforme a necessidade.</p>

@@ -683,7 +683,7 @@ navBtns.forEach(btn => {
         if (targetId === 'configuracoes-section') { loadHorarioConfig(); loadDelayResposta(); loadProgramacoes(); loadInstagramConfig(); }
         if (targetId === 'conversas-section') CM.onEnterSection();
         if (targetId === 'contatos-section' || targetId === 'disparos-section') loadContatos();
-        if (targetId === 'integracoes-section') { loadPactoInadimplentes(); loadPactoVencemHoje(); loadAgendaAvaliacao(); }
+        if (targetId === 'integracoes-section') { loadPactoInadimplentes(); loadPactoVencemHoje(); loadAgendaAvaliacao(); loadGympulseConfig(); }
         if (targetId === 'automacoes-section') { loadEtiquetas().then(() => loadAutomacoes()); }
         if (targetId === 'mensagens-personalizadas-section') loadMensagensPersonalizadas();
         if (targetId === 'disparos-section') {
@@ -1054,6 +1054,37 @@ btnInstagramConfigSalvar?.addEventListener('click', async () => {
         showToast('Instagram salvo!', 'Configuração atualizada.', 'success', 3000);
     } catch (e) {
         showToast('Erro', 'Não foi possível salvar a configuração do Instagram.', 'error');
+    }
+});
+
+// =====================================
+// GYMPULSEPRO (resumo diário de treino)
+// =====================================
+const gympulseWebhookUrlInput = document.getElementById('gympulse-webhook-url');
+const gympulseWebhookKeyInput = document.getElementById('gympulse-webhook-key');
+const btnGympulseGerarChave = document.getElementById('btn-gympulse-gerar-chave');
+
+async function loadGympulseConfig() {
+    if (!gympulseWebhookUrlInput) return;
+    gympulseWebhookUrlInput.value = `${window.location.origin}/webhooks/gympulse-daily-report`;
+    try {
+        const res = await fetch('/api/gympulse/config');
+        const config = await res.json();
+        if (gympulseWebhookKeyInput) gympulseWebhookKeyInput.value = config.webhook_key || '';
+    } catch (e) {
+        console.error('Erro ao carregar configuração do GympulsePro', e);
+    }
+}
+
+btnGympulseGerarChave?.addEventListener('click', async () => {
+    if (!confirm('Gerar uma chave nova? A chave atual para de funcionar na hora — só faça isso se já for atualizar do lado do GympulsePro também.')) return;
+    try {
+        const res = await fetch('/api/gympulse/config', { method: 'PUT' });
+        const data = await res.json();
+        if (gympulseWebhookKeyInput) gympulseWebhookKeyInput.value = data.webhook_key || '';
+        showToast('Chave gerada!', 'Atualize a configuração no GympulsePro com a nova chave.', 'success', 4000);
+    } catch (e) {
+        showToast('Erro', 'Não foi possível gerar uma nova chave.', 'error');
     }
 });
 
