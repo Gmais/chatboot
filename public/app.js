@@ -2804,6 +2804,7 @@ function renderDisparoNumerosLista() {
     disparoNumerosLista.innerHTML = disparoNumerosCache.map(n => {
         const statusInfo = DISPARO_NUMERO_STATUS_LABEL[n.status] || DISPARO_NUMERO_STATUS_LABEL.dormant;
         const podeConectar = n.status === 'dormant' || n.status === 'disconnected';
+        const podeVerQr = n.status === 'qr';
         const podeDesconectar = n.status === 'connected';
         return `
             <div class="disparo-numero-row" data-id="${n.id}" style="display:flex;align-items:center;gap:.7rem;padding:.6rem;background:rgba(255,255,255,0.03);border-radius:8px;flex-wrap:wrap">
@@ -2812,6 +2813,7 @@ function renderDisparoNumerosLista() {
                     <div style="font-size:.75rem;color:${statusInfo.cor}">● ${statusInfo.texto}${n.numeroConectado ? ` (${n.numeroConectado})` : ''}</div>
                 </div>
                 ${podeConectar ? `<button type="button" class="btn-secondary btn-disparo-numero-conectar" data-id="${n.id}" data-nome="${n.nome}" style="padding:.4rem .7rem;font-size:.75rem">📲 Conectar</button>` : ''}
+                ${podeVerQr ? `<button type="button" class="btn-secondary btn-disparo-numero-ver-qr" data-id="${n.id}" data-nome="${n.nome}" style="padding:.4rem .7rem;font-size:.75rem">👁️ Ver QR</button>` : ''}
                 ${podeDesconectar ? `<button type="button" class="btn-secondary btn-disparo-numero-desconectar" data-id="${n.id}" style="padding:.4rem .7rem;font-size:.75rem">⏸️ Desconectar</button>` : ''}
                 <button type="button" class="btn-danger btn-disparo-numero-remover" data-id="${n.id}" data-nome="${n.nome}" style="padding:.4rem .6rem;font-size:.75rem" title="Remover de vez">🗑️</button>
             </div>
@@ -2903,10 +2905,14 @@ btnDisparoNumeroAdicionar?.addEventListener('click', async () => {
     }
 });
 
-function abrirModalDisparoNumeroQr(id, nome) {
+function abrirModalDisparoNumeroQr(id, nome, qrDataUrlExistente = null) {
     if (disparoNumeroQrIdInput) disparoNumeroQrIdInput.value = id;
     if (disparoNumeroQrTitulo) disparoNumeroQrTitulo.textContent = `📲 Conectar — ${nome}`;
-    if (disparoNumeroQrImagem) disparoNumeroQrImagem.innerHTML = '<span style="color:var(--text-3);font-size:.85rem">⏳ Gerando QR Code...</span>';
+    if (disparoNumeroQrImagem) {
+        disparoNumeroQrImagem.innerHTML = qrDataUrlExistente
+            ? `<img src="${qrDataUrlExistente}" alt="QR Code" style="max-width:220px">`
+            : '<span style="color:var(--text-3);font-size:.85rem">⏳ Gerando QR Code...</span>';
+    }
     if (disparoNumeroPairingResultado) disparoNumeroPairingResultado.textContent = '';
     if (disparoNumeroPairingTelefone) disparoNumeroPairingTelefone.value = '';
     modalDisparoNumeroQr?.classList.add('open');
@@ -2917,6 +2923,7 @@ modalDisparoNumeroQr?.addEventListener('click', (e) => { if (e.target === modalD
 
 disparoNumerosLista?.addEventListener('click', async (e) => {
     const btnConectar = e.target.closest('.btn-disparo-numero-conectar');
+    const btnVerQr = e.target.closest('.btn-disparo-numero-ver-qr');
     const btnDesconectar = e.target.closest('.btn-disparo-numero-desconectar');
     const btnRemover = e.target.closest('.btn-disparo-numero-remover');
 
@@ -2925,6 +2932,14 @@ disparoNumerosLista?.addEventListener('click', async (e) => {
         abrirModalDisparoNumeroQr(id, btnConectar.dataset.nome);
         try { await fetch(`/api/disparo-numeros/${id}/conectar`, { method: 'POST' }); }
         catch (err) { showToast('Erro', 'Não foi possível iniciar a conexão.', 'error'); }
+        return;
+    }
+    if (btnVerQr) {
+        // Já está conectando (status 'qr') — só reabre o modal com o QR que
+        // já foi gerado, sem chamar /conectar de novo.
+        const id = btnVerQr.dataset.id;
+        const entry = disparoNumerosCache.find(n => n.id == id);
+        abrirModalDisparoNumeroQr(id, btnVerQr.dataset.nome, entry?.qrDataUrl);
         return;
     }
     if (btnDesconectar) {
