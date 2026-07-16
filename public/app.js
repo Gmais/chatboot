@@ -1930,8 +1930,12 @@ function contatosFiltrados() {
     // vez que a tela abre. Etiqueta sozinha (sem digitar nada) ainda funciona,
     // pra continuar dando pra "navegar" por etiqueta.
     if (!termo && etiquetasFiltroAtivas.size === 0) return [];
+    // Telefone é guardado só com dígitos — buscar "(42) 99956-4764" ou
+    // "99956-4764" tem que bater mesmo com a pontuação, senão parece que o
+    // contato não existe.
+    const termoDigits = termo.replace(/\D/g, '');
     return todosContatos.filter(c => {
-        const bateBusca = !termo || c.nome.toLowerCase().includes(termo) || c.telefone.includes(termo) || (c.matricula || '').toLowerCase().includes(termo);
+        const bateBusca = !termo || c.nome.toLowerCase().includes(termo) || (termoDigits && c.telefone.includes(termoDigits)) || (c.matricula || '').toLowerCase().includes(termo);
         const bateEtiqueta = etiquetasFiltroAtivas.size === 0 || c.etiquetas.some(e => etiquetasFiltroAtivas.has(e.id));
         return bateBusca && bateEtiqueta;
     });
@@ -2037,8 +2041,11 @@ function renderContatos() {
 
 function contatosPageFiltrados() {
     const termo = (contatosPageBusca?.value || '').trim().toLowerCase();
+    // Mesmo motivo do contatosFiltrados() acima: telefone só tem dígitos, a
+    // busca digitada pode ter parênteses/traço.
+    const termoDigits = termo.replace(/\D/g, '');
     return todosContatos.filter(c => {
-        const bateBusca = !termo || c.nome.toLowerCase().includes(termo) || c.telefone.includes(termo) || (c.matricula || '').toLowerCase().includes(termo);
+        const bateBusca = !termo || c.nome.toLowerCase().includes(termo) || (termoDigits && c.telefone.includes(termoDigits)) || (c.matricula || '').toLowerCase().includes(termo);
         const bateEtiqueta = etiquetasFiltroAtivasPage.size === 0 || c.etiquetas.some(e => etiquetasFiltroAtivasPage.has(e.id));
         const bateSemMatricula = !filtroSemMatriculaAtivo || !c.matricula;
         const bateSemDn = !filtroSemDnAtivo || !c.data_nascimento;
