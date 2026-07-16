@@ -898,8 +898,15 @@ async function salvarNaConversa(telefone, nome, direcao, texto, tipo = 'text', t
     // Fica como última linha de defesa, cobrindo qualquer chamador (o dedup
     // específico de cada rota é mais preciso, mas nem sempre pega tudo).
     if (texto) {
+        // ts é gravado em ISO 8601 ("...T...Z"), formato diferente do que
+        // datetime('now') devolve ("AAAA-MM-DD HH:MM:SS", com espaço em vez
+        // de T) — comparar os dois direto (>=) é comparação de string pura
+        // (TEXT affinity, sem parsing de data), e 'T' (0x54) sempre vence
+        // espaço (0x20) no 11º caractere, fazendo QUALQUER ts do mesmo dia
+        // bater como "recente" independente do horário real. Envolver os
+        // dois lados em datetime(...) normaliza o formato antes de comparar.
         const duplicataRecente = await db.get(
-            `SELECT 1 FROM conversas WHERE telefone = ? AND direcao = ? AND texto = ? AND ts >= datetime('now', '-2 seconds') LIMIT 1`,
+            `SELECT 1 FROM conversas WHERE telefone = ? AND direcao = ? AND texto = ? AND datetime(ts) >= datetime('now', '-2 seconds') LIMIT 1`,
             [num, direcao, texto]
         );
         if (duplicataRecente) {
