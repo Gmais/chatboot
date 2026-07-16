@@ -6542,6 +6542,20 @@ client.on('message_create', async (msg) => {
         if (msg.body) {
             const chaveConteudo = `${numLimpo}|${msg.body}`;
             if (conteudosMensagensDoSistema.has(chaveConteudo)) {
+                // Chegou aqui = client.sendMessage()/msg.reply() não devolveu
+                // um id utilizável na hora do envio (mesmo bug do WhatsApp Web
+                // documentado acima), então a linha em "conversas" ficou com
+                // msg_id nulo. O eco do message_create tem o id de verdade —
+                // aproveita pra completar o que faltou, senão editar/excluir
+                // essa mensagem depois nunca teria como falar com o WhatsApp.
+                if (msgId) {
+                    await db.run(
+                        `UPDATE conversas SET msg_id = ? WHERE id = (
+                            SELECT id FROM conversas WHERE telefone = ? AND direcao = 'out' AND texto = ? AND msg_id IS NULL ORDER BY ts DESC LIMIT 1
+                        )`,
+                        [msgId, numLimpo, msg.body]
+                    );
+                }
                 return;
             }
         }
