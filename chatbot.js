@@ -134,12 +134,27 @@ const leadsSet = new Set();
 // isso de mensagens mandadas direto pelo celular/WhatsApp Web vinculado, que
 // também precisam aparecer no Bate Papo ao Vivo mas ainda não foram salvas.
 const idsMensagensDoSistema = new Set();
-function marcarMensagemComoDoSistema(msgId) {
-    if (!msgId) return;
-    idsMensagensDoSistema.add(msgId);
-    // O message_create correspondente chega quase instantaneamente — 60s de
-    // janela é sobra, evita a Set crescer pra sempre.
-    setTimeout(() => idsMensagensDoSistema.delete(msgId), 60000);
+// Fallback pro caso de client.sendMessage() devolver undefined mesmo quando a
+// mensagem FOI entregue de verdade (bug conhecido do WhatsApp Web, já visto
+// no download de mídia) — sem um id de verdade pra marcar, o message_create
+// dessa mesma mensagem não batia com nada em idsMensagensDoSistema e acabava
+// sendo tratado como "eco do celular", duplicando a mensagem na conversa
+// (mesma mensagem, texto idêntico, ts a poucos milissegundos de diferença).
+// telefone+texto como chave é bem mais grosseiro que o id de verdade, mas só
+// entra em jogo quando o id não veio mesmo.
+const conteudosMensagensDoSistema = new Set();
+function marcarMensagemComoDoSistema(msgId, telefone = null, texto = null) {
+    if (msgId) {
+        idsMensagensDoSistema.add(msgId);
+        // O message_create correspondente chega quase instantaneamente — 60s de
+        // janela é sobra, evita a Set crescer pra sempre.
+        setTimeout(() => idsMensagensDoSistema.delete(msgId), 60000);
+    }
+    if (telefone && texto) {
+        const chave = `${telefone}|${texto}`;
+        conteudosMensagensDoSistema.add(chave);
+        setTimeout(() => conteudosMensagensDoSistema.delete(chave), 60000);
+    }
 }
 
 // Em produção (Railway), aponta para o volume persistente; localmente, usa a pasta do projeto.
@@ -444,6 +459,16 @@ async function initDB() {
             UNIQUE(consultora, matricula)
         );
         CREATE INDEX IF NOT EXISTS idx_contratos_sem_assinar_consultora ON contratos_sem_assinar(consultora, assinado);
+        -- Dedup de reações (client.on('message_reaction')) — o WhatsApp Web
+        -- reenvia reações "antigas" toda vez que a sessão resincroniza (mesmo
+        -- comportamento de backlog já visto em mensagens normais), e sem essa
+        -- tabela a MESMA reação virava uma linha nova na conversa a cada
+        -- reconexão/redeploy, se acumulando pra sempre (encontrado uma reação
+        -- com 11 cópias idênticas na conversa de uma aluna).
+        CREATE TABLE IF NOT EXISTS reacoes_processadas (
+            chave TEXT PRIMARY KEY,
+            processado_em DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
         -- Números de WhatsApp extras, dedicados só a mandar Disparos em massa
         -- (nunca respondem ninguém) — reduz o risco de o número principal ser
         -- banido pelo alto volume de envio. Cada linha vira uma sessão própria
@@ -1009,7 +1034,7 @@ async function buscarExemplosRelevantes(textoCliente, topK = 3) {
 // É a única fonte da contagem "Mensagens Enviadas" — se está no contador, está nesta tabela.
 async function registrarMensagemEnviada(telefone, texto, nome, msgId = null, manual = false, tipo = 'text', mediaPath = null, canal = 'whatsapp') {
     const numeroLimpo = telefone.replace('@c.us', '').replace('@lid', '');
-    marcarMensagemComoDoSistema(msgId);
+    marcarMensagemComoDoSistema(msgId, numeroLimpo, texto);
     await db.run('INSERT INTO mensagens_enviadas (telefone, texto) VALUES (?, ?)', [numeroLimpo, texto]);
     stats.sent++;
     await salvarNaConversa(numeroLimpo, nome, 'out', texto, tipo, null, manual, mediaPath, canal);
@@ -4170,7 +4195,10 @@ app.post('/api/conversas/:telefone/enviar-arquivo', upload.single('arquivo'), as
                     : 'document';
         const nome = await resolverNomeContato(telefone);
         const numeroLimpo = telefone.replace('@c.us', '').replace('@lid', '');
-        marcarMensagemComoDoSistema(sentMsg?.id?._serialized);
+        // Chave de conteúdo usa "legenda" crua (o que msg.body de verdade vai
+        // trazer no message_create, vazio se não teve legenda) — não o nome do
+        // arquivo, que só é usado como texto de exibição quando falta legenda.
+        marcarMensagemComoDoSistema(sentMsg?.id?._serialized, numeroLimpo, legenda);
         await salvarNaConversa(numeroLimpo, nome, 'out', legenda || req.file.originalname, tipo, null, true, mediaUrl);
         io.emit('stats', stats);
         res.json({ success: true });
@@ -6304,6 +6332,20 @@ client.on('message_create', async (msg) => {
     try {
         const telefoneResolvido = await resolveJid(msg.to);
         const numLimpo = telefoneResolvido.replace('@c.us', '').replace('@lid', '');
+        // Fallback do dedup acima: client.sendMessage() às vezes devolve
+        // undefined mesmo quando a mensagem FOI entregue (bug conhecido do
+        // WhatsApp Web, mesma causa já vista no download de mídia) — sem um
+        // id de verdade pra marcar em idsMensagensDoSistema, a checagem por
+        // id acima nunca bate, e essa mensagem (que JÁ foi salva por quem a
+        // mandou) duplicava aqui, tratada como "eco do celular". telefone+texto
+        // é mais grosseiro que o id, mas só entra em jogo quando o id faltou.
+        if (msg.body) {
+            const chaveConteudo = `${numLimpo}|${msg.body}`;
+            if (conteudosMensagensDoSistema.has(chaveConteudo)) {
+                conteudosMensagensDoSistema.delete(chaveConteudo);
+                return;
+            }
+        }
         const tipoMsg = detectarTipoMsg(msg);
         // Mesma reclassificação assíncrona de msg.body vista na mensagem recebida
         // (ver comentário no handler 'message') — rechecar aqui, já com o await
@@ -6901,6 +6943,16 @@ client.on('message_reaction', async (reaction) => {
         if (!reaction.reaction) return; // reação removida (undo) — nada de novo pra mostrar
         const remoteChat = reaction.id?.remote;
         if (!remoteChat || remoteChat.endsWith('@g.us') || remoteChat.endsWith('@broadcast')) return;
+
+        // O WhatsApp Web reenvia reações "antigas" (backlog) toda vez que a
+        // sessão resincroniza — sem dedup, a MESMA reação vira uma linha nova
+        // a cada reconexão/redeploy. msgId+quem reagiu+o emoji identifica a
+        // reação de forma estável (o mesmo evento reenviado tem essa mesma
+        // combinação sempre).
+        const chaveReacao = `${reaction.msgId?._serialized || ''}|${reaction.senderId || ''}|${reaction.reaction}`;
+        const jaProcessada = await db.get('SELECT 1 FROM reacoes_processadas WHERE chave = ?', chaveReacao);
+        if (jaProcessada) return;
+        await db.run('INSERT OR IGNORE INTO reacoes_processadas (chave) VALUES (?)', chaveReacao);
 
         const telefoneResolvido = await resolveJid(remoteChat);
         const numLimpo = telefoneResolvido.replace('@c.us', '').replace('@lid', '');
