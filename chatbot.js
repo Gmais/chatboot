@@ -6531,31 +6531,33 @@ client.on('message_create', async (msg) => {
     try {
         const telefoneResolvido = await resolveJid(msg.to);
         const numLimpo = telefoneResolvido.replace('@c.us', '').replace('@lid', '');
-        // Fallback do dedup acima: client.sendMessage() às vezes devolve
-        // undefined mesmo quando a mensagem FOI entregue (bug conhecido do
-        // WhatsApp Web, mesma causa já vista no download de mídia) — sem um
-        // id de verdade pra marcar em idsMensagensDoSistema, a checagem por
-        // id acima nunca bate, e essa mensagem (que JÁ foi salva por quem a
-        // mandou) duplicava aqui, tratada como "eco do celular". telefone+texto
-        // é mais grosseiro que o id, mas só entra em jogo quando o id faltou.
-        // Mesmo motivo de não apagar ao bater: pode disparar mais de uma vez.
+
+        // client.sendMessage()/msg.reply() às vezes devolve undefined mesmo
+        // quando a mensagem FOI entregue (bug conhecido do WhatsApp Web, mesma
+        // causa já vista no download de mídia) — a linha em "conversas" fica
+        // com msg_id nulo, e editar/excluir depois nunca teria como falar com
+        // o WhatsApp. O eco do message_create tem o id de verdade — completa
+        // sozinho, incondicional (não depende do Set abaixo ter marcado a
+        // tempo, que é uma corrida — o registro de quem manda pode demorar
+        // mais que o delay(400) acima em casos mais lentos, ex: resolverNomeContato).
+        if (msgId && msg.body) {
+            await db.run(
+                `UPDATE conversas SET msg_id = ? WHERE id = (
+                    SELECT id FROM conversas WHERE telefone = ? AND direcao = 'out' AND texto = ? AND msg_id IS NULL ORDER BY ts DESC LIMIT 1
+                )`,
+                [msgId, numLimpo, msg.body]
+            );
+        }
+
+        // Fallback do dedup acima: sem um id de verdade pra marcar em
+        // idsMensagensDoSistema, a checagem por id lá em cima nunca bate, e
+        // essa mensagem (que JÁ foi salva por quem a mandou) duplicava aqui,
+        // tratada como "eco do celular". telefone+texto é mais grosseiro que
+        // o id, mas só entra em jogo quando o id faltou. Mesmo motivo de não
+        // apagar ao bater: pode disparar mais de uma vez.
         if (msg.body) {
             const chaveConteudo = `${numLimpo}|${msg.body}`;
             if (conteudosMensagensDoSistema.has(chaveConteudo)) {
-                // Chegou aqui = client.sendMessage()/msg.reply() não devolveu
-                // um id utilizável na hora do envio (mesmo bug do WhatsApp Web
-                // documentado acima), então a linha em "conversas" ficou com
-                // msg_id nulo. O eco do message_create tem o id de verdade —
-                // aproveita pra completar o que faltou, senão editar/excluir
-                // essa mensagem depois nunca teria como falar com o WhatsApp.
-                if (msgId) {
-                    await db.run(
-                        `UPDATE conversas SET msg_id = ? WHERE id = (
-                            SELECT id FROM conversas WHERE telefone = ? AND direcao = 'out' AND texto = ? AND msg_id IS NULL ORDER BY ts DESC LIMIT 1
-                        )`,
-                        [msgId, numLimpo, msg.body]
-                    );
-                }
                 return;
             }
         }
