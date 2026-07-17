@@ -766,10 +766,11 @@
                     </div>
                     <button class="btn-secondary" id="btn-disparo-historico-buscar" style="padding:.65rem 1.2rem">🔍 Buscar</button>
                 </div>
-                <div id="disparo-historico-resumo" class="hidden" style="display:flex;gap:1.5rem;margin-bottom:1rem;font-size:.85rem;color:var(--text-2)">
+                <div id="disparo-historico-resumo" class="hidden" style="display:flex;align-items:center;gap:1.5rem;margin-bottom:1rem;font-size:.85rem;color:var(--text-2);flex-wrap:wrap">
                     <span>Total: <strong id="disparo-historico-total" style="color:var(--text-1)">0</strong></span>
                     <span>Enviados: <strong id="disparo-historico-sucesso" style="color:var(--green)">0</strong></span>
                     <span>Falhas: <strong id="disparo-historico-falhas" style="color:var(--red)">0</strong></span>
+                    <button class="btn-secondary" id="btn-disparo-historico-reenviar-todos" style="padding:.4rem .8rem;font-size:.78rem;margin-left:auto" title="Coloca todos os números desse dia no campo de Disparo, pra você revisar a mensagem e reenviar">🔁 Reenviar Todos</button>
                 </div>
                 <div id="disparo-historico-lista" style="max-height:340px;overflow-y:auto;display:flex;flex-direction:column;gap:.3rem"></div>
             </div>

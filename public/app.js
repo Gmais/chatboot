@@ -3180,6 +3180,8 @@ const disparoHistoricoTotal   = document.getElementById('disparo-historico-total
 const disparoHistoricoSucesso = document.getElementById('disparo-historico-sucesso');
 const disparoHistoricoFalhas  = document.getElementById('disparo-historico-falhas');
 const btnDisparoHistoricoBuscar = document.getElementById('btn-disparo-historico-buscar');
+const btnDisparoHistoricoReenviarTodos = document.getElementById('btn-disparo-historico-reenviar-todos');
+const broadcastNumerosTextarea = document.getElementById('broadcast-numeros');
 
 if (disparoHistoricoData && !disparoHistoricoData.value) {
     const hoje = new Date();
@@ -3187,6 +3189,25 @@ if (disparoHistoricoData && !disparoHistoricoData.value) {
     const mm = String(hoje.getMonth() + 1).padStart(2, '0');
     const dd = String(hoje.getDate()).padStart(2, '0');
     disparoHistoricoData.value = `${yyyy}-${mm}-${dd}`;
+}
+
+// Guarda a última lista carregada — "Reenviar Todos" e o scroll-to-top usam
+// isso, sem precisar buscar de novo no servidor.
+let ultimoHistoricoDisparoItens = [];
+
+// "Reenviar" não manda de novo sozinho — a tabela disparo_envios_log não guarda
+// o texto/mídia originalmente enviado (só telefone e sucesso/erro), então não
+// tem como replicar a mensagem automaticamente. Em vez disso, joga o(s)
+// número(s) escolhido(s) no campo de Disparo pra você revisar a mensagem e
+// clicar "Iniciar Disparo" normalmente — reaproveita a fila/throttle que já existe.
+function reenviarNumerosNoFormulario(telefones) {
+    if (!broadcastNumerosTextarea || !telefones.length) return;
+    const existentes = broadcastNumerosTextarea.value.split('\n').map(n => n.trim()).filter(Boolean);
+    const novos = telefones.filter(t => !existentes.includes(t));
+    broadcastNumerosTextarea.value = [...existentes, ...novos].join('\n');
+    document.querySelector('.disparo-config-grid')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    broadcastNumerosTextarea.focus();
+    showToast('Número(s) prontos pra reenviar', 'Revise a mensagem e clique em "Iniciar Disparo".', 'info', 4000);
 }
 
 async function carregarDisparoHistorico() {
@@ -3198,6 +3219,8 @@ async function carregarDisparoHistorico() {
         const dados = await res.json();
         if (!res.ok) throw new Error(dados.error || 'Erro ao buscar histórico.');
 
+        ultimoHistoricoDisparoItens = dados.itens;
+
         if (disparoHistoricoResumo) {
             disparoHistoricoResumo.classList.remove('hidden');
             disparoHistoricoTotal.textContent = dados.total;
@@ -3207,10 +3230,11 @@ async function carregarDisparoHistorico() {
 
         disparoHistoricoLista.innerHTML = dados.itens.length
             ? dados.itens.map(l => `
-                <div style="display:flex;justify-content:space-between;gap:.6rem;font-size:.78rem;padding:.3rem 0;border-bottom:1px solid rgba(255,255,255,0.05)">
+                <div style="display:flex;justify-content:space-between;align-items:center;gap:.6rem;font-size:.78rem;padding:.3rem 0;border-bottom:1px solid rgba(255,255,255,0.05)">
                     <span style="color:var(--text-3);white-space:nowrap;flex-shrink:0">${new Date(l.enviadoEm).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}</span>
                     <span style="color:var(--text-1);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-left:.6rem">${l.nome || l.telefone}${l.nome ? ` <span style="color:var(--text-3)">· ${l.telefone}</span>` : ''}${l.numeroEnvio ? ` <span style="color:var(--text-3)">· via ${l.numeroEnvio}</span>` : ''}</span>
                     <span style="color:${l.sucesso ? 'var(--green)' : 'var(--red)'};overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:right;flex-shrink:0;margin-left:.6rem">${l.sucesso ? '✅ Enviado' : `❌ ${l.erro || 'Falhou'}`}</span>
+                    <button type="button" class="btn-secondary btn-disparo-historico-reenviar" data-telefone="${l.telefone}" style="padding:.2rem .5rem;font-size:.7rem;flex-shrink:0" title="Colocar esse número no campo de Disparo">🔁</button>
                 </div>
             `).join('')
             : '<p style="color:var(--text-3);font-size:.78rem;text-align:center;padding:.5rem 0">Nenhum disparo nesse dia.</p>';
@@ -3220,6 +3244,16 @@ async function carregarDisparoHistorico() {
 }
 
 btnDisparoHistoricoBuscar?.addEventListener('click', carregarDisparoHistorico);
+
+disparoHistoricoLista?.addEventListener('click', (e) => {
+    const btn = e.target.closest('.btn-disparo-historico-reenviar');
+    if (!btn) return;
+    reenviarNumerosNoFormulario([btn.dataset.telefone]);
+});
+
+btnDisparoHistoricoReenviarTodos?.addEventListener('click', () => {
+    reenviarNumerosNoFormulario(ultimoHistoricoDisparoItens.map(l => l.telefone));
+});
 
 const broadcastDelayModo   = document.getElementById('broadcast-delay-modo');
 const broadcastDelayFixoGroup = document.getElementById('broadcast-delay-fixo-group');
