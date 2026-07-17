@@ -1439,7 +1439,7 @@ app.post('/webhooks/gympulse-daily-report', async (req, res) => {
             return res.status(401).json({ error: 'Não autorizado.' });
         }
 
-        const { matricula, studentName, totalCalories, totalPoints, totalDurationMin, zoneData } = req.body || {};
+        const { matricula, studentName, totalCalories, totalPoints, totalDurationMin, zoneData, message } = req.body || {};
         if (!matricula) return res.status(400).json({ error: 'Campo "matricula" é obrigatório.' });
 
         // Mesmo padrão leading-zero-safe usado em /api/contatos/resolver-lista —
@@ -1467,17 +1467,25 @@ app.post('/webhooks/gympulse-daily-report', async (req, res) => {
         const nomeExibir = studentName || lead.nome || lead.telefone;
         const primeiroNome = (nomeExibir.split(' ')[0] || nomeExibir);
 
-        let mensagem = `Oi ${primeiroNome}! 💪 Resumo do seu treino de hoje:\n`;
-        mensagem += `🔥 ${totalCalories ?? '-'} kcal\n`;
-        mensagem += `🏆 ${totalPoints ?? '-'} pontos\n`;
-        mensagem += `⏱️ ${totalDurationMin ?? '-'} min\n`;
-        if (Array.isArray(zoneData) && zoneData.length > 0) {
-            mensagem += `\n📊 Zonas de frequência:\n`;
-            zoneData.forEach(z => {
-                mensagem += `• ${z.name}: ${z.minutes} min (${z.percent}%)\n`;
-            });
+        // Se o GympulsePro já mandou o texto pronto (saudação/rodapé
+        // customizados pelo cliente), usa verbatim. A composição abaixo só
+        // roda como fallback pra payloads antigos que não mandam "message".
+        let mensagem;
+        if (typeof message === 'string' && message.trim().length > 0) {
+            mensagem = message;
+        } else {
+            mensagem = `Oi ${primeiroNome}! 💪 Resumo do seu treino de hoje:\n`;
+            mensagem += `🔥 ${totalCalories ?? '-'} kcal\n`;
+            mensagem += `🏆 ${totalPoints ?? '-'} pontos\n`;
+            mensagem += `⏱️ ${totalDurationMin ?? '-'} min\n`;
+            if (Array.isArray(zoneData) && zoneData.length > 0) {
+                mensagem += `\n📊 Zonas de frequência:\n`;
+                zoneData.forEach(z => {
+                    mensagem += `• ${z.name}: ${z.minutes} min (${z.percent}%)\n`;
+                });
+            }
+            mensagem += `\nContinue assim! 🎉`;
         }
-        mensagem += `\nContinue assim! 🎉`;
 
         // Mesmo caminho de envio usado pelo disparo de Automação (direto,
         // sem o delay/digitando/pausa-por-humano do fluxo conversacional do
