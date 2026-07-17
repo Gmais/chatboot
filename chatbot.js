@@ -4263,7 +4263,7 @@ app.post('/api/conversas/:telefone/enviar', async (req, res) => {
         // caixa de texto manual manda a chave crua pro cliente em vez do nome dele.
         const textoFinal = await substituirPlaceholdersPessoais(texto.trim(), telefone);
         const chatId = telefone.includes('@') ? telefone : await resolverChatId(client, telefone);
-        const sentMsg = await client.sendMessage(chatId, textoFinal);
+        const sentMsg = await sendMessageComRetryLid(client, chatId, textoFinal);
         const nome = await resolverNomeContato(telefone);
         await registrarMensagemEnviada(telefone, textoFinal, nome, sentMsg?.id?._serialized, true);
         res.json({ success: true });
@@ -4758,6 +4758,59 @@ async function garantirEtiquetaExAluno() {
     return result.lastID;
 }
 
+// Fila de renomeação de contato no WhatsApp (grava nome oficial da Pacto na
+// agenda do celular pareado, client.saveOrEditAddressbookContact). Só entra
+// na fila quem é lead NOVO vindo da varredura de Ativos — processada
+// sequencialmente (nunca em paralelo) com delay de FAIXAS_VELOCIDADE.medio
+// entre cada um, porque é uma escrita na agenda (ação que o WhatsApp nunca
+// viu em massa nessa conta), mais sensível a rajada do que só enviar mensagem.
+const filaRenomeioContatoWhatsApp = [];
+let filaRenomeioProcessando = false;
+
+function enfileirarRenomeioContatoWhatsApp(telefone, nomeCompleto) {
+    if (!nomeCompleto || !nomeCompleto.trim()) return;
+    filaRenomeioContatoWhatsApp.push({ telefone, nomeCompleto: nomeCompleto.trim() });
+    processarFilaRenomeioContatoWhatsApp();
+}
+
+// Renomeia em TODOS os números conectados (principal + pool de disparo) —
+// contas diferentes, sem risco de bloqueio cruzado entre elas, por isso o
+// fan-out por contato roda em paralelo; o throttle vale é entre um contato
+// e o próximo, pra cada conta não escrever na agenda rápido demais sozinha.
+async function processarFilaRenomeioContatoWhatsApp() {
+    if (filaRenomeioProcessando) return;
+    filaRenomeioProcessando = true;
+    try {
+        while (filaRenomeioContatoWhatsApp.length > 0) {
+            const { telefone, nomeCompleto } = filaRenomeioContatoWhatsApp.shift();
+            const partes = nomeCompleto.split(' ').filter(Boolean);
+            const primeiroNome = partes[0] || nomeCompleto;
+            const sobrenome = partes.slice(1).join(' ');
+
+            const clientesConectados = [];
+            if (isConnected && client) clientesConectados.push(client);
+            for (const entry of poolClients.values()) {
+                if (entry.status === 'connected' && entry.client) clientesConectados.push(entry.client);
+            }
+
+            await Promise.all(clientesConectados.map(async (c) => {
+                try {
+                    await c.saveOrEditAddressbookContact(telefone, primeiroNome, sobrenome, true);
+                } catch (err) {
+                    console.error(`❌ Erro ao renomear contato ${telefone} no WhatsApp:`, err.message);
+                }
+            }));
+
+            if (filaRenomeioContatoWhatsApp.length > 0) {
+                const [min, max] = FAIXAS_VELOCIDADE.medio;
+                await delay(min + Math.random() * (max - min));
+            }
+        }
+    } finally {
+        filaRenomeioProcessando = false;
+    }
+}
+
 let pactoAtivosRunning = false;
 let pactoAtivosProgress = { total: 0, verificadas: 0, ativos: 0, sem_telefone: 0, nao_encontrados: 0, running: false };
 
@@ -4789,6 +4842,14 @@ async function processarVarreduraAlunosAtivosPacto() {
             const telefone = normalizarTelefoneImportado(aluno.pessoa?.telefones?.[0]?.numero);
             if (!telefone) { pactoAtivosProgress.sem_telefone++; return; }
 
+            // Só é "contato novo entrando na lista" se ainda não existia — sem
+            // esse check, toda rodada da varredura (que roda do zero sempre)
+            // reenfileiraria TODOS os ativos pra renomear no WhatsApp de novo.
+            const jaEraLead = await db.get(
+                'SELECT 1 FROM leads WHERE telefone = ? OR telefone = ? OR telefone = ?',
+                [telefone, `${telefone}@c.us`, `${telefone}@lid`]
+            );
+
             const dataNascimento = aluno.pessoa?.datanasc ? String(aluno.pessoa.datanasc).slice(0, 10) : null;
             await db.run(
                 `INSERT INTO leads (telefone, nome, origem, matricula, data_nascimento) VALUES (?, ?, 'pacto', ?, ?)
@@ -4797,6 +4858,10 @@ async function processarVarreduraAlunosAtivosPacto() {
                 [telefone, aluno.pessoa?.nome || null, aluno.matricula || matricula, dataNascimento]
             );
             leadsSet.add(telefone);
+
+            if (!jaEraLead && aluno.pessoa?.nome) {
+                enfileirarRenomeioContatoWhatsApp(telefone, aluno.pessoa.nome);
+            }
 
             await db.run(
                 `INSERT INTO pacto_alunos_ativos (telefone, nome, matricula, atualizado_em) VALUES (?, ?, ?, CURRENT_TIMESTAMP)
@@ -6648,6 +6713,30 @@ async function resolverChatId(clienteWpp, numeroLimpo) {
     if (!contato) throw new Error(`O número ${numeroLimpo} não tem WhatsApp.`);
     chatIdCache.set(numeroLimpo, contato._serialized);
     return contato._serialized;
+}
+
+// Envia com uma tentativa de correção automática pro erro "Lid is missing in
+// chat table" — ele acontece quando resolverChatId/getNumberId já achou o
+// chat id certo, mas a tabela interna do WhatsApp Web (dentro da sessão do
+// Puppeteer) ainda não tem o mapeamento LID↔telefone daquele contato
+// carregado. client.getContactLidAndPhone() (já usado em resolveJid, só que
+// pra mensagem RECEBIDA) chama por baixo o mesmo enforceLidAndPnRetrieval que
+// o próprio WhatsApp Web usa pra preencher essa tabela — chamar antes de
+// reenviar geralmente resolve sem precisar reconectar a sessão inteira.
+// Não tenta pra qualquer erro: advSignedDeviceIdentity (sessão de
+// criptografia corrompida) é um problema diferente, esse retry não ajuda
+// nesse caso — só reconectando a sessão resolve.
+async function sendMessageComRetryLid(clienteWpp, chatId, conteudo, opcoes) {
+    try {
+        return await clienteWpp.sendMessage(chatId, conteudo, opcoes);
+    } catch (err) {
+        const ehErroLid = (err?.message || '').toLowerCase().includes('lid is missing');
+        if (!ehErroLid) throw err;
+        console.warn(`⚠️ "Lid is missing" ao enviar pra ${chatId} — forçando resolução do LID e tentando de novo.`);
+        try { await clienteWpp.getContactLidAndPhone([chatId]); } catch (_) { }
+        await delay(1500);
+        return await clienteWpp.sendMessage(chatId, conteudo, opcoes);
+    }
 }
 
 // message_create dispara pra QUALQUER mensagem enviada, inclusive as que o
