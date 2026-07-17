@@ -4151,6 +4151,68 @@ socket.on('pacto_import_done', (p) => {
 });
 
 // =====================================
+// INTEGRAÇÃO — CRM PACTO (ATIVOS x EX-ALUNO)
+// =====================================
+const btnPactoAtivosImportar = document.getElementById('btn-pacto-ativos-importar');
+const btnPactoAtivosAtualizar = document.getElementById('btn-pacto-ativos-atualizar');
+const pactoAtivosResultado = document.getElementById('pacto-ativos-resultado');
+
+function renderPactoAtivosProgress(p) {
+    if (!pactoAtivosResultado) return;
+    const pct = p.total ? Math.round((p.verificadas / p.total) * 100) : 0;
+    pactoAtivosResultado.innerHTML = `
+        <div style="margin-bottom:.5rem">⏳ Verificando matrículas... ${p.verificadas}/${p.total} (${pct}%)</div>
+        <div style="background:rgba(255,255,255,0.08);border-radius:50px;height:8px;overflow:hidden;margin-bottom:.8rem">
+            <div style="background:var(--green);height:100%;width:${pct}%;transition:width .3s"></div>
+        </div>
+        <div>🟢 Ativos encontrados: <strong style="color:var(--text-1)">${p.ativos}</strong></div>
+        <div>📵 Sem telefone: <strong style="color:var(--text-1)">${p.sem_telefone}</strong></div>
+    `;
+}
+
+btnPactoAtivosImportar?.addEventListener('click', async () => {
+    btnPactoAtivosImportar.disabled = true;
+    btnPactoAtivosImportar.textContent = '⏳ Importando...';
+    try {
+        const res = await fetch('/api/pacto/ativos/importar', { method: 'POST' });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Erro ao iniciar varredura');
+        renderPactoAtivosProgress({ total: data.total, verificadas: 0, ativos: 0, sem_telefone: 0 });
+    } catch (e) {
+        showToast('Erro', e.message, 'error');
+        btnPactoAtivosImportar.disabled = false;
+        btnPactoAtivosImportar.textContent = '📥 Importar Ativos';
+    }
+});
+
+socket.on('pacto_ativos_progress', renderPactoAtivosProgress);
+
+socket.on('pacto_ativos_done', (p) => {
+    if (btnPactoAtivosImportar) {
+        btnPactoAtivosImportar.disabled = false;
+        btnPactoAtivosImportar.textContent = '📥 Importar Ativos';
+    }
+    showToast('Varredura concluída!', `${p.ativos} alunos ativos encontrados. Clique em "Atualizar Contatos" pra aplicar as etiquetas.`, 'success', 7000);
+});
+
+btnPactoAtivosAtualizar?.addEventListener('click', async () => {
+    btnPactoAtivosAtualizar.disabled = true;
+    btnPactoAtivosAtualizar.textContent = '⏳ Atualizando...';
+    try {
+        const res = await fetch('/api/pacto/ativos/atualizar-contatos', { method: 'POST' });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Erro ao atualizar contatos');
+        showToast('Contatos atualizados!', `${data.ativos} marcados como Ativo, ${data.exAlunos} como Ex-Aluno.`, 'success', 7000);
+        loadContatos();
+    } catch (e) {
+        showToast('Erro', e.message, 'error');
+    } finally {
+        btnPactoAtivosAtualizar.disabled = false;
+        btnPactoAtivosAtualizar.textContent = '🏷️ Atualizar Contatos';
+    }
+});
+
+// =====================================
 // INTEGRAÇÃO — CRM PACTO (ATIVOS COM PARCELAS ATRASADAS)
 // =====================================
 const btnPactoInadimplentes = document.getElementById('btn-pacto-inadimplentes');
@@ -4532,6 +4594,7 @@ const INTEGRACAO_PROGRAMACAO_LABELS = {
     pacto_importar: 'Importar Contatos do Pacto',
     situacao_financeira: 'Situação Financeira',
     agenda_avaliacao: 'Agenda de Avaliação',
+    pacto_ativos: 'Alunos Ativos x Ex-Aluno',
 };
 let integracaoProgramacoes = {}; // chave -> { dias, horario, ativo }
 

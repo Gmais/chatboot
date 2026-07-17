@@ -1054,6 +1054,26 @@ Sempre tente agendar uma aula experimental."></textarea>
                 <div class="card glass">
                     <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:.8rem;margin-bottom:1rem">
                         <div>
+                            <h3 style="margin-bottom:.3rem">🟢 CRM Pacto — Alunos Ativos x Ex-Aluno</h3>
+                            <p style="color:var(--text-2);font-size:.85rem;max-width:560px">Duas etapas: "Importar Ativos" varre o Pacto e traz quem está ativo agora (leva alguns minutos, mesma varredura do Importar Contatos). Depois, "Atualizar Contatos" aplica as etiquetas: quem foi encontrado ativo vira <strong>Ativo</strong>; quem já teve matrícula mas não apareceu na varredura vira <strong>Ex-Aluno</strong>. Rode "Importar Ativos" primeiro sempre que quiser uma foto atualizada antes de etiquetar.</p>
+                        </div>
+                    </div>
+
+                    <div style="display:flex;align-items:center;gap:.8rem;flex-wrap:wrap;margin-bottom:1rem">
+                        <button class="btn-primary" id="btn-pacto-ativos-importar" style="padding:.6rem 1.1rem;font-size:.85rem">📥 Importar Ativos</button>
+                        <button class="btn-secondary" id="btn-pacto-ativos-atualizar" style="padding:.6rem 1.1rem;font-size:.85rem">🏷️ Atualizar Contatos</button>
+                        <button type="button" class="btn-secondary btn-integracao-programar" data-chave="pacto_ativos" style="padding:.6rem 1rem;font-size:.85rem">🗓️ Criar Programação</button>
+                        <span class="integracao-programacao-status" data-chave="pacto_ativos" style="color:var(--text-3);font-size:.78rem"></span>
+                    </div>
+
+                    <div id="pacto-ativos-resultado" style="background:rgba(255,255,255,0.03);border-radius:var(--radius-sm);padding:1rem;font-size:.82rem;color:var(--text-2);line-height:1.6">
+                        Clique em "Importar Ativos" pra começar.
+                    </div>
+                </div>
+
+                <div class="card glass">
+                    <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:.8rem;margin-bottom:1rem">
+                        <div>
                             <h3 style="margin-bottom:.3rem">📅 Agenda de Avaliação Física</h3>
                             <p style="color:var(--text-2);font-size:.85rem;max-width:560px">Busca a agenda de avaliações físicas do dia (sistema de agendamento Planeta Corpo — só traz matrícula, horário e professor) e correlaciona a matrícula com um contato já existente aqui pra achar o WhatsApp; quem tem contato correlacionado é etiquetado sozinho como "Agendamento AF" — some quando a avaliação deixa de estar na agenda de hoje. Roda sozinha nos dias e horário programados em "Criar Programação" (padrão: dias úteis às 06:00), e também pode ser atualizada na hora aqui. Não envia mensagem nenhuma sozinho — use "Importar Lista" e "Disparar Mensagens" na automação "Agendamento Avaliação" pra confirmar de verdade com os alunos.</p>
                         </div>

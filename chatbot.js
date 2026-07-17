@@ -408,6 +408,12 @@ async function initDB() {
             valor_total REAL,
             atualizado_em DATETIME DEFAULT CURRENT_TIMESTAMP
         );
+        CREATE TABLE IF NOT EXISTS pacto_alunos_ativos (
+            telefone TEXT PRIMARY KEY,
+            nome TEXT,
+            matricula TEXT,
+            atualizado_em DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
         CREATE TABLE IF NOT EXISTS agenda_avaliacoes_hoje (
             appointment_id TEXT PRIMARY KEY,
             telefone TEXT,
@@ -4727,6 +4733,154 @@ app.post('/api/pacto/importar-contatos', (req, res) => {
 });
 
 // =====================================
+// PACTO — ALUNOS ATIVOS x EX-ALUNOS
+// =====================================
+// Duas etapas separadas de propósito: 1) varrer o Pacto e guardar quem está
+// ativo AGORA (pacto_alunos_ativos, sempre substituída do zero a cada
+// varredura — nunca acumula quem deixou de ser ativo); 2) só quando o admin
+// clicar "Atualizar Contatos", aplicar as etiquetas em cima do que já foi
+// varrido. Sem essa separação, a varredura (que já demora minutos por causa
+// da falta de endpoint de listagem em massa da Pacto, ver comentário em
+// processarImportacaoPactoContatos) forçaria etiquetar milhares de contatos
+// no meio do processo, misturando as duas responsabilidades.
+const NOME_ETIQUETA_ATIVO = 'Ativo';
+const NOME_ETIQUETA_EX_ALUNO = 'Ex-Aluno';
+async function garantirEtiquetaAtivo() {
+    const existente = await db.get('SELECT id FROM etiquetas WHERE LOWER(nome) = LOWER(?)', NOME_ETIQUETA_ATIVO);
+    if (existente) return existente.id;
+    const result = await db.run('INSERT INTO etiquetas (nome, cor) VALUES (?, ?)', [NOME_ETIQUETA_ATIVO, '#22c55e']);
+    return result.lastID;
+}
+async function garantirEtiquetaExAluno() {
+    const existente = await db.get('SELECT id FROM etiquetas WHERE LOWER(nome) = LOWER(?)', NOME_ETIQUETA_EX_ALUNO);
+    if (existente) return existente.id;
+    const result = await db.run('INSERT INTO etiquetas (nome, cor) VALUES (?, ?)', [NOME_ETIQUETA_EX_ALUNO, '#6b7280']);
+    return result.lastID;
+}
+
+let pactoAtivosRunning = false;
+let pactoAtivosProgress = { total: 0, verificadas: 0, ativos: 0, sem_telefone: 0, nao_encontrados: 0, running: false };
+
+app.get('/api/pacto/ativos/status', (req, res) => res.json(pactoAtivosProgress));
+
+// Mesma varredura por faixa de matrícula do importador geral (a API da Pacto
+// não tem endpoint de listagem, ver comentário lá em cima) — só que aqui
+// filtra por situacao.codigo === 'AT' e guarda o resultado em
+// pacto_alunos_ativos (limpa e repovoa do zero a cada rodada, pra nunca
+// sobrar quem deixou de ser ativo desde a última varredura). Também
+// aproveita pra já importar/atualizar o lead, igual ao importador geral —
+// assim um aluno ativo que ainda não é contato já entra pronto pra
+// automação assim que a etiqueta "Ativo" for aplicada no passo seguinte.
+async function processarVarreduraAlunosAtivosPacto() {
+    if (pactoAtivosRunning) return;
+    const total = PACTO_IMPORT_MATRICULA_MAX - PACTO_IMPORT_MATRICULA_MIN + 1;
+    pactoAtivosRunning = true;
+    pactoAtivosProgress = { total, verificadas: 0, ativos: 0, sem_telefone: 0, nao_encontrados: 0, running: true };
+    io.emit('pacto_ativos_progress', pactoAtivosProgress);
+
+    await db.run('DELETE FROM pacto_alunos_ativos');
+
+    async function processarMatricula(numero) {
+        const matricula = String(numero).padStart(6, '0');
+        try {
+            const aluno = await buscarAlunoPorMatricula(matricula);
+            if (!aluno || aluno.situacao?.codigo !== 'AT') { pactoAtivosProgress.nao_encontrados++; return; }
+
+            const telefone = normalizarTelefoneImportado(aluno.pessoa?.telefones?.[0]?.numero);
+            if (!telefone) { pactoAtivosProgress.sem_telefone++; return; }
+
+            const dataNascimento = aluno.pessoa?.datanasc ? String(aluno.pessoa.datanasc).slice(0, 10) : null;
+            await db.run(
+                `INSERT INTO leads (telefone, nome, origem, matricula, data_nascimento) VALUES (?, ?, 'pacto', ?, ?)
+                     ON CONFLICT(telefone) DO UPDATE SET data_nascimento = excluded.data_nascimento
+                     WHERE leads.data_nascimento IS NULL AND excluded.data_nascimento IS NOT NULL`,
+                [telefone, aluno.pessoa?.nome || null, aluno.matricula || matricula, dataNascimento]
+            );
+            leadsSet.add(telefone);
+
+            await db.run(
+                `INSERT INTO pacto_alunos_ativos (telefone, nome, matricula, atualizado_em) VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                     ON CONFLICT(telefone) DO UPDATE SET nome = excluded.nome, matricula = excluded.matricula, atualizado_em = CURRENT_TIMESTAMP`,
+                [telefone, aluno.pessoa?.nome || null, aluno.matricula || matricula]
+            );
+            pactoAtivosProgress.ativos++;
+        } catch (err) {
+            console.error(`❌ Erro ao verificar matrícula ${matricula} (varredura de ativos):`, err.message);
+            pactoAtivosProgress.nao_encontrados++;
+        }
+    }
+
+    let atual = PACTO_IMPORT_MATRICULA_MIN;
+    while (atual <= PACTO_IMPORT_MATRICULA_MAX && pactoAtivosRunning) {
+        const lote = [];
+        for (let i = 0; i < PACTO_IMPORT_CONCORRENCIA && atual <= PACTO_IMPORT_MATRICULA_MAX; i++, atual++) {
+            lote.push(processarMatricula(atual));
+        }
+        await Promise.all(lote);
+        pactoAtivosProgress.verificadas += lote.length;
+        io.emit('pacto_ativos_progress', pactoAtivosProgress);
+    }
+
+    pactoAtivosProgress.running = false;
+    pactoAtivosRunning = false;
+    io.emit('pacto_ativos_progress', pactoAtivosProgress);
+    io.emit('pacto_ativos_done', pactoAtivosProgress);
+    console.log(`✅ Varredura de alunos ativos finalizada: ${pactoAtivosProgress.ativos} ativos encontrados de ${pactoAtivosProgress.verificadas} matrículas verificadas.`);
+}
+
+app.post('/api/pacto/ativos/importar', (req, res) => {
+    if (pactoAtivosRunning) return res.status(400).json({ error: 'Uma varredura de alunos ativos já está em andamento.' });
+    res.json({ success: true, total: PACTO_IMPORT_MATRICULA_MAX - PACTO_IMPORT_MATRICULA_MIN + 1 });
+    processarVarreduraAlunosAtivosPacto().catch(e => console.error('Erro na varredura de alunos ativos:', e.message));
+});
+
+// "Atualizar Contatos": aplica as etiquetas em cima do que a última
+// varredura encontrou — quem está em pacto_alunos_ativos vira "Ativo"; quem
+// já tem matrícula (ou seja, já foi aluno alguma vez) mas NÃO está na lista
+// vira "Ex-Aluno". Contato sem matrícula nunca foi aluno de verdade — não
+// faz sentido rotular como "Ex-Aluno", então fica de fora dos dois lados.
+async function aplicarEtiquetasAtivosExAluno() {
+    const ativoId = await garantirEtiquetaAtivo();
+    const exAlunoId = await garantirEtiquetaExAluno();
+
+    const ativos = await db.all('SELECT telefone FROM pacto_alunos_ativos');
+    for (const { telefone } of ativos) {
+        await aplicarEtiquetaContato(telefone, ativoId);
+        await removerEtiquetaContato(telefone, exAlunoId);
+    }
+
+    const exAlunos = await db.all(`
+        SELECT telefone FROM leads
+        WHERE matricula IS NOT NULL AND TRIM(matricula) != ''
+          AND telefone NOT IN (SELECT telefone FROM pacto_alunos_ativos)
+    `);
+    for (const { telefone } of exAlunos) {
+        await aplicarEtiquetaContato(telefone, exAlunoId);
+        await removerEtiquetaContato(telefone, ativoId);
+    }
+
+    return { ativos: ativos.length, exAlunos: exAlunos.length };
+}
+
+app.post('/api/pacto/ativos/atualizar-contatos', async (req, res) => {
+    try {
+        const resultado = await aplicarEtiquetasAtivosExAluno();
+        res.json({ success: true, ...resultado });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Versão combinada (varre + já etiqueta em seguida) — usada pela Programação
+// automática, já que nesse caso ninguém vai clicar "Atualizar Contatos" na
+// sequência. Os botões manuais continuam em duas etapas separadas de
+// propósito (ver comentário acima de processarVarreduraAlunosAtivosPacto).
+async function processarVarreduraEAtualizarAtivos() {
+    await processarVarreduraAlunosAtivosPacto();
+    await aplicarEtiquetasAtivosExAluno();
+}
+
+// =====================================
 // PACTO — ALUNOS ATIVOS COM PARCELAS ATRASADAS
 // =====================================
 // Etiqueta "Inadimplente" já existe no sistema (usada manualmente até aqui) —
@@ -5210,6 +5364,7 @@ const INTEGRACAO_PROCESSADORES = {
     pacto_importar: processarImportacaoPactoContatos,
     situacao_financeira: processarInadimplentesPacto,
     agenda_avaliacao: processarAgendaAvaliacao,
+    pacto_ativos: processarVarreduraEAtualizarAtivos,
 };
 
 async function checarProgramacoesIntegracao() {
