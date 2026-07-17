@@ -423,6 +423,14 @@ async function initDB() {
             professor TEXT,
             atualizado_em DATETIME DEFAULT CURRENT_TIMESTAMP
         );
+        CREATE TABLE IF NOT EXISTS resgate_exalunos_sorteios (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            telefone TEXT NOT NULL,
+            nome TEXT,
+            matricula TEXT,
+            sorteado_em DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_resgate_exalunos_sorteios_telefone ON resgate_exalunos_sorteios(telefone);
         CREATE TABLE IF NOT EXISTS ia_uso_log (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             telefone TEXT,
@@ -5492,6 +5500,153 @@ app.post('/api/agenda-avaliacao/atualizar', async (req, res) => {
     processarAgendaAvaliacao().catch(e => console.error('Erro ao processar agenda de avaliação:', e.message));
 });
 
+// =====================================
+// INTEGRAÇÃO — SORTEIO DE RESGATE EX-ALUNOS
+// =====================================
+// Sorteia diariamente uma amostra aleatória de contatos com a etiqueta
+// "Ex-Aluno" (aplicada pela integração "Alunos Ativos x Ex-Aluno") e aplica a
+// etiqueta temporária "Resgate Ex-Aluno" (duracao_dias=1) — some sozinha no
+// dia seguinte via expirarEtiquetasTemporarias, igual qualquer outra etiqueta
+// temporária do sistema (ver comentário em torno de `ALTER TABLE etiquetas
+// ADD COLUMN duracao_dias`). NÃO manda mensagem nenhuma sozinho: a Automação
+// "Campanha de Resgate Ex-Alunos" (criada pelo usuário no menu Automação,
+// vinculada a essa mesma etiqueta, com suas próprias etapas/mensagens) é quem
+// cuida do envio via Importar Lista + Disparar Mensagens — mesmo padrão da
+// Agenda de Avaliação e da Cobrança de Inadimplentes.
+//
+// Quem já foi sorteado nos últimos N dias (mínimo 30, configurável) fica de
+// fora — histórico em resgate_exalunos_sorteios, tabela dedicada só pra esse
+// controle (não é afetada pela limpeza de 90 dias de disparo_envios_log).
+const NOME_ETIQUETA_RESGATE_EXALUNO = 'Resgate Ex-Aluno';
+async function garantirEtiquetaResgateExAluno() {
+    const existente = await db.get('SELECT id, duracao_dias FROM etiquetas WHERE LOWER(nome) = LOWER(?)', NOME_ETIQUETA_RESGATE_EXALUNO);
+    if (existente) {
+        // Corrige caso a etiqueta já existisse sem TTL (ex: criada manualmente
+        // antes dessa feature existir) — sem isso a "lista" nunca expiraria sozinha.
+        if (!existente.duracao_dias) await db.run('UPDATE etiquetas SET duracao_dias = 1 WHERE id = ?', existente.id);
+        return existente.id;
+    }
+    const result = await db.run('INSERT INTO etiquetas (nome, cor, duracao_dias) VALUES (?, ?, 1)', [NOME_ETIQUETA_RESGATE_EXALUNO, '#a855f7']);
+    return result.lastID;
+}
+
+const RESGATE_EXALUNOS_DIAS_SEM_REPETIR_MINIMO = 30;
+
+async function obterConfigResgateExAlunos() {
+    const linhas = await db.all(
+        `SELECT chave, valor FROM configuracoes WHERE chave IN ('resgate_exalunos_quantidade', 'resgate_exalunos_dias_sem_repetir')`
+    );
+    const mapa = Object.fromEntries(linhas.map(l => [l.chave, l.valor]));
+    return {
+        quantidade: Number(mapa.resgate_exalunos_quantidade) || 5,
+        diasSemRepetir: Math.max(Number(mapa.resgate_exalunos_dias_sem_repetir) || RESGATE_EXALUNOS_DIAS_SEM_REPETIR_MINIMO, RESGATE_EXALUNOS_DIAS_SEM_REPETIR_MINIMO),
+    };
+}
+
+let resgateExAlunosRunning = false;
+let resgateExAlunosProgress = { total: 0, sorteados: 0, running: false, erro: null };
+
+app.get('/api/resgate-exalunos/config', async (req, res) => {
+    try {
+        res.json(await obterConfigResgateExAlunos());
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.put('/api/resgate-exalunos/config', async (req, res) => {
+    const { quantidade, diasSemRepetir } = req.body || {};
+    const qtd = Number(quantidade);
+    if (!Number.isInteger(qtd) || qtd <= 0) return res.status(400).json({ error: 'Quantidade deve ser um número inteiro maior que zero.' });
+    const dias = Number(diasSemRepetir);
+    if (!Number.isInteger(dias) || dias < RESGATE_EXALUNOS_DIAS_SEM_REPETIR_MINIMO) {
+        return res.status(400).json({ error: `Dias sem repetir deve ser um número inteiro de pelo menos ${RESGATE_EXALUNOS_DIAS_SEM_REPETIR_MINIMO}.` });
+    }
+    try {
+        await db.run('INSERT OR REPLACE INTO configuracoes (chave, valor) VALUES (?, ?)', ['resgate_exalunos_quantidade', String(qtd)]);
+        await db.run('INSERT OR REPLACE INTO configuracoes (chave, valor) VALUES (?, ?)', ['resgate_exalunos_dias_sem_repetir', String(dias)]);
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.get('/api/resgate-exalunos/status', async (req, res) => {
+    const row = await db.get("SELECT valor FROM configuracoes WHERE chave = 'resgate_exalunos_ultima_execucao'");
+    res.json({ ...resgateExAlunosProgress, ultima_execucao: row?.valor || null });
+});
+
+// Lista quem foi sorteado hoje — transparência (conferir a lista) e debug
+// (confirmar que o sorteio rodou e quem entrou na etiqueta temporária).
+app.get('/api/resgate-exalunos/sorteados-hoje', async (req, res) => {
+    try {
+        // sorteado_em é DATETIME DEFAULT CURRENT_TIMESTAMP (UTC, formato
+        // "YYYY-MM-DD HH:MM:SS") — comparar com .toISOString() (formato
+        // "T"/"Z") quebra a comparação lexicográfica; mesmo padrão de
+        // conversão usado em /api/broadcast/historico.
+        const inicio = moment.tz('America/Sao_Paulo').startOf('day').utc().format('YYYY-MM-DD HH:mm:ss');
+        const lista = await db.all(
+            'SELECT telefone, nome, matricula, sorteado_em FROM resgate_exalunos_sorteios WHERE sorteado_em >= ? ORDER BY sorteado_em DESC',
+            inicio
+        );
+        res.json(lista.map(l => ({ ...l, sorteado_em: sqliteTsParaIso(l.sorteado_em) })));
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+async function processarSorteioResgateExAlunos() {
+    if (resgateExAlunosRunning) return;
+    resgateExAlunosRunning = true;
+    resgateExAlunosProgress = { total: 0, sorteados: 0, running: true, erro: null };
+    io.emit('resgate_exalunos_progress', resgateExAlunosProgress);
+    try {
+        const { quantidade, diasSemRepetir } = await obterConfigResgateExAlunos();
+        const etiquetaResgateId = await garantirEtiquetaResgateExAluno();
+        const etiquetaExAlunoId = await garantirEtiquetaExAluno();
+
+        const candidatos = await db.all(
+            `SELECT l.telefone, l.nome, l.matricula FROM leads l
+             INNER JOIN contato_etiquetas ce ON ce.telefone = l.telefone AND ce.etiqueta_id = ?
+             WHERE l.telefone NOT IN (
+                SELECT telefone FROM resgate_exalunos_sorteios WHERE sorteado_em >= datetime('now', ?)
+             )
+             ORDER BY RANDOM() LIMIT ?`,
+            [etiquetaExAlunoId, `-${diasSemRepetir} days`, quantidade]
+        );
+        resgateExAlunosProgress.total = candidatos.length;
+
+        for (const c of candidatos) {
+            await aplicarEtiquetaContato(c.telefone, etiquetaResgateId);
+            await db.run(
+                'INSERT INTO resgate_exalunos_sorteios (telefone, nome, matricula) VALUES (?, ?, ?)',
+                [c.telefone, c.nome, c.matricula]
+            );
+            resgateExAlunosProgress.sorteados++;
+        }
+
+        const agora = new Date().toISOString();
+        await db.run('INSERT OR REPLACE INTO configuracoes (chave, valor) VALUES (?, ?)', ['resgate_exalunos_ultima_execucao', agora]);
+        resgateExAlunosProgress.running = false;
+        io.emit('resgate_exalunos_progress', resgateExAlunosProgress);
+        io.emit('resgate_exalunos_done', { ...resgateExAlunosProgress, ultima_execucao: agora });
+        console.log(`🎯 Sorteio Resgate Ex-Alunos: ${resgateExAlunosProgress.sorteados} sorteado(s) e etiquetado(s) com "${NOME_ETIQUETA_RESGATE_EXALUNO}".`);
+    } catch (e) {
+        console.error('Erro no sorteio de Resgate Ex-Alunos:', e.message);
+        resgateExAlunosProgress.running = false;
+        resgateExAlunosProgress.erro = e.message;
+        io.emit('resgate_exalunos_progress', resgateExAlunosProgress);
+    } finally {
+        resgateExAlunosRunning = false;
+    }
+}
+
+app.post('/api/resgate-exalunos/sortear', async (req, res) => {
+    if (resgateExAlunosRunning) return res.status(400).json({ error: 'Um sorteio já está em andamento.' });
+    res.json({ success: true });
+    processarSorteioResgateExAlunos().catch(e => console.error('Erro ao processar sorteio de resgate ex-alunos:', e.message));
+});
+
 // Programações de Integração — cada card em Integração ("Importar Contatos
 // do Pacto", "Situação Financeira", "Agenda de Avaliação") pode ter sua
 // própria programação (dias da semana + horário), configurável em
@@ -5505,6 +5660,7 @@ const INTEGRACAO_PROCESSADORES = {
     situacao_financeira: processarInadimplentesPacto,
     agenda_avaliacao: processarAgendaAvaliacao,
     pacto_ativos: processarVarreduraEAtualizarAtivos,
+    resgate_exalunos: processarSorteioResgateExAlunos,
 };
 
 async function checarProgramacoesIntegracao() {

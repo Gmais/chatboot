@@ -1093,6 +1093,54 @@ Sempre tente agendar uma aula experimental."></textarea>
                 <div class="card glass">
                     <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:.8rem;margin-bottom:1rem">
                         <div>
+                            <h3 style="margin-bottom:.3rem">🎯 Sorteio Resgate Ex-Alunos</h3>
+                            <p style="color:var(--text-2);font-size:.85rem;max-width:560px">Todo dia sorteia aleatoriamente X ex-alunos (dentre quem tem a etiqueta "Ex-Aluno") e aplica a etiqueta temporária "Resgate Ex-Aluno" — some sozinha depois de 1 dia. Quem já foi sorteado nos últimos N dias fica de fora, pra não repetir sempre os mesmos. Não envia mensagem nenhuma sozinho — crie (ou já tenha criado) a automação "Campanha de Resgate Ex-Alunos" no menu Automação, vinculada à etiqueta "Resgate Ex-Aluno", com suas próprias etapas/mensagens, e use "Importar Lista" + "Disparar Mensagens" nela pra enviar de verdade.</p>
+                        </div>
+                    </div>
+
+                    <div style="display:flex;align-items:flex-end;gap:1rem;flex-wrap:wrap;margin-bottom:1rem">
+                        <div>
+                            <label style="display:block;font-size:.78rem;color:var(--text-3);margin-bottom:.3rem">Alunos sorteados por dia</label>
+                            <input type="number" id="resgate-exalunos-quantidade" min="1" step="1" style="width:110px;background:var(--input-bg);border:1px solid rgba(255,255,255,0.1);border-radius:var(--radius-sm);padding:.5rem .7rem;color:var(--text-1);font-size:.85rem">
+                        </div>
+                        <div>
+                            <label style="display:block;font-size:.78rem;color:var(--text-3);margin-bottom:.3rem">Não repetir por (dias, mín. 30)</label>
+                            <input type="number" id="resgate-exalunos-dias-sem-repetir" min="30" step="1" style="width:150px;background:var(--input-bg);border:1px solid rgba(255,255,255,0.1);border-radius:var(--radius-sm);padding:.5rem .7rem;color:var(--text-1);font-size:.85rem">
+                        </div>
+                        <button class="btn-secondary" id="btn-resgate-exalunos-salvar-config" style="padding:.6rem 1.1rem;font-size:.85rem">💾 Salvar</button>
+                    </div>
+
+                    <div style="display:flex;align-items:center;gap:.8rem;flex-wrap:wrap;margin-bottom:1rem">
+                        <button class="btn-primary" id="btn-resgate-exalunos-sortear" style="padding:.6rem 1.1rem;font-size:.85rem">🎲 Sortear Agora</button>
+                        <button class="btn-secondary" id="btn-resgate-exalunos-toggle" style="padding:.6rem 1rem;font-size:.85rem">▼ Ver sorteados de hoje</button>
+                        <button type="button" class="btn-secondary btn-integracao-programar" data-chave="resgate_exalunos" style="padding:.6rem 1rem;font-size:.85rem">🗓️ Criar Programação</button>
+                        <span id="resgate-exalunos-ultima-execucao" style="color:var(--text-3);font-size:.78rem"></span>
+                        <span class="integracao-programacao-status" data-chave="resgate_exalunos" style="color:var(--text-3);font-size:.78rem"></span>
+                    </div>
+
+                    <div id="resgate-exalunos-resultado" style="background:rgba(255,255,255,0.03);border-radius:var(--radius-sm);padding:1rem;font-size:.82rem;color:var(--text-2);line-height:1.6;margin-bottom:1rem">
+                        Clique em "Sortear Agora" pra começar (ou configure o horário em "Criar Programação").
+                    </div>
+
+                    <div id="resgate-exalunos-lista-wrap" style="display:none;overflow-x:auto">
+                        <table style="width:100%;border-collapse:collapse;font-size:.85rem">
+                            <thead>
+                                <tr>
+                                    <th style="text-align:left">Nome</th>
+                                    <th style="text-align:left">Matrícula</th>
+                                    <th style="text-align:left">Sorteado em</th>
+                                </tr>
+                            </thead>
+                            <tbody id="resgate-exalunos-lista">
+                                <tr><td colspan="3" style="padding:1.5rem;text-align:center;color:var(--text-3)">Nenhum sorteio hoje ainda.</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="card glass">
+                    <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:.8rem;margin-bottom:1rem">
+                        <div>
                             <h3 style="margin-bottom:.3rem">📅 Agenda de Avaliação Física</h3>
                             <p style="color:var(--text-2);font-size:.85rem;max-width:560px">Busca a agenda de avaliações físicas do dia (sistema de agendamento Planeta Corpo — só traz matrícula, horário e professor) e correlaciona a matrícula com um contato já existente aqui pra achar o WhatsApp; quem tem contato correlacionado é etiquetado sozinho como "Agendamento AF" — some quando a avaliação deixa de estar na agenda de hoje. Roda sozinha nos dias e horário programados em "Criar Programação" (padrão: dias úteis às 06:00), e também pode ser atualizada na hora aqui. Não envia mensagem nenhuma sozinho — use "Importar Lista" e "Disparar Mensagens" na automação "Agendamento Avaliação" pra confirmar de verdade com os alunos.</p>
                         </div>

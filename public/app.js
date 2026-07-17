@@ -4680,6 +4680,142 @@ socket.on('agenda_avaliacao_done', (p) => {
 });
 
 // =====================================
+// SORTEIO RESGATE EX-ALUNOS
+// =====================================
+const btnResgateExAlunosSortear = document.getElementById('btn-resgate-exalunos-sortear');
+const btnResgateExAlunosToggle = document.getElementById('btn-resgate-exalunos-toggle');
+const resgateExAlunosListaWrap = document.getElementById('resgate-exalunos-lista-wrap');
+const resgateExAlunosListaBody = document.getElementById('resgate-exalunos-lista');
+const resgateExAlunosResultado = document.getElementById('resgate-exalunos-resultado');
+const resgateExAlunosUltimaExecucaoEl = document.getElementById('resgate-exalunos-ultima-execucao');
+const resgateExAlunosQuantidadeInput = document.getElementById('resgate-exalunos-quantidade');
+const resgateExAlunosDiasSemRepetirInput = document.getElementById('resgate-exalunos-dias-sem-repetir');
+const btnResgateExAlunosSalvarConfig = document.getElementById('btn-resgate-exalunos-salvar-config');
+
+btnResgateExAlunosToggle?.addEventListener('click', () => {
+    if (!resgateExAlunosListaWrap) return;
+    const aberto = resgateExAlunosListaWrap.style.display !== 'none';
+    resgateExAlunosListaWrap.style.display = aberto ? 'none' : 'block';
+    btnResgateExAlunosToggle.textContent = aberto ? '▼ Ver sorteados de hoje' : '▲ Esconder sorteados de hoje';
+});
+
+async function loadResgateExAlunosConfig() {
+    try {
+        const res = await fetch('/api/resgate-exalunos/config');
+        const config = await res.json();
+        if (resgateExAlunosQuantidadeInput) resgateExAlunosQuantidadeInput.value = config.quantidade;
+        if (resgateExAlunosDiasSemRepetirInput) resgateExAlunosDiasSemRepetirInput.value = config.diasSemRepetir;
+    } catch (e) {
+        console.error('Erro ao carregar config do sorteio de resgate ex-alunos', e);
+    }
+}
+
+btnResgateExAlunosSalvarConfig?.addEventListener('click', async () => {
+    const quantidade = Number(resgateExAlunosQuantidadeInput?.value);
+    const diasSemRepetir = Number(resgateExAlunosDiasSemRepetirInput?.value);
+    try {
+        const res = await fetch('/api/resgate-exalunos/config', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ quantidade, diasSemRepetir }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Erro ao salvar configuração');
+        showToast('Configuração salva', '', 'success', 3000);
+    } catch (e) {
+        showToast('Erro', e.message, 'error');
+    }
+});
+
+function formatarUltimaExecucaoResgateExAlunos(iso) {
+    if (!resgateExAlunosUltimaExecucaoEl) return;
+    if (!iso) { resgateExAlunosUltimaExecucaoEl.textContent = ''; return; }
+    const d = new Date(iso);
+    if (isNaN(d)) { resgateExAlunosUltimaExecucaoEl.textContent = ''; return; }
+    const data = d.toLocaleDateString('pt-BR');
+    const hora = d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+    resgateExAlunosUltimaExecucaoEl.textContent = `Último sorteio: ${data} às ${hora}`;
+}
+
+function renderResgateExAlunosResultado(p) {
+    if (!resgateExAlunosResultado) return;
+    if (p.erro) {
+        resgateExAlunosResultado.innerHTML = `⚠️ Erro no último sorteio: ${p.erro}`;
+        return;
+    }
+    resgateExAlunosResultado.innerHTML = `<div>🎯 ${p.sorteados} aluno(s) sorteado(s) e etiquetado(s) com "Resgate Ex-Aluno".</div>`;
+}
+
+async function carregarStatusResgateExAlunos() {
+    try {
+        const res = await fetch('/api/resgate-exalunos/status');
+        const status = await res.json();
+        if (!status.running) {
+            formatarUltimaExecucaoResgateExAlunos(status.ultima_execucao);
+            if (status.total || status.erro) renderResgateExAlunosResultado(status);
+        }
+    } catch (e) { /* silencioso — só o texto informativo */ }
+}
+
+async function loadResgateExAlunosSorteados() {
+    if (!resgateExAlunosListaBody) return;
+    try {
+        const res = await fetch('/api/resgate-exalunos/sorteados-hoje');
+        const lista = await res.json();
+        resgateExAlunosListaBody.innerHTML = lista.length
+            ? lista.map(i => `
+                <tr>
+                    <td style="color:var(--text-1)">${i.nome || i.telefone || '-'}</td>
+                    <td style="color:var(--text-2);font-size:.85rem">${i.matricula || '-'}</td>
+                    <td style="color:var(--text-2);font-size:.85rem">${new Date(i.sorteado_em).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}</td>
+                </tr>
+            `).join('')
+            : '<tr><td colspan="3" style="padding:1.5rem;text-align:center;color:var(--text-3)">Nenhum sorteio hoje ainda.</td></tr>';
+    } catch (e) {
+        resgateExAlunosListaBody.innerHTML = '<tr><td colspan="3" style="padding:1.5rem;text-align:center;color:var(--text-3)">Erro ao carregar.</td></tr>';
+    }
+}
+
+function loadResgateExAlunos() {
+    loadResgateExAlunosConfig();
+    carregarStatusResgateExAlunos();
+    loadResgateExAlunosSorteados();
+}
+
+btnResgateExAlunosSortear?.addEventListener('click', async () => {
+    btnResgateExAlunosSortear.disabled = true;
+    btnResgateExAlunosSortear.textContent = '⏳ Sorteando...';
+    try {
+        const res = await fetch('/api/resgate-exalunos/sortear', { method: 'POST' });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Erro ao iniciar sorteio');
+        if (resgateExAlunosResultado) resgateExAlunosResultado.innerHTML = '⏳ Sorteando ex-alunos...';
+    } catch (e) {
+        showToast('Erro', e.message, 'error');
+        btnResgateExAlunosSortear.disabled = false;
+        btnResgateExAlunosSortear.textContent = '🎲 Sortear Agora';
+    }
+});
+
+socket.on('resgate_exalunos_progress', (p) => {
+    if (!p.running) return;
+    if (resgateExAlunosResultado) resgateExAlunosResultado.innerHTML = '⏳ Sorteando ex-alunos...';
+});
+
+socket.on('resgate_exalunos_done', (p) => {
+    if (btnResgateExAlunosSortear) {
+        btnResgateExAlunosSortear.disabled = false;
+        btnResgateExAlunosSortear.textContent = '🎲 Sortear Agora';
+    }
+    renderResgateExAlunosResultado(p);
+    formatarUltimaExecucaoResgateExAlunos(p.ultima_execucao);
+    if (!p.erro) showToast('Sorteio concluído!', `${p.sorteados} aluno(s) etiquetado(s) com "Resgate Ex-Aluno".`, 'success', 5000);
+    loadResgateExAlunosSorteados();
+});
+
+loadResgateExAlunos();
+
+// =====================================
 // PROGRAMAÇÃO DAS INTEGRAÇÕES (Importar Contatos, Situação Financeira, Agenda de Avaliação)
 // =====================================
 const INTEGRACAO_PROGRAMACAO_LABELS = {
@@ -4687,6 +4823,7 @@ const INTEGRACAO_PROGRAMACAO_LABELS = {
     situacao_financeira: 'Situação Financeira',
     agenda_avaliacao: 'Agenda de Avaliação',
     pacto_ativos: 'Alunos Ativos x Ex-Aluno',
+    resgate_exalunos: 'Sorteio Resgate Ex-Alunos',
 };
 let integracaoProgramacoes = {}; // chave -> { dias, horario, ativo }
 
