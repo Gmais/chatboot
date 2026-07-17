@@ -1467,9 +1467,13 @@ app.post('/webhooks/gympulse-daily-report', async (req, res) => {
         const nomeExibir = studentName || lead.nome || lead.telefone;
         const primeiroNome = (nomeExibir.split(' ')[0] || nomeExibir);
 
-        // Se o GympulsePro já mandou o texto pronto (saudação/rodapé
-        // customizados pelo cliente), usa verbatim. A composição abaixo só
-        // roda como fallback pra payloads antigos que não mandam "message".
+        // Se o GympulsePro já mandou o texto pronto, usa verbatim — cobre tanto
+        // resumo de treino com cabeçalho/rodapé customizados quanto mensagens
+        // de engajamento (period = inactive_7d, welcome, level_up etc.), que
+        // não têm stats reais e por isso vêm com totalCalories/totalPoints/
+        // totalDurationMin zerados e zoneData vazio de propósito — não dá pra
+        // cair na composição abaixo nesses casos. Composição abaixo só roda
+        // como fallback pra payloads antigos que não mandam "message".
         let mensagem;
         if (typeof message === 'string' && message.trim().length > 0) {
             mensagem = message;
