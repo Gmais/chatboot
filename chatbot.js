@@ -4470,6 +4470,54 @@ app.get('/api/broadcast/detalhe', async (req, res) => {
     }
 });
 
+// Histórico de disparos por dia — diferente de /api/broadcast/detalhe (que só
+// mostra a campanha mais recente, via ultimoDisparoIniciadoEm em memória),
+// aqui filtra por uma data específica (fuso America/Sao_Paulo), então
+// funciona pra consultar qualquer dia passado, mesmo depois de reiniciar o servidor.
+app.get('/api/broadcast/historico', async (req, res) => {
+    const dataStr = req.query.data;
+    if (!dataStr || !/^\d{4}-\d{2}-\d{2}$/.test(dataStr)) {
+        return res.status(400).json({ error: 'Informe "data" no formato YYYY-MM-DD.' });
+    }
+    try {
+        const inicio = moment.tz(dataStr, 'YYYY-MM-DD', 'America/Sao_Paulo').startOf('day').utc().format('YYYY-MM-DD HH:mm:ss');
+        const fim = moment.tz(dataStr, 'YYYY-MM-DD', 'America/Sao_Paulo').endOf('day').utc().format('YYYY-MM-DD HH:mm:ss');
+
+        const linhas = await db.all(
+            'SELECT telefone, sucesso, erro, numero_envio, enviado_em FROM disparo_envios_log WHERE enviado_em >= ? AND enviado_em <= ? ORDER BY enviado_em ASC LIMIT 1000',
+            [inicio, fim]
+        );
+
+        // Mesmo cruzamento com "leads" pra mostrar nome, igual /api/broadcast/detalhe.
+        const numerosNormalizados = linhas.map(l => normalizarTelefoneBR(l.telefone));
+        const variantes = [...new Set(numerosNormalizados.flatMap(n => [n, `${n}@c.us`, `${n}@lid`]))];
+        const contatos = variantes.length
+            ? await db.all(`SELECT telefone, nome FROM leads WHERE telefone IN (${variantes.map(() => '?').join(',')})`, variantes)
+            : [];
+        const nomePorTelefone = new Map();
+        contatos.forEach(c => nomePorTelefone.set(c.telefone.replace('@c.us', '').replace('@lid', ''), c.nome));
+
+        const itens = linhas.map((l, i) => ({
+            telefone: l.telefone,
+            nome: nomePorTelefone.get(numerosNormalizados[i]) || null,
+            sucesso: !!l.sucesso,
+            erro: l.erro,
+            numeroEnvio: l.numero_envio || null,
+            enviadoEm: sqliteTsParaIso(l.enviado_em),
+        }));
+
+        res.json({
+            data: dataStr,
+            total: itens.length,
+            sucesso: itens.filter(i => i.sucesso).length,
+            falhas: itens.filter(i => !i.sucesso).length,
+            itens,
+        });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
 // Fila de disparos: se o usuário criar um novo disparo com um anterior ainda
 // rodando, ele não é rejeitado nem roda em paralelo (mandar de duas listas
 // ao mesmo tempo pelo mesmo WhatsApp aumenta risco de bloqueio) — entra

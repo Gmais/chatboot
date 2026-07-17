@@ -698,6 +698,7 @@ navBtns.forEach(btn => {
             // ele usa o estado do servidor, não o valor local do campo.
             resetarFormularioDisparo();
             sincronizarEstadoDisparo();
+            carregarDisparoHistorico();
         }
         if (targetId === 'relatorio-section') { loadRelatorioErrosWhatsapp(); loadRelatorioSemCadastro(); loadContratosSemAssinar('juliana'); loadContratosSemAssinar('isadora'); }
     });
@@ -3168,6 +3169,57 @@ progressStatClicaveis.forEach(el => {
         renderDisparoDetalhe(filtro);
     });
 });
+
+// ---- Histórico de Disparos por dia — diferente do bloco acima (que só
+// mostra a campanha mais recente), aqui consulta /api/broadcast/historico
+// pra qualquer data escolhida, inclusive dias anteriores. ----
+const disparoHistoricoData    = document.getElementById('disparo-historico-data');
+const disparoHistoricoLista   = document.getElementById('disparo-historico-lista');
+const disparoHistoricoResumo  = document.getElementById('disparo-historico-resumo');
+const disparoHistoricoTotal   = document.getElementById('disparo-historico-total');
+const disparoHistoricoSucesso = document.getElementById('disparo-historico-sucesso');
+const disparoHistoricoFalhas  = document.getElementById('disparo-historico-falhas');
+const btnDisparoHistoricoBuscar = document.getElementById('btn-disparo-historico-buscar');
+
+if (disparoHistoricoData && !disparoHistoricoData.value) {
+    const hoje = new Date();
+    const yyyy = hoje.getFullYear();
+    const mm = String(hoje.getMonth() + 1).padStart(2, '0');
+    const dd = String(hoje.getDate()).padStart(2, '0');
+    disparoHistoricoData.value = `${yyyy}-${mm}-${dd}`;
+}
+
+async function carregarDisparoHistorico() {
+    if (!disparoHistoricoLista || !disparoHistoricoData?.value) return;
+    disparoHistoricoLista.innerHTML = '<p style="color:var(--text-3);font-size:.78rem;text-align:center;padding:.5rem 0">Carregando...</p>';
+    disparoHistoricoResumo?.classList.add('hidden');
+    try {
+        const res = await fetch(`/api/broadcast/historico?data=${disparoHistoricoData.value}`);
+        const dados = await res.json();
+        if (!res.ok) throw new Error(dados.error || 'Erro ao buscar histórico.');
+
+        if (disparoHistoricoResumo) {
+            disparoHistoricoResumo.classList.remove('hidden');
+            disparoHistoricoTotal.textContent = dados.total;
+            disparoHistoricoSucesso.textContent = dados.sucesso;
+            disparoHistoricoFalhas.textContent = dados.falhas;
+        }
+
+        disparoHistoricoLista.innerHTML = dados.itens.length
+            ? dados.itens.map(l => `
+                <div style="display:flex;justify-content:space-between;gap:.6rem;font-size:.78rem;padding:.3rem 0;border-bottom:1px solid rgba(255,255,255,0.05)">
+                    <span style="color:var(--text-3);white-space:nowrap;flex-shrink:0">${new Date(l.enviadoEm).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}</span>
+                    <span style="color:var(--text-1);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-left:.6rem">${l.nome || l.telefone}${l.nome ? ` <span style="color:var(--text-3)">· ${l.telefone}</span>` : ''}${l.numeroEnvio ? ` <span style="color:var(--text-3)">· via ${l.numeroEnvio}</span>` : ''}</span>
+                    <span style="color:${l.sucesso ? 'var(--green)' : 'var(--red)'};overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:right;flex-shrink:0;margin-left:.6rem">${l.sucesso ? '✅ Enviado' : `❌ ${l.erro || 'Falhou'}`}</span>
+                </div>
+            `).join('')
+            : '<p style="color:var(--text-3);font-size:.78rem;text-align:center;padding:.5rem 0">Nenhum disparo nesse dia.</p>';
+    } catch (e) {
+        disparoHistoricoLista.innerHTML = '<p style="color:var(--text-3);font-size:.78rem;text-align:center;padding:.5rem 0">Erro ao carregar histórico.</p>';
+    }
+}
+
+btnDisparoHistoricoBuscar?.addEventListener('click', carregarDisparoHistorico);
 
 const broadcastDelayModo   = document.getElementById('broadcast-delay-modo');
 const broadcastDelayFixoGroup = document.getElementById('broadcast-delay-fixo-group');

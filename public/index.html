@@ -757,6 +757,24 @@
             </div>
 
             <div class="card glass" style="margin-top:1.5rem">
+                <h3>🗓️ Histórico de Disparos</h3>
+                <p style="color:var(--text-3);font-size:.8rem;margin:.3rem 0 1rem">Consulte os envios de disparo em massa de um dia específico (inclusive dias anteriores).</p>
+                <div style="display:flex;gap:.8rem;align-items:flex-end;flex-wrap:wrap;margin-bottom:1rem">
+                    <div class="form-group" style="margin:0">
+                        <label>Dia</label>
+                        <input type="date" id="disparo-historico-data" style="background:var(--input-bg);border:1px solid rgba(255,255,255,0.1);border-radius:var(--radius-sm);padding:.6rem .8rem;color:var(--text-1);font-family:'Inter',sans-serif">
+                    </div>
+                    <button class="btn-secondary" id="btn-disparo-historico-buscar" style="padding:.65rem 1.2rem">🔍 Buscar</button>
+                </div>
+                <div id="disparo-historico-resumo" class="hidden" style="display:flex;gap:1.5rem;margin-bottom:1rem;font-size:.85rem;color:var(--text-2)">
+                    <span>Total: <strong id="disparo-historico-total" style="color:var(--text-1)">0</strong></span>
+                    <span>Enviados: <strong id="disparo-historico-sucesso" style="color:var(--green)">0</strong></span>
+                    <span>Falhas: <strong id="disparo-historico-falhas" style="color:var(--red)">0</strong></span>
+                </div>
+                <div id="disparo-historico-lista" style="max-height:340px;overflow-y:auto;display:flex;flex-direction:column;gap:.3rem"></div>
+            </div>
+
+            <div class="card glass" style="margin-top:1.5rem">
                 <h3>📊 Acompanhamento de Automações</h3>
                 <p style="color:var(--text-3);font-size:.8rem;margin:.3rem 0 1rem">Quantos contatos estão em andamento em cada automação e em qual etapa.</p>
 
