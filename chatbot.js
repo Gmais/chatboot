@@ -558,6 +558,12 @@ async function initDB() {
     // for removido do pool depois). NULL pros envios antigos, de antes dessa
     // feature existir.
     try { await db.exec(`ALTER TABLE disparo_envios_log ADD COLUMN numero_envio TEXT DEFAULT NULL`); } catch (e) { }
+    // Descrição do que foi disparado (nome da Mensagem Personalizada usada, ou
+    // um resumo do texto quando digitado na hora) — disparo_envios_log nunca
+    // guardou o texto/mídia enviado de verdade, só telefone e sucesso/erro;
+    // sem isso não tinha como saber, olhando o histórico depois, do que se
+    // tratava aquele envio. NULL pros envios antigos, de antes dessa feature existir.
+    try { await db.exec(`ALTER TABLE disparo_envios_log ADD COLUMN descricao TEXT DEFAULT NULL`); } catch (e) { }
     // Canal de origem do contato/mensagem ('whatsapp' ou 'instagram') — leads
     // e conversas continuam com a mesma chave opaca (telefone ou IGSID do
     // Instagram), só ganham essa coluna a mais pra saber por onde falar com
@@ -4484,7 +4490,7 @@ app.get('/api/broadcast/historico', async (req, res) => {
         const fim = moment.tz(dataStr, 'YYYY-MM-DD', 'America/Sao_Paulo').endOf('day').utc().format('YYYY-MM-DD HH:mm:ss');
 
         const linhas = await db.all(
-            'SELECT telefone, sucesso, erro, numero_envio, enviado_em FROM disparo_envios_log WHERE enviado_em >= ? AND enviado_em <= ? ORDER BY enviado_em ASC LIMIT 1000',
+            'SELECT telefone, sucesso, erro, numero_envio, descricao, enviado_em FROM disparo_envios_log WHERE enviado_em >= ? AND enviado_em <= ? ORDER BY enviado_em ASC LIMIT 1000',
             [inicio, fim]
         );
 
@@ -4503,6 +4509,7 @@ app.get('/api/broadcast/historico', async (req, res) => {
             sucesso: !!l.sucesso,
             erro: l.erro,
             numeroEnvio: l.numero_envio || null,
+            descricao: l.descricao || null,
             enviadoEm: sqliteTsParaIso(l.enviado_em),
         }));
 
@@ -4525,7 +4532,7 @@ app.get('/api/broadcast/historico', async (req, res) => {
 let filaDisparos = [];
 
 function iniciarBroadcast(job) {
-    const { listaNumeros, mensagem, mediaFile, delay_ms, delay_modo, delay_velocidade } = job;
+    const { listaNumeros, mensagem, mediaFile, delay_ms, delay_modo, delay_velocidade, descricao } = job;
 
     // Modo fixo: mesmo intervalo sempre. Modo aleatório: um valor novo dentro
     // da faixa escolhida a cada mensagem — menos previsível, reduz risco de bloqueio.
@@ -4555,7 +4562,7 @@ function iniciarBroadcast(job) {
                 // conectado — aborta o resto da lista em vez de gastar o
                 // delay inteiro só pra logar falha contato por contato.
                 console.error('❌ Disparo abortado: nenhum número de disparo conectado.');
-                db.run('INSERT INTO disparo_envios_log (telefone, sucesso, erro) VALUES (?, 0, ?)', [numero, 'Nenhum número de disparo conectado.']).catch(() => { });
+                db.run('INSERT INTO disparo_envios_log (telefone, sucesso, erro, descricao) VALUES (?, 0, ?, ?)', [numero, 'Nenhum número de disparo conectado.', descricao]).catch(() => { });
                 broadcastProgress.failed++;
                 io.emit('broadcast_progress', broadcastProgress);
                 broadcastRunning = false;
@@ -4577,11 +4584,11 @@ function iniciarBroadcast(job) {
                 }
 
                 broadcastProgress.sent++;
-                db.run('INSERT INTO disparo_envios_log (telefone, sucesso, numero_envio) VALUES (?, 1, ?)', [numero, entryEnvio.nome]).catch(() => { });
+                db.run('INSERT INTO disparo_envios_log (telefone, sucesso, numero_envio, descricao) VALUES (?, 1, ?, ?)', [numero, entryEnvio.nome, descricao]).catch(() => { });
             } catch (err) {
                 console.error(`❌ Falha ao enviar para ${numero}:`, err.message);
                 broadcastProgress.failed++;
-                db.run('INSERT INTO disparo_envios_log (telefone, sucesso, erro, numero_envio) VALUES (?, 0, ?, ?)', [numero, err.message, entryEnvio.nome]).catch(() => { });
+                db.run('INSERT INTO disparo_envios_log (telefone, sucesso, erro, numero_envio, descricao) VALUES (?, 0, ?, ?, ?)', [numero, err.message, entryEnvio.nome, descricao]).catch(() => { });
             }
             io.emit('broadcast_progress', broadcastProgress);
             await delay(proximoDelay());
@@ -4615,11 +4622,19 @@ app.post('/api/broadcast/start', upload.single('media'), async (req, res) => {
         return res.status(400).json({ error: 'Nenhum número de disparo conectado. Conecte pelo menos um em "Números de Envio" antes de disparar.' });
     }
 
-    const { numeros, mensagem, delay_ms, delay_modo, delay_velocidade, categoria } = req.body;
+    const { numeros, mensagem, delay_ms, delay_modo, delay_velocidade, categoria, descricao } = req.body;
     const listaNumeros = numeros.split('\n').map(n => n.trim().replace(/\D/g, '')).filter(n => n.length >= 10);
 
     if (listaNumeros.length === 0) return res.status(400).json({ error: 'Nenhum número válido encontrado.' });
     if (!mensagem) return res.status(400).json({ error: 'Mensagem obrigatória.' });
+
+    // Guarda no histórico QUAL era o assunto do disparo, já que
+    // disparo_envios_log nunca guardou o texto/mídia enviado de verdade. Usa o
+    // nome da Mensagem Personalizada quando veio de lá (o front manda em
+    // "descricao"); sem isso, cai pra um resumo do texto digitado na hora.
+    const descricaoFinal = (descricao && descricao.trim())
+        ? descricao.trim().slice(0, 120)
+        : mensagem.trim().slice(0, 60) + (mensagem.trim().length > 60 ? '…' : '');
 
     // Roteamento por campanha: se a mensagem usada tem uma categoria (ver
     // Mensagens Personalizadas) e existe uma regra configurada em
@@ -4632,7 +4647,7 @@ app.post('/api/broadcast/start', upload.single('media'), async (req, res) => {
     }
 
     const mediaFile = req.file ? { path: req.file.path, mimetype: req.file.mimetype, filename: req.file.originalname } : null;
-    const job = { listaNumeros, mensagem, mediaFile, delay_ms, delay_modo, delay_velocidade, numerosPermitidosIds };
+    const job = { listaNumeros, mensagem, mediaFile, delay_ms, delay_modo, delay_velocidade, numerosPermitidosIds, descricao: descricaoFinal };
 
     if (broadcastRunning) {
         filaDisparos.push(job);

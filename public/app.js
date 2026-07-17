@@ -3232,7 +3232,10 @@ async function carregarDisparoHistorico() {
             ? dados.itens.map(l => `
                 <div style="display:flex;justify-content:space-between;align-items:center;gap:.6rem;font-size:.78rem;padding:.3rem 0;border-bottom:1px solid rgba(255,255,255,0.05)">
                     <span style="color:var(--text-3);white-space:nowrap;flex-shrink:0">${new Date(l.enviadoEm).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}</span>
-                    <span style="color:var(--text-1);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-left:.6rem">${l.nome || l.telefone}${l.nome ? ` <span style="color:var(--text-3)">· ${l.telefone}</span>` : ''}${l.numeroEnvio ? ` <span style="color:var(--text-3)">· via ${l.numeroEnvio}</span>` : ''}</span>
+                    <span style="color:var(--text-1);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-left:.6rem">
+                        ${l.nome || l.telefone}${l.nome ? ` <span style="color:var(--text-3)">· ${l.telefone}</span>` : ''}${l.numeroEnvio ? ` <span style="color:var(--text-3)">· via ${l.numeroEnvio}</span>` : ''}
+                        ${l.descricao ? `<br><span style="color:var(--text-3);font-style:italic">💬 ${l.descricao}</span>` : ''}
+                    </span>
                     <span style="color:${l.sucesso ? 'var(--green)' : 'var(--red)'};overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:right;flex-shrink:0;margin-left:.6rem">${l.sucesso ? '✅ Enviado' : `❌ ${l.erro || 'Falhou'}`}</span>
                     <button type="button" class="btn-secondary btn-disparo-historico-reenviar" data-telefone="${l.telefone}" style="padding:.2rem .5rem;font-size:.7rem;flex-shrink:0" title="Colocar esse número no campo de Disparo">🔁</button>
                 </div>
@@ -3278,6 +3281,9 @@ btnDisparar?.addEventListener('click', async () => {
     const mensagemSelecionadaId = Number(broadcastMensagemSelect?.value);
     const mensagemSelecionada = mensagemSelecionadaId ? mensagensPersonalizadasParaDisparo.find(m => m.id === mensagemSelecionadaId) : null;
     if (mensagemSelecionada?.categoria) formData.append('categoria', mensagemSelecionada.categoria);
+    // Nome da Mensagem Personalizada usada (se veio de lá) — vira a "descrição"
+    // no Histórico de Disparos, já que o texto/mídia enviado não fica salvo lá.
+    if (mensagemSelecionada?.nome) formData.append('descricao', mensagemSelecionada.nome);
     if (broadcastDelayModo?.value === 'aleatorio') {
         formData.append('delay_modo', 'aleatorio');
         formData.append('delay_velocidade', document.getElementById('broadcast-delay-velocidade')?.value || 'medio');
