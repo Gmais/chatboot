@@ -441,6 +441,7 @@ async function carregarEstatisticas() {
     const iaModelosEl = document.getElementById('stats-ia-modelos');
     const conexaoDesconexoesEl = document.getElementById('stats-conexao-desconexoes');
     const conexaoCrashesEl = document.getElementById('stats-conexao-crashes');
+    const conexaoWatchdogEl = document.getElementById('stats-conexao-watchdog');
     const conexaoUltimaEl = document.getElementById('stats-conexao-ultima');
     const disparosTaxaEl = document.getElementById('stats-disparos-taxa');
     const disparosFalhasEl = document.getElementById('stats-disparos-falhas');
@@ -579,10 +580,12 @@ async function carregarEstatisticas() {
         // ---- Conexão ----
         if (conexaoDesconexoesEl) conexaoDesconexoesEl.textContent = s.conexao.desconexoes_periodo;
         if (conexaoCrashesEl) conexaoCrashesEl.textContent = s.conexao.crashes_periodo;
+        if (conexaoWatchdogEl) conexaoWatchdogEl.textContent = s.conexao.watchdog_periodo;
         if (conexaoUltimaEl) {
             const u = s.conexao.ultima_desconexao;
+            const ROTULO_TIPO = { crash: 'crash', runtime_watchdog: 'watchdog (sessão travada)' };
             conexaoUltimaEl.textContent = u
-                ? `Última: ${u.tipo === 'crash' ? 'crash' : 'desconexão'} em ${new Date(u.ts).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}${u.motivo ? ` — ${u.motivo}` : ''}`
+                ? `Última: ${ROTULO_TIPO[u.tipo] || 'desconexão'} em ${new Date(u.ts).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}${u.motivo ? ` — ${u.motivo}` : ''}`
                 : 'Sem desconexões registradas.';
         }
 

@@ -1840,14 +1840,20 @@ app.get('/api/estatisticas', async (req, res) => {
         const iaPorModelo = [...porModeloMap.values()].map(m => ({ ...m, custo_estimado_usd: Math.round(m.custo_estimado_usd * 10000) / 10000 }));
 
         // ---- Conexão: desconexões/crashes no período + última desconexão ----
+        // 'runtime_watchdog' (client.getState() travou/rejeitou com isConnected
+        // ainda true — ver reiniciarClienteAposFalha) é uma 3ª categoria: nem
+        // avisou desconexão, nem crashou a página, só parou de responder —
+        // sem contar aqui, um Chrome morrendo em silêncio nunca aparece pra
+        // ninguém investigar depois (foi exatamente o caso que motivou esse
+        // watchdog existir).
         const conexaoContagem = await db.all(`
             SELECT tipo, COUNT(*) AS n FROM conexao_eventos_log
-            WHERE ts >= ? AND tipo IN ('desconectado', 'crash')
+            WHERE ts >= ? AND tipo IN ('desconectado', 'crash', 'runtime_watchdog')
             GROUP BY tipo
         `, desdeSql);
         const ultimaDesconexao = await db.get(`
             SELECT tipo, motivo, ts FROM conexao_eventos_log
-            WHERE tipo IN ('desconectado', 'crash') ORDER BY ts DESC LIMIT 1
+            WHERE tipo IN ('desconectado', 'crash', 'runtime_watchdog') ORDER BY ts DESC LIMIT 1
         `);
 
         // ---- Disparos: entrega/falha com motivo ----
@@ -1894,6 +1900,7 @@ app.get('/api/estatisticas', async (req, res) => {
             conexao: {
                 desconexoes_periodo: conexaoContagem.find(c => c.tipo === 'desconectado')?.n || 0,
                 crashes_periodo: conexaoContagem.find(c => c.tipo === 'crash')?.n || 0,
+                watchdog_periodo: conexaoContagem.find(c => c.tipo === 'runtime_watchdog')?.n || 0,
                 ultima_desconexao: ultimaDesconexao ? { tipo: ultimaDesconexao.tipo, motivo: ultimaDesconexao.motivo, ts: sqliteTsParaIso(ultimaDesconexao.ts) } : null,
             },
             disparos: {
