@@ -4585,14 +4585,6 @@ function iniciarBroadcast(job) {
 
             const entryEnvio = proximoClienteDoPool(job.numerosPermitidosIds);
             if (!entryEnvio) {
-                // DIAGNÓSTICO TEMPORÁRIO: esse abort estava acontecendo mesmo
-                // com o principal conectado há dezenas de segundos e sem
-                // categoria/roteamento restrito (deveria ter caído no fallback
-                // do principal em proximoClienteDoPool) — sem esse log não dá
-                // pra saber, pelos logs de produção, qual das duas condições
-                // (isConnected falso, ou numerosPermitidosIds inesperadamente
-                // não-nulo) estava causando. Remover depois de identificar a causa.
-                console.error(`🔎 [DIAG DISPARO] isConnected=${isConnected} numerosPermitidosIds=${JSON.stringify(job.numerosPermitidosIds)} poolClients=${JSON.stringify([...poolClients.entries()].map(([id, e]) => ({ id, status: e.status, dbId: e.dbId })))}`);
                 // Nenhum número do pool (elegível pra essa campanha) segue
                 // conectado — aborta o resto da lista em vez de gastar o
                 // delay inteiro só pra logar falha contato por contato.
@@ -4680,9 +4672,6 @@ app.post('/api/broadcast/start', upload.single('media'), async (req, res) => {
         const regra = await db.get('SELECT numeros_ids FROM disparo_roteamento WHERE campanha_chave = ?', categoria);
         if (regra?.numeros_ids) numerosPermitidosIds = regra.numeros_ids.split(',').filter(Boolean).map(Number);
     }
-    // DIAGNÓSTICO TEMPORÁRIO (ver diagnóstico irmão dentro de iniciarBroadcast) —
-    // remover junto com aquele depois de identificar a causa raiz.
-    console.error(`🔎 [DIAG DISPARO REQUEST] categoria=${JSON.stringify(categoria)} descricao=${JSON.stringify(descricao)} numerosPermitidosIds=${JSON.stringify(numerosPermitidosIds)}`);
 
     const mediaFile = req.file ? { path: req.file.path, mimetype: req.file.mimetype, filename: req.file.originalname } : null;
     const job = { listaNumeros, mensagem, mediaFile, delay_ms, delay_modo, delay_velocidade, numerosPermitidosIds, descricao: descricaoFinal };
@@ -6384,10 +6373,22 @@ async function reidratarPoolNaInicializacao() {
 let poolRoundRobinIdx = 0;
 function proximoClienteDoPool(idsPermitidos) {
     let candidatos = [...poolClients.values()].filter(e => e.status === 'connected');
-    if (Array.isArray(idsPermitidos) && idsPermitidos.length > 0) {
+    // Ids que não correspondem a NENHUM número cadastrado agora em "Números de
+    // Envio" (o número foi excluído depois que a regra de roteamento foi
+    // criada em disparo_roteamento) não contam como restrição válida — sem
+    // isso, uma regra órfã bloqueia a campanha pra sempre, mesmo com o
+    // principal conectado, e não tem como corrigir pela tela de "Roteamento
+    // por Campanha" (ela só lista números que existem hoje, não dá pra
+    // desmarcar um id que já não está mais lá). Números que ainda EXISTEM mas
+    // estão só desconectados continuam sendo respeitados à risca (não caem
+    // pro principal) — essa parte da lógica original permanece.
+    const idsValidos = Array.isArray(idsPermitidos)
+        ? idsPermitidos.filter(id => [...poolClients.values()].some(e => e.dbId === id))
+        : [];
+    if (idsValidos.length > 0) {
         // Roteamento explícito pra essa campanha — respeita à risca, sem
         // incluir o principal mesmo na fase de transição abaixo.
-        candidatos = candidatos.filter(e => idsPermitidos.includes(e.dbId));
+        candidatos = candidatos.filter(e => idsValidos.includes(e.dbId));
     } else if (isConnected) {
         // TEMPORÁRIO (pedido do usuário): enquanto o pool de números de
         // envio ainda está sendo montado, o principal também entra no
