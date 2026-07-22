@@ -4585,6 +4585,14 @@ function iniciarBroadcast(job) {
 
             const entryEnvio = proximoClienteDoPool(job.numerosPermitidosIds);
             if (!entryEnvio) {
+                // DIAGNÓSTICO TEMPORÁRIO: esse abort estava acontecendo mesmo
+                // com o principal conectado há dezenas de segundos e sem
+                // categoria/roteamento restrito (deveria ter caído no fallback
+                // do principal em proximoClienteDoPool) — sem esse log não dá
+                // pra saber, pelos logs de produção, qual das duas condições
+                // (isConnected falso, ou numerosPermitidosIds inesperadamente
+                // não-nulo) estava causando. Remover depois de identificar a causa.
+                console.error(`🔎 [DIAG DISPARO] isConnected=${isConnected} numerosPermitidosIds=${JSON.stringify(job.numerosPermitidosIds)} poolClients=${JSON.stringify([...poolClients.entries()].map(([id, e]) => ({ id, status: e.status, dbId: e.dbId })))}`);
                 // Nenhum número do pool (elegível pra essa campanha) segue
                 // conectado — aborta o resto da lista em vez de gastar o
                 // delay inteiro só pra logar falha contato por contato.
