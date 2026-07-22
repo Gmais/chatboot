@@ -6156,35 +6156,7 @@ client.on('ready', async () => {
             client.pupPage.on('console', (msg) => {
                 if (msg.type() === 'error') console.error('🧨 [PAGE CONSOLE ERROR]', msg.text());
             });
-            client.pupPage.on('error', async (err) => {
-                console.error('🧨 [PAGE CRASHED]', err.message || err);
-                if (restartInProgress) {
-                    console.log('⚠️  Restart já em andamento — ignorando crash duplicado.');
-                    return;
-                }
-                restartInProgress = true;
-                isConnected = false;
-                registrarEventoConexao('crash', String(err?.message || err));
-                io.emit('disconnected', 'Reconectando WhatsApp...');
-                console.log('🔄 Reiniciando cliente WhatsApp (servidor HTTP permanece no ar)...');
-
-                // Destroi o cliente atual silenciosamente
-                try { await client.destroy(); } catch (_) { }
-
-                // Aguarda 4s e reinicializa — sem matar o processo Node!
-                setTimeout(async () => {
-                    try {
-                        removerLocksChromeStale();
-                        armarInitWatchdog(); // protege esse initialize() também, não só o do boot
-                        await client.initialize();
-                        console.log('🔁 Cliente reinicializado com sucesso.');
-                    } catch (e) {
-                        console.error('❌ Falha ao reinicializar cliente:', e.message);
-                        // Só agora, se realmente falhar, mata o processo como último recurso
-                        setTimeout(() => process.exit(1), 1000);
-                    }
-                }, 4000);
-            });
+            client.pupPage.on('error', (err) => reiniciarClienteAposFalha('crash', String(err?.message || err)));
             console.log('🩺 Diagnóstico de erros da página ativado.');
         }
     } catch (e) {
@@ -6198,6 +6170,74 @@ client.on('disconnected', (reason) => {
     registrarEventoConexao('desconectado', String(reason));
     io.emit('disconnected', reason);
 });
+
+// Reconecta o client depois de qualquer tipo de falha detectada (crash da
+// página, ou o watchdog de runtime abaixo pegando um Chrome morto em
+// silêncio) — extraído do handler de crash original pra ser reaproveitado
+// pelas duas fontes sem duplicar a sequência destroy → aguarda → initialize.
+async function reiniciarClienteAposFalha(tipoEvento, motivo) {
+    console.error(`🧨 [${tipoEvento.toUpperCase()}]`, motivo);
+    if (restartInProgress) {
+        console.log('⚠️  Restart já em andamento — ignorando falha duplicada.');
+        return;
+    }
+    restartInProgress = true;
+    isConnected = false;
+    registrarEventoConexao(tipoEvento, motivo);
+    io.emit('disconnected', 'Reconectando WhatsApp...');
+    console.log('🔄 Reiniciando cliente WhatsApp (servidor HTTP permanece no ar)...');
+
+    // Destroi o cliente atual silenciosamente
+    try { await client.destroy(); } catch (_) { }
+
+    // Aguarda 4s e reinicializa — sem matar o processo Node! restartInProgress
+    // só volta a false no handler 'ready' (não aqui): initialize() resolver
+    // não significa que a sessão já está pronta de novo, e resetar cedo
+    // demais reabriria a janela pra um restart sobreposto no meio da
+    // reconexão (crash da página + watchdog de runtime batendo ao mesmo tempo).
+    setTimeout(async () => {
+        try {
+            removerLocksChromeStale();
+            armarInitWatchdog(); // protege esse initialize() também, não só o do boot
+            await client.initialize();
+            console.log('🔁 Cliente reinicializado com sucesso.');
+        } catch (e) {
+            console.error('❌ Falha ao reinicializar cliente:', e.message);
+            // Só agora, se realmente falhar, mata o processo como último recurso
+            setTimeout(() => process.exit(1), 1000);
+        }
+    }, 4000);
+}
+
+// Watchdog de RUNTIME (diferente do watchdog de inicialização acima): cobre
+// o Chrome morrendo em silêncio DEPOIS de já ter conectado — comum num
+// container com memória apertada (--max-old-space-size=350 no launch do
+// Puppeteer), onde o processo do Chromium pode ser morto pelo SO (OOM) sem
+// disparar 'disconnected' nem o 'error' da pupPage. Sem isso, `isConnected`
+// fica travado em true pra sempre: toda tentativa de enviar (manual, robô,
+// disparo) passa pelo guard `if (!isConnected)` e vai direto pra um
+// client.sendMessage() contra uma página morta, que só falha depois do
+// protocolTimeout de 180s do Puppeteer — na prática, é isso que apareceria
+// pro atendente como "muitas conversas não aparecem" (mensagens novas nunca
+// chegam, porque o Chrome que as receberia já morreu) e "muitos envios com
+// falha" (cada tentativa trava minutos até estourar o timeout) ao mesmo
+// tempo, sem nenhum evento de desconexão pra disparar a recuperação já
+// existente. Chama client.getState() com timeout curto: se travar/rejeitar
+// enquanto isConnected ainda está true, é sinal de que o navegador não
+// responde mais — aciona a mesma recuperação do crash da página.
+const RUNTIME_WATCHDOG_MS = 2 * 60 * 1000;
+const RUNTIME_WATCHDOG_TIMEOUT_MS = 20 * 1000;
+setInterval(async () => {
+    if (!isConnected || restartInProgress) return;
+    try {
+        await Promise.race([
+            client.getState(),
+            new Promise((_, rej) => setTimeout(() => rej(new Error('timeout ao consultar client.getState()')), RUNTIME_WATCHDOG_TIMEOUT_MS)),
+        ]);
+    } catch (e) {
+        reiniciarClienteAposFalha('runtime_watchdog', e.message);
+    }
+}, RUNTIME_WATCHDOG_MS);
 
 // =====================================
 // POOL DE NÚMEROS PARA DISPARO (só envio — nunca responde ninguém)
