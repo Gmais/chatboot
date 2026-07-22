@@ -4680,6 +4680,9 @@ app.post('/api/broadcast/start', upload.single('media'), async (req, res) => {
         const regra = await db.get('SELECT numeros_ids FROM disparo_roteamento WHERE campanha_chave = ?', categoria);
         if (regra?.numeros_ids) numerosPermitidosIds = regra.numeros_ids.split(',').filter(Boolean).map(Number);
     }
+    // DIAGNÓSTICO TEMPORÁRIO (ver diagnóstico irmão dentro de iniciarBroadcast) —
+    // remover junto com aquele depois de identificar a causa raiz.
+    console.error(`🔎 [DIAG DISPARO REQUEST] categoria=${JSON.stringify(categoria)} descricao=${JSON.stringify(descricao)} numerosPermitidosIds=${JSON.stringify(numerosPermitidosIds)}`);
 
     const mediaFile = req.file ? { path: req.file.path, mimetype: req.file.mimetype, filename: req.file.originalname } : null;
     const job = { listaNumeros, mensagem, mediaFile, delay_ms, delay_modo, delay_velocidade, numerosPermitidosIds, descricao: descricaoFinal };
