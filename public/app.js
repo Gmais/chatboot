@@ -166,6 +166,22 @@ socket.on('disconnected', () => {
     showToast('Desconectado', 'O WhatsApp foi desconectado. Reinicie o servidor.', 'error');
 });
 
+// Diferente do 'disconnected' acima (que é o WhatsApp avisando que caiu,
+// evento da nossa aplicação) — este é o evento nativo do Socket.IO: a aba
+// perdeu a conexão com o PRÓPRIO SERVIDOR (deploy reiniciando o container,
+// queda de rede, etc). Sem isso, uma aba deixada aberta durante um deploy
+// mantém o último selo que tinha ("Conectado") até o socket reconectar e
+// o servidor mandar o status de verdade — nesse meio tempo (o WhatsApp leva
+// uns 2-3min pra reconectar depois de um deploy) qualquer envio falha com
+// "não conectado" mesmo com o selo ainda mostrando verde, o que foi
+// confundido com um bug de verdade. socket.io reconecta sozinho por trás
+// (reconection default do client); quando reconectar, io.on('connection')
+// do servidor já reenvia o estado real (loading/qr/ready) por cima disso.
+socket.on('disconnect', () => {
+    if (statusText) { statusText.textContent = 'Reconectando ao servidor...'; statusText.style.color = 'var(--text-3)'; }
+    setBadge('reconectando');
+});
+
 btnPairing?.addEventListener('click', async () => {
     const phone = pairingPhone?.value.trim().replace(/\D/g, '');
     if (!phone || phone.length < 10) {
@@ -198,10 +214,11 @@ btnPairing?.addEventListener('click', async () => {
 function setBadge(state) {
     if (!statusBadge) return;
     const states = {
-        loading:  { text: '● Iniciando...', cls: '', dot: '', label: 'Iniciando...' },
-        waiting:  { text: '● Aguardando QR', cls: '', dot: '', label: 'Aguardando QR' },
-        online:   { text: '● Conectado', cls: 'connected', dot: 'online', label: 'Online' },
-        offline:  { text: '● Desconectado', cls: 'disconnected', dot: 'offline', label: 'Offline' },
+        loading:      { text: '● Iniciando...', cls: '', dot: '', label: 'Iniciando...' },
+        waiting:      { text: '● Aguardando QR', cls: '', dot: '', label: 'Aguardando QR' },
+        online:       { text: '● Conectado', cls: 'connected', dot: 'online', label: 'Online' },
+        offline:      { text: '● Desconectado', cls: 'disconnected', dot: 'offline', label: 'Offline' },
+        reconectando: { text: '🔄 Reconectando...', cls: '', dot: '', label: 'Reconectando ao servidor...' },
     };
     const s = states[state] || states.loading;
     statusBadge.textContent = s.text;
