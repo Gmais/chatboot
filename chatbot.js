@@ -4296,7 +4296,14 @@ app.post('/api/conversas/:telefone/enviar', async (req, res) => {
         // caixa de texto manual manda a chave crua pro cliente em vez do nome dele.
         const textoFinal = await substituirPlaceholdersPessoais(texto.trim(), telefone);
         const chatId = telefone.includes('@') ? telefone : await resolverChatId(client, telefone);
-        const sentMsg = await sendMessageComRetryLid(client, chatId, textoFinal);
+        // waitUntilMsgSent:true — sem isso o sendMessage() resolve assim que o
+        // WhatsApp Web adiciona a mensagem LOCALMENTE ao chat (eco otimista da
+        // própria interface), não quando ela de fato sai pela rede. Com sessão
+        // instável (Chrome zumbi, reconexão), isso fazia o dashboard marcar
+        // "enviada" e gravar sucesso mesmo quando a mensagem nunca chegou no
+        // destinatário — só passando essa opção o await espera a confirmação
+        // real de envio (e propaga erro se falhar).
+        const sentMsg = await sendMessageComRetryLid(client, chatId, textoFinal, { waitUntilMsgSent: true });
         const nome = await resolverNomeContato(telefone);
         await registrarMensagemEnviada(telefone, textoFinal, nome, sentMsg?.id?._serialized, true);
         res.json({ success: true });
@@ -4418,7 +4425,10 @@ app.post('/api/conversas/:telefone/enviar-arquivo', upload.single('arquivo'), as
         // Mesma substituição de {nome}/{matricula}/{saudacao} do envio manual de
         // texto — legenda de arquivo é digitada pelo mesmo operador do mesmo jeito.
         const legenda = legendaBruta ? await substituirPlaceholdersPessoais(legendaBruta, telefone) : legendaBruta;
-        const sentMsg = await client.sendMessage(chatId, media, legenda ? { caption: legenda } : undefined);
+        // waitUntilMsgSent:true — mesmo motivo da rota /enviar (texto): sem isso
+        // o envio "sucede" só com o eco local do WhatsApp Web, sem confirmar que
+        // saiu pela rede de verdade.
+        const sentMsg = await client.sendMessage(chatId, media, { ...(legenda ? { caption: legenda } : {}), waitUntilMsgSent: true });
         // Mantém o arquivo em public/uploads (não apaga mais) — é o que permite
         // reabrir a imagem/documento clicando na bolha depois.
         const mediaUrl = '/uploads/' + req.file.filename;
