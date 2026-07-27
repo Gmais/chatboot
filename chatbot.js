@@ -1503,7 +1503,13 @@ app.post('/webhooks/gympulse-daily-report', async (req, res) => {
         // sem o delay/digitando/pausa-por-humano do fluxo conversacional do
         // robô — isso é uma notificação de sistema, não uma resposta a algo
         // que o aluno perguntou).
-        const sentMsg = await client.sendMessage(chatId, mensagem);
+        // waitUntilMsgSent:true — sem isso o sendMessage() resolve no eco
+        // otimista local (antes de sair pela rede); com sessão instável o
+        // message_create real podia chegar só depois do TTL de 60s do Set
+        // idsMensagensDoSistema, fazendo o resumo de treino ser gravado (e
+        // aparecer) duplicado no Bate Papo ao Vivo mesmo com um único envio
+        // real pro WhatsApp.
+        const sentMsg = await sendMessageComRetryLid(client, chatId, mensagem, { waitUntilMsgSent: true });
         await registrarMensagemEnviada(lead.telefone, mensagem, nomeExibir, sentMsg?.id?._serialized);
 
         res.json({ success: true });
