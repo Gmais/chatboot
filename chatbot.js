@@ -6360,6 +6360,54 @@ function iniciarClientePool(row) {
     return entry;
 }
 
+// Watchdog de RUNTIME pros números do Pool de Disparo — mesmo problema já
+// coberto pro client principal (ver RUNTIME_WATCHDOG_MS acima: Chrome morre
+// em silêncio, sem disparar 'disconnected'), mas até agora SEM cobertura
+// aqui: entry.status ficava travado em 'connected' pra sempre, e
+// proximoClienteDoPool continuava escolhendo esse número morto pra cada
+// disparo da leva — cada envio travava minutos até o protocolTimeout do
+// Puppeteer estourar (ou vinha um erro genérico/truncado do CDP), foi
+// exatamente a leva de falhas vista num Disparo à tarde com o número
+// aparentemente "conectado" no pool.
+const poolRestartInProgress = new Set();
+async function reiniciarClientePoolAposFalha(clientId, entry, motivo) {
+    console.error(`🧨 [POOL RUNTIME_WATCHDOG] "${entry.nome}":`, motivo);
+    if (poolRestartInProgress.has(clientId)) return;
+    poolRestartInProgress.add(clientId);
+    entry.status = 'disconnected';
+    entry.qrDataUrl = null;
+    io.emit('pool_disconnected', { dbId: entry.dbId, reason: 'runtime_watchdog: ' + motivo });
+    try { await entry.client.destroy(); } catch (_) { }
+    setTimeout(async () => {
+        try {
+            removerLocksChromeStale(clientId);
+            entry.client = criarClienteWhatsApp(clientId);
+            entry.status = 'initializing';
+            wireEventosPoolClient(entry);
+            await entry.client.initialize();
+        } catch (e) {
+            console.error(`Erro ao reinicializar número de disparo "${entry.nome}" pelo watchdog:`, e.message);
+            entry.status = 'disconnected';
+            io.emit('pool_disconnected', { dbId: entry.dbId, reason: e.message });
+        } finally {
+            poolRestartInProgress.delete(clientId);
+        }
+    }, 4000);
+}
+setInterval(async () => {
+    for (const [clientId, entry] of poolClients) {
+        if (entry.status !== 'connected' || !entry.client || poolRestartInProgress.has(clientId)) continue;
+        try {
+            await Promise.race([
+                entry.client.getState(),
+                new Promise((_, rej) => setTimeout(() => rej(new Error('timeout ao consultar client.getState()')), RUNTIME_WATCHDOG_TIMEOUT_MS)),
+            ]);
+        } catch (e) {
+            reiniciarClientePoolAposFalha(clientId, entry, e.message);
+        }
+    }
+}, RUNTIME_WATCHDOG_MS);
+
 // "Pausa" em processo — nunca process.exit, nunca mexe na sessão do client
 // principal nem na de outros números do pool. Mantém a sessão salva (dá pra
 // reconectar sem escanear QR de novo).
