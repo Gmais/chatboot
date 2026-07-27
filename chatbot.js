@@ -910,13 +910,33 @@ async function salvarNaConversa(telefone, nome, direcao, texto, tipo = 'text', t
     const num = telefone.replace('@c.us', '').replace('@lid', '');
     const ts = tsReal ? new Date(tsReal * 1000).toISOString() : new Date().toISOString();
     const lida = direcao === 'out' ? 1 : 0;
-    // Guarda universal contra duplicata técnica: a MESMA mensagem (mesmo
-    // telefone, direção e texto) chegando aqui de novo em menos de 2s quase
-    // certamente é o mesmo envio processado duas vezes (double-submit do
-    // formulário, eco do celular não reconhecido, automação disparando duas
-    // vezes) — ninguém manda a mesma frase duas vezes de propósito tão rápido.
-    // Fica como última linha de defesa, cobrindo qualquer chamador (o dedup
-    // específico de cada rota é mais preciso, mas nem sempre pega tudo).
+
+    // Guarda primária: mesmo msg_id (id real do WhatsApp) já salvo antes.
+    // Sessão instável faz o WhatsApp Web reconectar várias vezes seguidas e,
+    // em cada reconexão, reenviar via client.on('message')/message_create o
+    // mesmo lote de mensagens recentes como se fossem novas — sem checar o id
+    // de verdade, cada reconexão duplicava um balão inteiro (ex: "Oi" 4x =
+    // 4 reconexões reenviando a mesma mensagem).
+    if (msgId) {
+        const msgIdJaSalvo = await db.get('SELECT 1 FROM conversas WHERE msg_id = ? LIMIT 1', msgId);
+        if (msgIdJaSalvo) {
+            console.log(`⚠️ Mensagem duplicada descartada por msg_id já existente (${num}, ${direcao}): ${msgId}`);
+            return null;
+        }
+    }
+
+    // Guarda secundária (sem msg_id disponível): a MESMA mensagem (mesmo
+    // telefone, direção e texto) chegando aqui de novo é quase certamente o
+    // mesmo envio processado duas vezes (double-submit do formulário, eco do
+    // celular não reconhecido, automação disparando duas vezes, ou o mesmo
+    // reenvio de histórico do caso acima quando o msg.id não veio).
+    // Com tsReal informado, o "ts" gravado é o horário de VERDADE da mensagem
+    // (pode ser de minutos/horas atrás) — comparar contra datetime('now') não
+    // pega reenvios, já que o segundo reenvio chega bem depois da janela de
+    // "-2 seconds" só porque o RELÓGIO andou, não porque a mensagem é outra.
+    // Nesse caso a checagem certa é bater o ts exato (reenvio da mesma
+    // mensagem carrega o mesmíssimo timestamp original). Sem tsReal (mensagem
+    // gerada agora, ts = new Date().toISOString()), mantém a janela de 2s.
     if (texto) {
         // ts é gravado em ISO 8601 ("...T...Z"), formato diferente do que
         // datetime('now') devolve ("AAAA-MM-DD HH:MM:SS", com espaço em vez
@@ -925,10 +945,15 @@ async function salvarNaConversa(telefone, nome, direcao, texto, tipo = 'text', t
         // espaço (0x20) no 11º caractere, fazendo QUALQUER ts do mesmo dia
         // bater como "recente" independente do horário real. Envolver os
         // dois lados em datetime(...) normaliza o formato antes de comparar.
-        const duplicataRecente = await db.get(
-            `SELECT 1 FROM conversas WHERE telefone = ? AND direcao = ? AND texto = ? AND datetime(ts) >= datetime('now', '-2 seconds') LIMIT 1`,
-            [num, direcao, texto]
-        );
+        const duplicataRecente = tsReal
+            ? await db.get(
+                `SELECT 1 FROM conversas WHERE telefone = ? AND direcao = ? AND texto = ? AND datetime(ts) = datetime(?) LIMIT 1`,
+                [num, direcao, texto, ts]
+            )
+            : await db.get(
+                `SELECT 1 FROM conversas WHERE telefone = ? AND direcao = ? AND texto = ? AND datetime(ts) >= datetime('now', '-2 seconds') LIMIT 1`,
+                [num, direcao, texto]
+            );
         if (duplicataRecente) {
             console.log(`⚠️ Mensagem duplicada descartada (${num}, ${direcao}): "${texto.slice(0, 40)}"`);
             return null;
@@ -7127,7 +7152,7 @@ client.on('message_create', async (msg) => {
         // Chegou aqui = mandada direto do celular vinculado, não pelo robô nem
         // pelo painel — é sempre um atendente humano respondendo por fora.
         // Mídia baixa em background (ver comentário em baixarMidiaRecebida).
-        const idConversa = await salvarNaConversa(numLimpo, nome, 'out', textoExibir, tipoMsg, msg.timestamp, true, null);
+        const idConversa = await salvarNaConversa(numLimpo, nome, 'out', textoExibir, tipoMsg, msg.timestamp, true, null, 'whatsapp', msgId);
         if (msg.hasMedia && ['image', 'video', 'document', 'sticker'].includes(tipoMsg)) {
             baixarMidiaEAtualizarEmBackground(msg, idConversa, numLimpo);
         }
@@ -7644,7 +7669,16 @@ async function processarMensagemRecebida(msg, canal = 'whatsapp') {
         // painel. A mídia entra depois, em background, atualizando o balão já
         // exibido assim que (e se) o download terminar.
         const textoExibir = transcricaoAudio ? `🎤 ${transcricaoAudio}` : (msg.body || TIPO_LABEL_FALLBACK[tipoMsg] || '[mensagem sem texto]');
-        const idConversa = await salvarNaConversa(numLimpo, nomeContato, 'in', textoExibir, tipoMsg, msg.timestamp, false, null);
+        const idConversa = await salvarNaConversa(numLimpo, nomeContato, 'in', textoExibir, tipoMsg, msg.timestamp, false, null, canal, msg.id?._serialized);
+        // salvarNaConversa devolve null quando detecta duplicata (mesmo msg_id
+        // ou mesmo texto/ts já salvo) — reenvio de histórico do WhatsApp Web
+        // numa reconexão instável, por exemplo. SEM esse corte, o código
+        // seguia em frente e chamava processarComoRobo de novo pra essa
+        // "mensagem" repetida — o robô respondia de verdade (via WhatsApp)
+        // outra vez pro mesmo cliente por reconexão, não só duplicava a
+        // exibição no painel (foi exatamente o caso: mesma resposta do
+        // operador saindo várias vezes de verdade).
+        if (idConversa === null) return;
         if (msg.hasMedia && ['image', 'video', 'document', 'sticker'].includes(tipoMsg)) {
             baixarMidiaEAtualizarEmBackground(msg, idConversa, numLimpo);
         }
