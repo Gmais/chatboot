@@ -3389,7 +3389,14 @@ async function dispararMensagensDaAutomacao(automacaoId) {
                         const mediaFullPath = path.join(__dirname, 'public', msg.media_path.replace(/^\//, ''));
                         if (fs.existsSync(mediaFullPath)) {
                             const media = MessageMedia.fromFilePath(mediaFullPath);
-                            const sent = await client.sendMessage(chatId, media, texto ? { caption: texto } : undefined);
+                            // waitUntilMsgSent:true — sem isso o sendMessage() resolve no eco
+                            // otimista local (antes de sair pela rede de verdade); com sessão
+                            // instável isso fazia a mesma mensagem ser gravada (e reenviada de
+                            // fato, já que o timeout/erro de rede fazia o contato voltar pra fila
+                            // pra tentar de novo) mais de uma vez — mesmo fix já aplicado no envio
+                            // manual (df28ae7) e no webhook de resumo de treino (515d56e), só
+                            // faltava aqui no disparo de automação.
+                            const sent = await sendMessageComRetryLid(client, chatId, media, { ...(texto ? { caption: texto } : {}), waitUntilMsgSent: true });
                             // client.sendMessage pode devolver undefined (sem lançar erro) mesmo
                             // quando a mensagem FOI entregue de verdade — é um comportamento
                             // conhecido do whatsapp-web.js: o envio em si acontece, só a
@@ -3405,7 +3412,12 @@ async function dispararMensagensDaAutomacao(automacaoId) {
                             console.error(`Disparo automação #${automacaoId}: mídia não encontrada (${msg.media_path}) pra ${numLimpo}`);
                         }
                     } else if (texto) {
-                        const sent = await client.sendMessage(chatId, texto);
+                        // waitUntilMsgSent:true — mesmo motivo do envio manual (df28ae7) e do
+                        // resumo de treino (515d56e): sem isso, sessão instável podia fazer o
+                        // mesmo contato receber a mensagem mais de uma vez (marcada como erro
+                        // aqui por não confirmar a tempo, mas entregue de verdade, e reenviada
+                        // de novo na próxima tentativa da fila).
+                        const sent = await sendMessageComRetryLid(client, chatId, texto, { waitUntilMsgSent: true });
                         await registrarMensagemEnviada(numLimpo, texto, nome, sent?.id?._serialized);
                         sucesso = true;
                     }
@@ -4675,11 +4687,15 @@ function iniciarBroadcast(job) {
                 // {nome}/{matricula}/{saudacao} POR DESTINATÁRIO (mesmo texto
                 // "mensagem" cru, mas personalizado a cada envio do laço).
                 const textoPersonalizado = await substituirPlaceholdersPessoais(mensagem, numeroCompleto);
-                await entryEnvio.client.sendMessage(chatId, textoPersonalizado);
+                // waitUntilMsgSent:true — mesmo motivo do envio manual (df28ae7): sem
+                // isso o sendMessage() resolve no eco local antes de confirmar saída
+                // real pela rede, e sessão instável pode fazer o número do pool
+                // "reenviar" sem perceber que já tinha saído de verdade.
+                await sendMessageComRetryLid(entryEnvio.client, chatId, textoPersonalizado, { waitUntilMsgSent: true });
 
                 if (mediaFile) {
                     const media = MessageMedia.fromFilePath(mediaFile.path);
-                    await entryEnvio.client.sendMessage(chatId, media);
+                    await sendMessageComRetryLid(entryEnvio.client, chatId, media, { waitUntilMsgSent: true });
                 }
 
                 broadcastProgress.sent++;
