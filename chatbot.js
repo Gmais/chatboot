@@ -7694,6 +7694,18 @@ async function processarMensagemRecebida(msg, canal = 'whatsapp') {
         // manda texto em branco pelo WhatsApp) — é ruído de sincronização
         // entre aparelhos disfarçado de mensagem de texto legítima.
         if (msg.type === 'chat' && !msg.body) return;
+
+        // Atualização do WhatsApp Web (jul/2026) renomeou o getter interno do id
+        // serializado de id._serialized pra id.$1 — a whatsapp-web.js ainda não
+        // acompanhou essa mudança. Sem isso, msg.downloadMedia() (usado tanto no
+        // áudio/nota de voz quanto na mídia geral) manda "undefined" como id pro
+        // lookup interno do WhatsApp, que quebra com um erro minificado opaco
+        // ("r: r") — foi o que passou a fazer TODO áudio/mídia recebida falhar
+        // silenciosamente (ver issue wwebjs/whatsapp-web.js#201833). Restaurar
+        // aqui, cedo, conserta downloadMedia() e qualquer outro uso de
+        // msg.id._serialized mais adiante (dedup por msg_id etc.).
+        if (msg.id && msg.id._serialized == null && msg.id.$1 != null) msg.id._serialized = msg.id.$1;
+
         // Grupo já foi descartado pelo "@g.us" da checagem lá em cima — chamar
         // msg.getChat() aqui de novo só pra reconferir isGroup era redundante,
         // e client.getChatById() (por baixo do getChat()) passou a rejeitar
