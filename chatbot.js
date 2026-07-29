@@ -841,11 +841,18 @@ async function resolverMatriculaContato(telefone) {
     } catch (_) { return ''; }
 }
 
-// Substitui {nome}/{nome_completo}/{matricula}/{saudacao} (e a forma com
-// colchetes) por dados reais do contato — usado tanto quando o ROBÔ dispara
-// uma regra automaticamente quanto no envio manual pelo Bate Papo ao Vivo.
-// Sem isso no envio manual, digitar {nome} na caixa de texto manda a chave
-// crua pro cliente em vez do nome dele (foi exatamente o bug relatado).
+// Substitui {nome}/{nome_completo}/{matricula}/{saudacao}/{parcelas}/{valor}/
+// {dias_atrasados}/{horario}/{professor} (e a forma com colchetes) por dados
+// reais do contato — usado tanto quando o ROBÔ dispara uma regra
+// automaticamente quanto no envio manual pelo Bate Papo ao Vivo e em Disparos
+// em massa. Sem isso no envio manual, digitar {nome} na caixa de texto manda
+// a chave crua pro cliente em vez do nome dele (foi exatamente o bug
+// relatado). {parcelas}/{valor}/{dias_atrasados}/{horario}/{professor} vêm
+// das mesmas tabelas de integração usadas no disparo de automação
+// (pacto_inadimplentes/pacto_vencem_hoje/agenda_avaliacoes_hoje) — antes só
+// existiam ali, então mandar um template com {horario}/{professor} manualmente
+// saía com a chave crua em vez do valor (bug relatado: confirmação de
+// avaliação sem hora nem professor).
 async function substituirPlaceholdersPessoais(texto, telefone) {
     const hora = moment.tz('America/Sao_Paulo').hours();
     const saudacao = hora >= 5 && hora < 12 ? 'Bom dia' : hora >= 12 && hora < 18 ? 'Boa tarde' : 'Boa noite';
@@ -854,6 +861,25 @@ async function substituirPlaceholdersPessoais(texto, telefone) {
     const nomeExibir = (nomeContato && nomeContato !== num) ? nomeContato.split(' ')[0] : '';
     const nomeCompletoExibir = (nomeContato && nomeContato !== num) ? nomeContato : '';
     const matriculaExibir = await resolverMatriculaContato(num);
+    const inadimplente = await db.get(
+        'SELECT * FROM pacto_inadimplentes WHERE telefone = ? OR telefone = ? OR telefone = ?',
+        [num, `${num}@c.us`, `${num}@lid`]
+    );
+    const venceHoje = !inadimplente ? await db.get(
+        'SELECT * FROM pacto_vencem_hoje WHERE telefone = ? OR telefone = ? OR telefone = ?',
+        [num, `${num}@c.us`, `${num}@lid`]
+    ) : null;
+    const parcelasExibir = inadimplente ? String(inadimplente.qtd_parcelas_atrasadas)
+        : venceHoje ? String(venceHoje.qtd_parcelas) : '';
+    const valorExibir = inadimplente ? new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(inadimplente.valor_total_atrasado)
+        : venceHoje ? new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(venceHoje.valor_total) : '';
+    const diasAtrasadosExibir = inadimplente ? String(inadimplente.dias_atraso_mais_antiga) : '';
+    const agendamentoAF = await db.get(
+        'SELECT * FROM agenda_avaliacoes_hoje WHERE telefone = ? OR telefone = ? OR telefone = ?',
+        [num, `${num}@c.us`, `${num}@lid`]
+    );
+    const horarioExibir = agendamentoAF?.horario || '';
+    const professorExibir = agendamentoAF?.professor || '';
     return texto
         .replace(/{saudacao}/gi, saudacao)
         .replace(/\[nome\]/gi, nomeExibir || '')
@@ -861,7 +887,12 @@ async function substituirPlaceholdersPessoais(texto, telefone) {
         .replace(/\[nome_completo\]/gi, nomeCompletoExibir || '')
         .replace(/{nome_completo}/gi, nomeCompletoExibir || '')
         .replace(/\[matricula\]/gi, matriculaExibir || '')
-        .replace(/{matricula}/gi, matriculaExibir || '');
+        .replace(/{matricula}/gi, matriculaExibir || '')
+        .replace(/\[parcelas\]/gi, parcelasExibir).replace(/{parcelas}/gi, parcelasExibir)
+        .replace(/\[valor\]/gi, valorExibir).replace(/{valor}/gi, valorExibir)
+        .replace(/\[dias_atrasados\]/gi, diasAtrasadosExibir).replace(/{dias_atrasados}/gi, diasAtrasadosExibir)
+        .replace(/\[horario\]/gi, horarioExibir).replace(/{horario}/gi, horarioExibir)
+        .replace(/\[professor\]/gi, professorExibir).replace(/{professor}/gi, professorExibir);
 }
 
 // SQLite CURRENT_TIMESTAMP grava 'YYYY-MM-DD HH:MM:SS' em UTC mas sem indicador
