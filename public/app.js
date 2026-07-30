@@ -124,6 +124,9 @@ const msgReceivedEl   = document.getElementById('msg-received');
 const msgSentEl       = document.getElementById('msg-sent');
 const leadsCountEl    = document.getElementById('leads-count');
 const btnDisconnect   = document.getElementById('btn-disconnect');
+const alertaTravamento     = document.getElementById('alerta-travamento');
+const alertaTravamentoTexto = document.getElementById('alerta-travamento-texto');
+const btnAlertaTravamentoReiniciar = document.getElementById('btn-alerta-travamento-reiniciar');
 
 // =====================================
 // WHATSAPP SOCKET EVENTS
@@ -154,8 +157,38 @@ socket.on('ready', () => {
     setBadge('online');
     if (pairingSection) pairingSection.style.display = 'none';
     if (pairingCodeDisplay) pairingCodeDisplay.style.display = 'none';
+    esconderAlertaTravamento();
     addActivity('✅', 'WhatsApp conectado', 'Robô ativo e pronto para responder');
     showToast('WhatsApp Conectado!', 'Seu robô está ativo e monitorando mensagens', 'success');
+});
+
+// Alerta de travamento silencioso: painel mostra "Online" mas nenhuma
+// mensagem passa pelo WhatsApp há muito tempo (bug conhecido do
+// whatsapp-web.js, ver comentário no watchdog de atividade no chatbot.js).
+// Só avisa — quem decide reiniciar é o operador, no botão abaixo.
+function esconderAlertaTravamento() {
+    if (alertaTravamento) alertaTravamento.style.display = 'none';
+}
+socket.on('alerta_travamento', ({ minutos }) => {
+    if (!alertaTravamento) return;
+    if (alertaTravamentoTexto) alertaTravamentoTexto.textContent = `Possível travamento na conexão com o WhatsApp — sem nenhuma mensagem há ${minutos}min, mesmo aparecendo conectado`;
+    alertaTravamento.style.display = 'flex';
+    showToast('Possível travamento', `Sem mensagens há ${minutos}min mesmo conectado. Considere reiniciar.`, 'error', 10000);
+});
+socket.on('alerta_travamento_limpo', esconderAlertaTravamento);
+
+btnAlertaTravamentoReiniciar?.addEventListener('click', async () => {
+    btnAlertaTravamentoReiniciar.disabled = true;
+    btnAlertaTravamentoReiniciar.textContent = 'Reiniciando...';
+    try {
+        const res = await fetch('/api/reiniciar-client', { method: 'POST' });
+        if (!res.ok) throw new Error('Erro ao reiniciar');
+        showToast('Reiniciando...', 'O WhatsApp deve voltar em ~30-40s, sem precisar escanear QR de novo.', 'info', 8000);
+    } catch (err) {
+        showToast('Erro', 'Não foi possível reiniciar. Tente pelo botão Desconectar.', 'error');
+        btnAlertaTravamentoReiniciar.disabled = false;
+        btnAlertaTravamentoReiniciar.textContent = '🔄 Reiniciar agora';
+    }
 });
 
 socket.on('disconnected', () => {
@@ -163,6 +196,7 @@ socket.on('disconnected', () => {
     if (statusText) { statusText.textContent = 'WhatsApp Offline'; statusText.style.color = 'var(--red)'; }
     setBadge('offline');
     if (pairingSection) pairingSection.style.display = 'none';
+    esconderAlertaTravamento(); // já fica claro pelo selo "Desconectado" — não precisa dos dois avisos juntos
     showToast('Desconectado', 'O WhatsApp foi desconectado. Reinicie o servidor.', 'error');
 });
 
@@ -459,6 +493,7 @@ async function carregarEstatisticas() {
     const conexaoDesconexoesEl = document.getElementById('stats-conexao-desconexoes');
     const conexaoCrashesEl = document.getElementById('stats-conexao-crashes');
     const conexaoWatchdogEl = document.getElementById('stats-conexao-watchdog');
+    const conexaoTravamentoEl = document.getElementById('stats-conexao-travamento');
     const conexaoUltimaEl = document.getElementById('stats-conexao-ultima');
     const disparosTaxaEl = document.getElementById('stats-disparos-taxa');
     const disparosFalhasEl = document.getElementById('stats-disparos-falhas');
@@ -598,9 +633,10 @@ async function carregarEstatisticas() {
         if (conexaoDesconexoesEl) conexaoDesconexoesEl.textContent = s.conexao.desconexoes_periodo;
         if (conexaoCrashesEl) conexaoCrashesEl.textContent = s.conexao.crashes_periodo;
         if (conexaoWatchdogEl) conexaoWatchdogEl.textContent = s.conexao.watchdog_periodo;
+        if (conexaoTravamentoEl) conexaoTravamentoEl.textContent = s.conexao.travamentos_silenciosos_periodo;
         if (conexaoUltimaEl) {
             const u = s.conexao.ultima_desconexao;
-            const ROTULO_TIPO = { crash: 'crash', runtime_watchdog: 'watchdog (sessão travada)' };
+            const ROTULO_TIPO = { crash: 'crash', runtime_watchdog: 'watchdog (sessão travada)', possivel_travamento: 'travamento silencioso (sem mensagens)' };
             conexaoUltimaEl.textContent = u
                 ? `Última: ${ROTULO_TIPO[u.tipo] || 'desconexão'} em ${new Date(u.ts).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}${u.motivo ? ` — ${u.motivo}` : ''}`
                 : 'Sem desconexões registradas.';

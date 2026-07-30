@@ -113,6 +113,12 @@
             </div>
         </header>
 
+        <!-- Alerta de travamento silencioso (conectado, mas sem mensagens passando) -->
+        <div id="alerta-travamento" style="display:none;align-items:center;justify-content:space-between;gap:1rem;flex-wrap:wrap;background:rgba(239,68,68,0.15);border:1px solid var(--red);border-radius:var(--radius-sm);padding:.7rem 1rem;margin:0 0 1.2rem">
+            <span style="color:var(--red);font-size:.85rem;font-weight:600">⚠️ <span id="alerta-travamento-texto">Possível travamento na conexão com o WhatsApp</span></span>
+            <button type="button" id="btn-alerta-travamento-reiniciar" class="btn-danger" style="padding:.4rem .8rem;font-size:.78rem">🔄 Reiniciar agora</button>
+        </div>
+
         <!-- ===================== DASHBOARD ===================== -->
         <div id="dashboard-section" class="page-section hidden">
 
@@ -279,6 +285,10 @@
                         <div>
                             <div style="font-size:1.5rem;font-weight:800;color:var(--text-1)" id="stats-conexao-watchdog">0</div>
                             <div style="font-size:.72rem;color:var(--text-3)">reconexões forçadas pelo watchdog</div>
+                        </div>
+                        <div>
+                            <div style="font-size:1.5rem;font-weight:800;color:var(--text-1)" id="stats-conexao-travamento">0</div>
+                            <div style="font-size:.72rem;color:var(--text-3)">travamentos silenciosos (conectado, sem mensagens)</div>
                         </div>
                     </div>
                     <div id="stats-conexao-ultima" style="font-size:.8rem;color:var(--text-2)"></div>

@@ -1907,15 +1907,17 @@ app.get('/api/estatisticas', async (req, res) => {
         // avisou desconexão, nem crashou a página, só parou de responder —
         // sem contar aqui, um Chrome morrendo em silêncio nunca aparece pra
         // ninguém investigar depois (foi exatamente o caso que motivou esse
-        // watchdog existir).
+        // watchdog existir). 'possivel_travamento' (watchdog de ATIVIDADE) é
+        // uma 4ª: getState() responde normal, mas nenhuma mensagem passa —
+        // mesmo motivo de contar aqui, só que esse não reinicia sozinho.
         const conexaoContagem = await db.all(`
             SELECT tipo, COUNT(*) AS n FROM conexao_eventos_log
-            WHERE ts >= ? AND tipo IN ('desconectado', 'crash', 'runtime_watchdog')
+            WHERE ts >= ? AND tipo IN ('desconectado', 'crash', 'runtime_watchdog', 'possivel_travamento')
             GROUP BY tipo
         `, desdeSql);
         const ultimaDesconexao = await db.get(`
             SELECT tipo, motivo, ts FROM conexao_eventos_log
-            WHERE tipo IN ('desconectado', 'crash', 'runtime_watchdog') ORDER BY ts DESC LIMIT 1
+            WHERE tipo IN ('desconectado', 'crash', 'runtime_watchdog', 'possivel_travamento') ORDER BY ts DESC LIMIT 1
         `);
 
         // ---- Disparos: entrega/falha com motivo ----
@@ -1963,6 +1965,7 @@ app.get('/api/estatisticas', async (req, res) => {
                 desconexoes_periodo: conexaoContagem.find(c => c.tipo === 'desconectado')?.n || 0,
                 crashes_periodo: conexaoContagem.find(c => c.tipo === 'crash')?.n || 0,
                 watchdog_periodo: conexaoContagem.find(c => c.tipo === 'runtime_watchdog')?.n || 0,
+                travamentos_silenciosos_periodo: conexaoContagem.find(c => c.tipo === 'possivel_travamento')?.n || 0,
                 ultima_desconexao: ultimaDesconexao ? { tipo: ultimaDesconexao.tipo, motivo: ultimaDesconexao.motivo, ts: sqliteTsParaIso(ultimaDesconexao.ts) } : null,
             },
             disparos: {
@@ -6019,6 +6022,15 @@ app.post('/api/disconnect', async (req, res) => {
     exitClean();
 });
 
+// Reinício "suave": mantém a sessão salva (sem precisar escanear QR de novo),
+// só derruba e reconecta o client em processo. Usado pelo botão "Reiniciar
+// agora" do alerta de travamento silencioso (ver watchdog de atividade mais
+// abaixo) — diferente de /api/disconnect, que apaga a sessão de propósito.
+app.post('/api/reiniciar-client', async (req, res) => {
+    res.json({ success: true });
+    reiniciarClienteAposFalha('manual_admin', 'reinício solicitado pelo painel após alerta de travamento');
+});
+
 // =====================================
 // CONFIGURAÇÃO DO CLIENTE WHATSAPP
 // =====================================
@@ -6118,6 +6130,18 @@ let isConnected = false;
 let clientReadyForPairing = false;
 let restartInProgress = false; // Evita loop de restart: só uma reinicialização por vez
 
+// Horário da última mensagem de verdade que passou pelo client (recebida OU
+// enviada) — usado pelo watchdog de ATIVIDADE mais abaixo, que cobre um bug
+// conhecido e ainda sem correção do whatsapp-web.js (issues #3812 e #2125
+// do repositório oficial): o WhatsApp Web às vezes recarrega seu estado
+// interno por dentro sem avisar ninguém, e os listeners de mensagem da lib
+// ficam órfãos — o painel mostra "Online" e client.getState() responde
+// normal (por isso o watchdog de runtime abaixo não pega isso), mas nenhuma
+// mensagem passa mais. Sem essa marca de atividade, esse travamento
+// silencioso só é percebido quando alguém nota "manualmente" que sumiu.
+let ultimaAtividadeMensagem = Date.now();
+let alertaTravamentoAtivo = false;
+
 // Watchdog de inicialização: algumas vezes o Puppeteer/Chromium trava no
 // meio do boot e o client nunca chega a emitir NEM 'qr' NEM 'ready' — o
 // painel fica preso em "Iniciando conexão..." pra sempre, sem nenhum
@@ -6181,6 +6205,7 @@ io.on('connection', async (socket) => {
     if (isConnected) socket.emit('ready');
     else if (currentQR) socket.emit('qr', currentQR);
     else socket.emit('loading', 'Iniciando o WhatsApp...');
+    if (alertaTravamentoAtivo) socket.emit('alerta_travamento', { minutos: Math.round((Date.now() - ultimaAtividadeMensagem) / 60000) });
 
     // Replay do estado atual de cada número do pool de Disparo, pra uma aba
     // recém-aberta já ver o status certo sem esperar o próximo evento.
@@ -6238,6 +6263,8 @@ client.on('ready', async () => {
     currentQR = null;
     clientReadyForPairing = false;
     restartInProgress = false;
+    ultimaAtividadeMensagem = Date.now(); // reseta a base do watchdog de atividade a cada (re)conexão
+    if (alertaTravamentoAtivo) { alertaTravamentoAtivo = false; io.emit('alerta_travamento_limpo'); }
     io.emit('ready');
 
     // DIAGNÓSTICO: expõe erros que acontecem DENTRO do Chrome headless
@@ -6333,6 +6360,30 @@ setInterval(async () => {
         reiniciarClienteAposFalha('runtime_watchdog', e.message);
     }
 }, RUNTIME_WATCHDOG_MS);
+
+// Watchdog de ATIVIDADE (diferente dos dois acima): cobre o caso em que o
+// Chrome está vivo e client.getState() responde normalmente — por isso o
+// watchdog de runtime acima não pega — mas nenhuma mensagem passa mais pelo
+// client (bug ainda sem correção da própria lib, ver comentário na
+// declaração de ultimaAtividadeMensagem). Só AVISA no painel com um botão de
+// reiniciar manual — de propósito NÃO reinicia sozinho, pra manter alguém no
+// controle de quando reconectar (decisão explícita: mensagem de teste ou
+// restart automático trocariam essa garantia por detecção mais rápida).
+// Limite generoso (20min) porque é detecção passiva: silêncio de verdade
+// (madrugada, horário parado) e travamento de verdade são indistinguíveis
+// sem mandar tráfego ativo — abaixo disso o risco de alarme falso sobe.
+const LIMITE_SILENCIO_MENSAGENS_MS = 20 * 60 * 1000;
+setInterval(() => {
+    if (!isConnected || restartInProgress || alertaTravamentoAtivo) return;
+    const silencioMs = Date.now() - ultimaAtividadeMensagem;
+    if (silencioMs > LIMITE_SILENCIO_MENSAGENS_MS) {
+        alertaTravamentoAtivo = true;
+        const minutos = Math.round(silencioMs / 60000);
+        console.error(`🚨 Possível travamento silencioso: ${minutos}min sem nenhuma mensagem passar pelo WhatsApp, mesmo conectado.`);
+        registrarEventoConexao('possivel_travamento', `${minutos}min sem atividade`);
+        io.emit('alerta_travamento', { minutos });
+    }
+}, 5 * 60 * 1000);
 
 // =====================================
 // POOL DE NÚMEROS PARA DISPARO (só envio — nunca responde ninguém)
@@ -7172,6 +7223,8 @@ async function sendMessageComRetryLid(clienteWpp, chatId, conteudo, opcoes) {
 // atendente respondeu por fora do painel) — persistimos aqui pra completar o
 // histórico do Bate Papo ao Vivo mesmo quando a resposta não passou pelo bot.
 client.on('message_create', async (msg) => {
+    ultimaAtividadeMensagem = Date.now();
+    if (alertaTravamentoAtivo) { alertaTravamentoAtivo = false; io.emit('alerta_travamento_limpo'); }
     const dir = msg.fromMe ? '→ ENVIADA' : '← RECEBIDA';
     if (msg.from !== 'status@broadcast') {
         console.log(`🔍 [DEBUG] ${dir} from=${msg.from} body="${(msg.body || '[sem texto]').slice(0, 40)}"`);
@@ -7881,7 +7934,11 @@ async function processarMensagemRecebida(msg, canal = 'whatsapp') {
     }
 }
 
-client.on('message', async (msg) => { await processarMensagemRecebida(msg, 'whatsapp'); });
+client.on('message', async (msg) => {
+    ultimaAtividadeMensagem = Date.now();
+    if (alertaTravamentoAtivo) { alertaTravamentoAtivo = false; io.emit('alerta_travamento_limpo'); }
+    await processarMensagemRecebida(msg, 'whatsapp');
+});
 
 // Reação a uma mensagem (❤️, 👍 etc) é um evento SEPARADO no WhatsApp — não
 // passa por 'message'/'message_create'. Sem esse handler, uma conversa cuja
