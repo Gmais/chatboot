@@ -4469,6 +4469,19 @@ app.post('/api/conversas/:telefone/status', async (req, res) => {
             [telefone, status]
         );
         io.emit('conversa_status_atualizada', { telefone, status });
+
+        // Finalizar = o operador está encerrando o atendimento de vez, não só
+        // "arquivando" a conversa. Se ela estava Assumida (robô bloqueado pra
+        // esse contato — ver /assumir acima), libera junto. Sem isso, a
+        // conversa reabre sozinha quando o cliente escreve de novo (bloco
+        // acima em salvarNaConversa), mas o robô continuava travado pra
+        // sempre nesse contato até alguém notar e clicar "Devolver ao Robô"
+        // manualmente — o cliente ficava "preso" com o operador que já tinha
+        // encerrado o atendimento.
+        if (status === 'fechada') {
+            const liberou = await db.run('DELETE FROM conversas_humano WHERE telefone = ?', telefone);
+            if (liberou.changes > 0) io.emit('conversa_assumida', { telefone, assumida: false });
+        }
         res.json({ success: true, status });
     } catch (err) {
         res.status(500).json({ error: err.message });
