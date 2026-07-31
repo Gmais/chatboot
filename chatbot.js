@@ -457,6 +457,21 @@ async function initDB() {
             enviado_em DATETIME DEFAULT CURRENT_TIMESTAMP
         );
         CREATE INDEX IF NOT EXISTS idx_disparo_envios_log_ts ON disparo_envios_log(enviado_em);
+        -- Um resumo por EXECUÇÃO de disparo em massa (uma linha por lista
+        -- inteira, não por contato — diferente de disparo_envios_log, que é
+        -- por contato). Alimenta o card "Disparos de hoje" no painel:
+        -- descrição do tipo + total/enviados/falhas + quando terminou, pra
+        -- não precisar reconstruir isso a partir do log por contato.
+        CREATE TABLE IF NOT EXISTS disparo_execucoes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            descricao TEXT,
+            total INTEGER NOT NULL,
+            enviados INTEGER NOT NULL,
+            falhas INTEGER NOT NULL,
+            iniciado_em DATETIME,
+            concluido_em DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_disparo_execucoes_concluido ON disparo_execucoes(concluido_em);
         -- Relatório "Contratos Sem Assinar": lista importada de um PDF do Pacto
         -- (um link por consultora), com checkbox "Assinado" que tira da lista.
         -- UNIQUE(consultora, matricula) permite reimportar a mesma lista sem
@@ -4596,6 +4611,24 @@ let ultimoDisparoIniciadoEm = null; // 'YYYY-MM-DD HH:mm:ss' (mesmo formato do S
 
 app.get('/api/broadcast/status', (req, res) => res.json({ ...broadcastProgress, filaTamanho: filaDisparos.length }));
 
+// Resumo de cada disparo em massa CONCLUÍDO hoje (fuso America/Sao_Paulo) —
+// uma linha por lista inteira (descrição + total/enviados/falhas + horário),
+// não por contato (isso já existe em /api/broadcast/historico). "Zera"
+// sozinho a cada dia porque o filtro é sempre "hoje", sem precisar de
+// nenhuma limpeza — o de ontem só some da consulta, continua no banco.
+app.get('/api/broadcast/execucoes-hoje', async (req, res) => {
+    try {
+        const execucoes = await db.all(`
+            SELECT * FROM disparo_execucoes
+            WHERE date(concluido_em, '-3 hours') = date('now', '-3 hours')
+            ORDER BY concluido_em DESC
+        `);
+        res.json(execucoes.map(e => ({ ...e, concluido_em: sqliteTsParaIso(e.concluido_em), iniciado_em: sqliteTsParaIso(e.iniciado_em) })));
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
 // Detalhe de falhas do disparo em massa mais recente — telefone + motivo,
 // pra quem acabou de rodar um disparo entender NA HORA quem falhou e por quê,
 // sem precisar caçar log de servidor. Some/reseta a cada novo disparo (filtra
@@ -4716,7 +4749,9 @@ function iniciarBroadcast(job) {
     }
 
     broadcastRunning = true;
-    broadcastProgress = { total: listaNumeros.length, sent: 0, failed: 0, running: true };
+    // descricao entra aqui pra a tela mostrar O QUE está disparando agora
+    // (não só total/enviados/falhas) — ver "Disparos de hoje" no painel.
+    broadcastProgress = { total: listaNumeros.length, sent: 0, failed: 0, running: true, descricao: descricao || null };
     ultimoDisparoIniciadoEm = moment.utc().format('YYYY-MM-DD HH:mm:ss');
     io.emit('broadcast_progress', broadcastProgress);
     io.emit('broadcast_started', broadcastProgress);
@@ -4776,6 +4811,12 @@ function iniciarBroadcast(job) {
         io.emit('broadcast_progress', broadcastProgress);
         io.emit('broadcast_done', broadcastProgress);
         console.log(`✅ Broadcast finalizado: ${broadcastProgress.sent} enviados, ${broadcastProgress.failed} falhas.`);
+        // Resumo da execução (uma linha, não por contato) — alimenta "Disparos
+        // de hoje" no painel. iniciado_em em UTC (mesmo padrão de ultimoDisparoIniciadoEm).
+        db.run(
+            'INSERT INTO disparo_execucoes (descricao, total, enviados, falhas, iniciado_em) VALUES (?, ?, ?, ?, ?)',
+            [descricao || null, broadcastProgress.total, broadcastProgress.sent, broadcastProgress.failed, ultimoDisparoIniciadoEm]
+        ).catch(e => console.error('Erro ao registrar resumo do disparo:', e.message));
 
         // Próximo da fila (se tiver) começa sozinho, sem precisar de ação do usuário.
         if (filaDisparos.length > 0) {

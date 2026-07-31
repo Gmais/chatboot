@@ -743,6 +743,7 @@
 
                 <div class="card glass">
                     <h3>Progresso em Tempo Real</h3>
+                    <p id="prog-descricao" class="hidden" style="color:var(--text-2);font-size:.8rem;margin:-.3rem 0 .8rem"></p>
                     <div class="progress-stat progress-stat-clickable" data-filtro="todos" title="Ver a lista detalhada">
                         <span style="color:var(--text-2)">Total</span>
                         <span id="prog-total" class="prog-val" style="color:var(--text-1)">0</span>
@@ -767,6 +768,12 @@
                         </div>
                     </div>
                     <p id="broadcast-status-msg" style="margin-top:1.5rem;text-align:center;color:var(--text-3);font-size:.85rem">Aguardando início...</p>
+                    <div style="margin-top:1.2rem;padding-top:1.2rem;border-top:1px solid rgba(255,255,255,0.07)">
+                        <h4 style="font-size:.82rem;color:var(--text-2);margin-bottom:.6rem">📋 Disparos de hoje</h4>
+                        <div id="disparo-execucoes-hoje-lista" style="display:flex;flex-direction:column;gap:.4rem">
+                            <p style="color:var(--text-3);font-size:.78rem;text-align:center;padding:.4rem 0">Nenhum disparo concluído hoje ainda.</p>
+                        </div>
+                    </div>
                 </div>
             </div>
 

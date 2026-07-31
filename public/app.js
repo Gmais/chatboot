@@ -755,6 +755,7 @@ navBtns.forEach(btn => {
             resetarFormularioDisparo();
             sincronizarEstadoDisparo();
             carregarDisparoHistorico();
+            carregarDisparoExecucoesHoje();
         }
         if (targetId === 'relatorio-section') { loadRelatorioErrosWhatsapp(); loadRelatorioSemCadastro(); loadContratosSemAssinar('juliana'); loadContratosSemAssinar('isadora'); }
     });
@@ -2802,7 +2803,9 @@ const progSent          = document.getElementById('prog-sent');
 const progFailed        = document.getElementById('prog-failed');
 const progPercent       = document.getElementById('prog-percent');
 const progBar           = document.getElementById('prog-bar');
+const progDescricao     = document.getElementById('prog-descricao');
 const broadcastStatusMsg= document.getElementById('broadcast-status-msg');
+const disparoExecucoesHojeLista = document.getElementById('disparo-execucoes-hoje-lista');
 const disparoDetalheLista = document.getElementById('disparo-detalhe-lista');
 const disparoFilaStatus = document.getElementById('disparo-fila-status');
 const progressStatClicaveis = document.querySelectorAll('.progress-stat-clickable');
@@ -3132,6 +3135,14 @@ function updateProgressUI(p) {
     const pct = p.total > 0 ? Math.round(((p.sent + p.failed) / p.total) * 100) : 0;
     progPercent.textContent = `${pct}%`;
     progBar.style.width = `${pct}%`;
+    if (progDescricao) {
+        if (p.running && p.descricao) {
+            progDescricao.textContent = `💬 ${p.descricao}`;
+            progDescricao.classList.remove('hidden');
+        } else {
+            progDescricao.classList.add('hidden');
+        }
+    }
     if (p.running) {
         broadcastStatusMsg.textContent = `🚀 Disparando... ${p.sent + p.failed}/${p.total}`;
         broadcastStatusMsg.style.color = 'var(--green)';
@@ -3205,6 +3216,7 @@ socket.on('broadcast_done', (p) => {
     addActivity('🚀', `Disparo concluído: ${p.sent} msgs`, new Date().toLocaleString('pt-BR'));
     if (filtroDisparoDetalheAtivo) renderDisparoDetalhe(filtroDisparoDetalheAtivo);
     resetarFormularioDisparo();
+    carregarDisparoExecucoesHoje();
 });
 
 // ---- Relatório detalhado (nome + telefone) do disparo mais recente —
@@ -3319,6 +3331,32 @@ async function carregarDisparoHistorico() {
             : '<p style="color:var(--text-3);font-size:.78rem;text-align:center;padding:.5rem 0">Nenhum disparo nesse dia.</p>';
     } catch (e) {
         disparoHistoricoLista.innerHTML = '<p style="color:var(--text-3);font-size:.78rem;text-align:center;padding:.5rem 0">Erro ao carregar histórico.</p>';
+    }
+}
+
+// ---- Disparos de hoje — resumo por LISTA (não por contato, ver Histórico
+// acima), dentro do próprio card de Progresso em Tempo Real. Sempre "hoje"
+// (fuso America/Sao_Paulo) — zera sozinho a cada dia porque o backend já
+// filtra por hoje, sem precisar limpar nada aqui. ----
+async function carregarDisparoExecucoesHoje() {
+    if (!disparoExecucoesHojeLista) return;
+    try {
+        const res = await fetch('/api/broadcast/execucoes-hoje');
+        const execucoes = await res.json();
+        disparoExecucoesHojeLista.innerHTML = execucoes.length
+            ? execucoes.map(ex => `
+                <div style="display:flex;justify-content:space-between;align-items:center;gap:.6rem;font-size:.78rem;padding:.4rem .1rem;border-bottom:1px solid rgba(255,255,255,0.05)">
+                    <span style="color:var(--text-1);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+                        ${ex.descricao || '<span style="color:var(--text-3)">(sem descrição)</span>'}
+                        <span style="color:var(--text-3)"> · ${new Date(ex.concluido_em).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}</span>
+                    </span>
+                    <span style="color:var(--green);white-space:nowrap;flex-shrink:0">✅ ${ex.enviados}</span>
+                    ${ex.falhas > 0 ? `<span style="color:var(--red);white-space:nowrap;flex-shrink:0">❌ ${ex.falhas}</span>` : ''}
+                </div>
+            `).join('')
+            : '<p style="color:var(--text-3);font-size:.78rem;text-align:center;padding:.4rem 0">Nenhum disparo concluído hoje ainda.</p>';
+    } catch (e) {
+        disparoExecucoesHojeLista.innerHTML = '<p style="color:var(--text-3);font-size:.78rem;text-align:center;padding:.4rem 0">Erro ao carregar.</p>';
     }
 }
 
