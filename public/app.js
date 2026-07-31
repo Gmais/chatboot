@@ -171,9 +171,13 @@ function esconderAlertaTravamento() {
 }
 socket.on('alerta_travamento', ({ minutos }) => {
     if (!alertaTravamento) return;
-    if (alertaTravamentoTexto) alertaTravamentoTexto.textContent = `Possível travamento na conexão com o WhatsApp — sem nenhuma mensagem há ${minutos}min, mesmo aparecendo conectado`;
+    // Desde 31/07: o servidor já reinicia sozinho ao detectar isso (não pede
+    // mais clique) — o evento 'disconnected' chega logo em seguida e some
+    // com esse aviso (ver esconderAlertaTravamento ali). Fica só como
+    // notificação do que está acontecendo, não como pedido de ação.
+    if (alertaTravamentoTexto) alertaTravamentoTexto.textContent = `Possível travamento detectado (${minutos}min sem nenhuma mensagem, mesmo conectado) — reiniciando automaticamente...`;
     alertaTravamento.style.display = 'flex';
-    showToast('Possível travamento', `Sem mensagens há ${minutos}min mesmo conectado. Considere reiniciar.`, 'error', 10000);
+    showToast('Travamento detectado', `Sem mensagens há ${minutos}min mesmo conectado. Reiniciando automaticamente...`, 'error', 10000);
 });
 socket.on('alerta_travamento_limpo', esconderAlertaTravamento);
 

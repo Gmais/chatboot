@@ -6239,7 +6239,6 @@ let restartInProgress = false; // Evita loop de restart: só uma reinicializaç�
 // mensagem passa mais. Sem essa marca de atividade, esse travamento
 // silencioso só é percebido quando alguém nota "manualmente" que sumiu.
 let ultimaAtividadeMensagem = Date.now();
-let alertaTravamentoAtivo = false;
 
 // Watchdog de inicialização: algumas vezes o Puppeteer/Chromium trava no
 // meio do boot e o client nunca chega a emitir NEM 'qr' NEM 'ready' — o
@@ -6304,7 +6303,6 @@ io.on('connection', async (socket) => {
     if (isConnected) socket.emit('ready');
     else if (currentQR) socket.emit('qr', currentQR);
     else socket.emit('loading', 'Iniciando o WhatsApp...');
-    if (alertaTravamentoAtivo) socket.emit('alerta_travamento', { minutos: Math.round((Date.now() - ultimaAtividadeMensagem) / 60000) });
 
     // Replay do estado atual de cada número do pool de Disparo, pra uma aba
     // recém-aberta já ver o status certo sem esperar o próximo evento.
@@ -6363,7 +6361,7 @@ client.on('ready', async () => {
     clientReadyForPairing = false;
     restartInProgress = false;
     ultimaAtividadeMensagem = Date.now(); // reseta a base do watchdog de atividade a cada (re)conexão
-    if (alertaTravamentoAtivo) { alertaTravamentoAtivo = false; io.emit('alerta_travamento_limpo'); }
+    io.emit('alerta_travamento_limpo'); // garante que o aviso de travamento (se algum ficou preso na tela) some numa reconexão de verdade
     io.emit('ready');
 
     // DIAGNÓSTICO: expõe erros que acontecem DENTRO do Chrome headless
@@ -6464,23 +6462,25 @@ setInterval(async () => {
 // Chrome está vivo e client.getState() responde normalmente — por isso o
 // watchdog de runtime acima não pega — mas nenhuma mensagem passa mais pelo
 // client (bug ainda sem correção da própria lib, ver comentário na
-// declaração de ultimaAtividadeMensagem). Só AVISA no painel com um botão de
-// reiniciar manual — de propósito NÃO reinicia sozinho, pra manter alguém no
-// controle de quando reconectar (decisão explícita: mensagem de teste ou
-// restart automático trocariam essa garantia por detecção mais rápida).
+// declaração de ultimaAtividadeMensagem). Reinicia SOZINHO ao detectar (2ª
+// versão desse watchdog — a 1ª só avisava e esperava clique manual, mas o
+// travamento voltou a acontecer ~25min depois de um reinício manual, e ficar
+// esperando alguém notar o aviso não escala pra um travamento que se repete
+// com frequência). io.emit('alerta_travamento') continua avisando o painel
+// (visibilidade + contador em Estatísticas via registrarEventoConexao, que
+// reiniciarClienteAposFalha já faz sozinho), só que agora só como aviso do
+// que JÁ está sendo corrigido, não como pedido de ação.
 // Limite generoso (20min) porque é detecção passiva: silêncio de verdade
 // (madrugada, horário parado) e travamento de verdade são indistinguíveis
-// sem mandar tráfego ativo — abaixo disso o risco de alarme falso sobe.
+// sem mandar tráfego ativo — abaixo disso o risco de reiniciar à toa sobe.
 const LIMITE_SILENCIO_MENSAGENS_MS = 20 * 60 * 1000;
 setInterval(() => {
-    if (!isConnected || restartInProgress || alertaTravamentoAtivo) return;
+    if (!isConnected || restartInProgress) return;
     const silencioMs = Date.now() - ultimaAtividadeMensagem;
     if (silencioMs > LIMITE_SILENCIO_MENSAGENS_MS) {
-        alertaTravamentoAtivo = true;
         const minutos = Math.round(silencioMs / 60000);
-        console.error(`🚨 Possível travamento silencioso: ${minutos}min sem nenhuma mensagem passar pelo WhatsApp, mesmo conectado.`);
-        registrarEventoConexao('possivel_travamento', `${minutos}min sem atividade`);
         io.emit('alerta_travamento', { minutos });
+        reiniciarClienteAposFalha('possivel_travamento', `${minutos}min sem nenhuma mensagem passar pelo WhatsApp, mesmo conectado — reiniciando automaticamente.`);
     }
 }, 5 * 60 * 1000);
 
@@ -7330,7 +7330,6 @@ async function sendMessageComRetryLid(clienteWpp, chatId, conteudo, opcoes) {
 // histórico do Bate Papo ao Vivo mesmo quando a resposta não passou pelo bot.
 client.on('message_create', async (msg) => {
     ultimaAtividadeMensagem = Date.now();
-    if (alertaTravamentoAtivo) { alertaTravamentoAtivo = false; io.emit('alerta_travamento_limpo'); }
     const dir = msg.fromMe ? '→ ENVIADA' : '← RECEBIDA';
     if (msg.from !== 'status@broadcast') {
         console.log(`🔍 [DEBUG] ${dir} from=${msg.from} body="${(msg.body || '[sem texto]').slice(0, 40)}"`);
@@ -8042,7 +8041,6 @@ async function processarMensagemRecebida(msg, canal = 'whatsapp') {
 
 client.on('message', async (msg) => {
     ultimaAtividadeMensagem = Date.now();
-    if (alertaTravamentoAtivo) { alertaTravamentoAtivo = false; io.emit('alerta_travamento_limpo'); }
     await processarMensagemRecebida(msg, 'whatsapp');
 });
 
