@@ -1159,6 +1159,14 @@ const btnAddFaixa           = document.getElementById('btn-add-faixa');
 
 const DIAS_SEMANA = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'];
 let horarioFaixas = []; // [{ dias: [1,2,3,4,5], inicio: '07:00', fim: '11:00', modo: 'humano' }, ...]
+// Só vira true depois que loadHorarioConfig() carrega as faixas de verdade
+// do servidor — sem essa trava, se o fetch falhar (rede instável, servidor
+// reconectando o WhatsApp bem nesse momento), horarioFaixas fica no [] do
+// estado inicial e continua parecendo normal na tela; clicar em Salvar por
+// QUALQUER motivo (nem precisa mexer nas faixas) mandava faixas:[] pro
+// servidor, que APAGA todas as faixas configuradas de verdade — foi
+// exatamente o caso relatado de "configurei e sumiu sozinho".
+let horarioConfigCarregado = false;
 
 // Lê o estado atual dos inputs de volta para horarioFaixas, para não perder
 // edições em andamento ao adicionar/remover uma faixa ou salvar.
@@ -1216,8 +1224,11 @@ horarioFaixasList?.addEventListener('click', (e) => {
 });
 
 async function loadHorarioConfig() {
+    horarioConfigCarregado = false;
+    if (btnSalvarHorario) btnSalvarHorario.disabled = true;
     try {
         const res = await fetch('/api/horarios');
+        if (!res.ok) throw new Error('resposta ' + res.status);
         const data = await res.json();
         if (horarioAtivo) horarioAtivo.checked = !!data.ativo;
         if (horarioModoPadrao) horarioModoPadrao.value = data.modo_padrao || 'robo';
@@ -1226,12 +1237,21 @@ async function loadHorarioConfig() {
         if (horarioFallbackSegundos) horarioFallbackSegundos.value = data.fallback_segundos || 180;
         horarioFaixas = (data.faixas || []).map(f => ({ dias: f.dias, inicio: f.inicio, fim: f.fim, modo: f.modo }));
         renderFaixas();
+        horarioConfigCarregado = true;
+        if (btnSalvarHorario) btnSalvarHorario.disabled = false;
     } catch (e) {
         console.error('Erro ao carregar horário de funcionamento', e);
+        showToast('Erro ao carregar horário', 'Não deu pra carregar a configuração de horário. Recarregue a página antes de mexer aqui — salvar agora apagaria as faixas configuradas.', 'error', 8000);
     }
 }
 
 btnSalvarHorario?.addEventListener('click', async () => {
+    // Trava de segurança: nunca salvar com base num estado que não veio de
+    // verdade do servidor (ver comentário na declaração de horarioConfigCarregado).
+    if (!horarioConfigCarregado) {
+        showToast('Ainda carregando', 'Aguarde a configuração de horário carregar (ou recarregue a página) antes de salvar.', 'error');
+        return;
+    }
     sincronizarFaixasDoDOM();
     const payload = {
         ativo: !!horarioAtivo?.checked,
