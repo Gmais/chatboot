@@ -5813,7 +5813,7 @@ function renderAcompanhamentoAutomacoes(automacoesOriginal) {
             <div class="card glass" style="padding:1rem 1.2rem" data-acompanhar-id="${a.id}">
                 <div style="display:flex;align-items:center;gap:1rem;flex-wrap:wrap">
                     <div style="flex:1;min-width:180px">
-                        <div style="font-weight:600;color:var(--text-1);font-size:.9rem;margin-bottom:.25rem">${a.nome}${a.disparo_ativo ? ' <span style="color:var(--red);font-size:.72rem;font-weight:600">🔴 disparando agora</span>' : ''}</div>
+                        <div style="font-weight:600;color:var(--text-1);font-size:.9rem;margin-bottom:.25rem">${a.nome}${a.disparo_ativo ? ' <span style="color:var(--red);font-size:.72rem;font-weight:600">🔴 disparando agora</span>' : a.disparo_na_fila ? ' <span style="color:var(--amber);font-size:.72rem;font-weight:600">⏳ na fila — aguardando outro disparo terminar</span>' : ''}</div>
                         <div style="display:flex;align-items:center;gap:.5rem;flex-wrap:wrap">${etiquetaChip}</div>
                     </div>
                     <div style="text-align:center">
@@ -5958,7 +5958,11 @@ acompanhamentoAutomacoesLista?.addEventListener('click', async (e) => {
             const res = await fetch(`/api/automacoes/${btnDisparar.dataset.id}/disparar`, { method: 'POST' });
             const data = await res.json();
             if (!res.ok) throw new Error(data.error || 'Erro ao iniciar disparo');
-            showToast('Disparo iniciado!', 'Rodando em segundo plano — os números vão atualizando sozinhos conforme cada mensagem for enviada.', 'success', 6000);
+            if (data.queued) {
+                showToast('Entrou na fila', 'Outra automação ainda está disparando — essa começa sozinha assim que a outra terminar, sem intercalar tipos de mensagem.', 'info', 6000);
+            } else {
+                showToast('Disparo iniciado!', 'Rodando em segundo plano — os números vão atualizando sozinhos conforme cada mensagem for enviada.', 'success', 6000);
+            }
         } catch (err) {
             showToast('Erro', err.message, 'error');
         } finally {

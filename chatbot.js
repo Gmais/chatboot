@@ -3269,6 +3269,42 @@ let automacaoDisparoRodando = {};
 // que ainda não foram tentados ficam intactos na fila pra um próximo disparo).
 let automacaoDisparoPausado = {};
 
+// Fila GLOBAL entre automações diferentes — automacaoDisparoRodando (acima)
+// só trava a MESMA automação rodar 2x ao mesmo tempo, mas nada impedia
+// automações DIFERENTES (ex: Cobrança e Aniversariante) de disparar ao mesmo
+// tempo pro mesmo pool de números, intercalando tipos de mensagem entre os
+// contatos em vez de terminar um tipo pra só depois começar o outro (bug
+// relatado: "termina um tipo de mensagem e começa outro tipo não está
+// acontecendo"). Isso acontece na prática porque Programações diferentes
+// (ex: Cobrança 07:50, Aniversariante 08:00) podem cair perto o suficiente
+// pra uma ainda estar no meio da fila (com delay entre contatos) quando a
+// outra começa. Mesmo padrão de fila já usado em Disparos manuais
+// (filaDisparos/iniciarBroadcast) — só que aqui por automação, não por job.
+let automacaoDisparoGlobalAtivo = null; // id da automação disparando AGORA (null = livre)
+let filaDisparosAutomacao = []; // [{ id, origem }, ...] aguardando a vez
+
+function iniciarDisparoAutomacao(id, nome, origem) {
+    automacaoDisparoGlobalAtivo = id;
+    automacaoDisparoRodando[id] = true;
+    automacaoDisparoPausado[id] = false; // reseta pausa de uma rodada anterior
+    console.log(`🚀 Disparo da automação #${id} (${nome}) iniciado — origem: ${origem}`);
+    io.emit('automacoes_atualizadas');
+    dispararMensagensDaAutomacao(id)
+        .catch(e => console.error('Erro ao disparar automação:', e.message))
+        .finally(() => {
+            automacaoDisparoRodando[id] = false;
+            automacaoDisparoPausado[id] = false;
+            automacaoDisparoGlobalAtivo = null;
+            io.emit('automacoes_atualizadas');
+            // Próxima da fila (se tiver) começa sozinha — mesmo padrão do broadcast manual.
+            if (filaDisparosAutomacao.length > 0) {
+                const proxima = filaDisparosAutomacao.shift();
+                io.emit('automacoes_atualizadas');
+                iniciarDisparoAutomacao(proxima.id, proxima.nome, proxima.origem);
+            }
+        });
+}
+
 // Disparo de verdade da automação: cada contato "em andamento" recebe UMA
 // mensagem sorteada do pool (se ainda não tiver uma atribuída, sorteia agora
 // e grava — assim uma tentativa que falhar tenta de novo com a MESMA
@@ -3539,7 +3575,10 @@ app.get('/api/automacoes', async (req, res) => {
     // banco — é o mesmo flag que /progresso usa, só que aqui pra TODAS de uma
     // vez, pra dar pra filtrar "só disparando agora" na lista sem uma chamada
     // por automação.
-    automacoes.forEach(a => { a.disparo_ativo = !!automacaoDisparoRodando[a.id]; });
+    automacoes.forEach(a => {
+        a.disparo_ativo = !!automacaoDisparoRodando[a.id];
+        a.disparo_na_fila = filaDisparosAutomacao.some(j => j.id === a.id);
+    });
     res.json(automacoes);
 });
 
@@ -3799,7 +3838,10 @@ app.post('/api/automacoes/:id/importar-contatos', async (req, res) => {
 // (POST /api/automacoes/:id/disparar) quanto pelo scheduler de Programação
 // (checarProgramacoes). `origem` é só pro log, pra saber quem pediu.
 async function dispararAutomacaoComGuardas(id, origem = 'manual') {
-    if (automacaoDisparoRodando[id]) return { ok: false, error: 'Já tem um disparo rodando pra essa automação.' };
+    id = Number(id);
+    if (automacaoDisparoRodando[id] || filaDisparosAutomacao.some(j => j.id === id)) {
+        return { ok: false, error: 'Já tem um disparo rodando (ou na fila) pra essa automação.' };
+    }
     if (!isConnected) return { ok: false, error: 'WhatsApp não está conectado.' };
     const automacao = await db.get('SELECT * FROM automacoes WHERE id = ?', id);
     if (!automacao) return { ok: false, error: 'Automação não encontrada.' };
@@ -3807,12 +3849,15 @@ async function dispararAutomacaoComGuardas(id, origem = 'manual') {
     if (!dentroDoHorarioAutomacao(automacao)) {
         return { ok: false, error: `Fora do horário configurado pra essa automação (${automacao.horario_inicio}–${automacao.horario_fim}).` };
     }
-    automacaoDisparoRodando[id] = true;
-    automacaoDisparoPausado[id] = false; // reseta pausa de uma rodada anterior
-    console.log(`🚀 Disparo da automação #${id} (${automacao.nome}) iniciado — origem: ${origem}`);
-    dispararMensagensDaAutomacao(id)
-        .catch(e => console.error('Erro ao disparar automação:', e.message))
-        .finally(() => { automacaoDisparoRodando[id] = false; automacaoDisparoPausado[id] = false; });
+    // Outra automação (ID diferente) já está disparando agora — entra na fila
+    // em vez de começar junto e intercalar tipos de mensagem pro mesmo pool.
+    if (automacaoDisparoGlobalAtivo !== null) {
+        filaDisparosAutomacao.push({ id, nome: automacao.nome, origem });
+        console.log(`⏳ Disparo da automação #${id} (${automacao.nome}) enfileirado — automação #${automacaoDisparoGlobalAtivo} ainda disparando.`);
+        io.emit('automacoes_atualizadas');
+        return { ok: true, queued: true };
+    }
+    iniciarDisparoAutomacao(id, automacao.nome, origem);
     return { ok: true };
 }
 
@@ -3848,7 +3893,7 @@ app.delete('/api/automacoes/:id/contatos/:telefone', async (req, res) => {
 app.post('/api/automacoes/:id/disparar', async (req, res) => {
     const resultado = await dispararAutomacaoComGuardas(req.params.id, 'manual');
     if (!resultado.ok) return res.status(400).json({ error: resultado.error });
-    res.json({ success: true });
+    res.json({ success: true, queued: !!resultado.queued });
 });
 
 // =====================================
@@ -7216,16 +7261,23 @@ async function resolverChatId(clienteWpp, numeroLimpo) {
 // Não tenta pra qualquer erro: advSignedDeviceIdentity (sessão de
 // criptografia corrompida) é um problema diferente, esse retry não ajuda
 // nesse caso — só reconectando a sessão resolve.
+// Contato "frio" (nunca trocou mensagem com esse número) às vezes precisa de
+// mais de uma rodada pra a tabela terminar de carregar — 1 tentativa só
+// deixava passar disparo em massa pra quem nunca falou com o número (visto
+// em disparo real: 2 contatos falhando com esse erro mesmo após 1 retry).
+// Backoff crescente (1.5s, depois 3s) em vez de martelar a mesma espera.
+const LID_RETRY_DELAYS_MS = [1500, 3000];
 async function sendMessageComRetryLid(clienteWpp, chatId, conteudo, opcoes) {
-    try {
-        return await clienteWpp.sendMessage(chatId, conteudo, opcoes);
-    } catch (err) {
-        const ehErroLid = (err?.message || '').toLowerCase().includes('lid is missing');
-        if (!ehErroLid) throw err;
-        console.warn(`⚠️ "Lid is missing" ao enviar pra ${chatId} — forçando resolução do LID e tentando de novo.`);
-        try { await clienteWpp.getContactLidAndPhone([chatId]); } catch (_) { }
-        await delay(1500);
-        return await clienteWpp.sendMessage(chatId, conteudo, opcoes);
+    for (let tentativa = 0; ; tentativa++) {
+        try {
+            return await clienteWpp.sendMessage(chatId, conteudo, opcoes);
+        } catch (err) {
+            const ehErroLid = (err?.message || '').toLowerCase().includes('lid is missing');
+            if (!ehErroLid || tentativa >= LID_RETRY_DELAYS_MS.length) throw err;
+            console.warn(`⚠️ "Lid is missing" ao enviar pra ${chatId} (tentativa ${tentativa + 1}/${LID_RETRY_DELAYS_MS.length}) — forçando resolução do LID e tentando de novo.`);
+            try { await clienteWpp.getContactLidAndPhone([chatId]); } catch (_) { }
+            await delay(LID_RETRY_DELAYS_MS[tentativa]);
+        }
     }
 }
 
