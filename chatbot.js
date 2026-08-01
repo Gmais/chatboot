@@ -35,10 +35,17 @@ try {
 // resincroniza em segundo plano. Cada religação corre o risco de colidir com
 // a anterior (fica no ar entre remover e recriar o binding no Puppeteer) e
 // deixar o robô sem NENHUM listener funcional de mensagem — sem erro, sem log,
-// só silêncio. Como nosso processo nunca reaproveita o mesmo Client após um
-// logout de verdade (sempre reinicia o container), os listeners só PRECISAM
-// ser ligados uma vez por processo. Trava attachEventListeners para rodar só
-// na primeira vez e ignorar as reinicializações redundantes seguintes.
+// só silêncio. Trava attachEventListeners pra rodar só uma vez por "geração"
+// do Client e ignorar as reinicializações redundantes que a própria página
+// dispara sozinha (framenavigated).
+// ATUALIZAÇÃO: o processo ATUALMENTE reaproveita o mesmo Client depois de uma
+// falha/logout sem reiniciar o container (ver reiniciarClienteAposFalha) —
+// diferente da suposição original deste patch. Por isso reiniciarClienteAposFalha
+// reseta client._listenersJaAnexados = false antes de cada client.initialize()
+// dela: sem isso, esse novo initialize() "funciona" sem erro mas não religa
+// NENHUM listener (mesmo sintoma que este patch existe pra evitar, só que
+// causado por ele mesmo) — visto ao vivo travando o QR por 90min sem nunca
+// completar o pareamento.
 // =====================================
 try {
     const ClientClass = require('./node_modules/whatsapp-web.js/src/Client');
@@ -6418,6 +6425,19 @@ async function reiniciarClienteAposFalha(tipoEvento, motivo) {
         try {
             removerLocksChromeStale();
             armarInitWatchdog(); // protege esse initialize() também, não só o do boot
+            // Destrava o Patch 2 (ver topo do arquivo) pra esse novo initialize()
+            // religar os listeners de verdade — sem isso, client.initialize()
+            // "funciona" (não lança erro, gera QR, até autentica) mas nenhum
+            // listener de mensagem/estado é anexado de novo, porque o Patch 2
+            // foi escrito assumindo que o processo nunca reaproveita o mesmo
+            // Client (só reinicia via container inteiro). reiniciarClienteAposFalha
+            // quebra essa suposição de propósito (restart rápido, sem derrubar o
+            // container) — encontrado ao vivo: o watchdog de atividade chamou
+            // isso, "reiniciou", e ficou 90min só regenerando QR sem nunca
+            // completar o pareamento, porque nenhum evento novo conseguia chegar
+            // no Node. client.destroy() logo acima já derrubou a página antiga
+            // por completo, então não tem risco de duplicar binding ao religar.
+            client._listenersJaAnexados = false;
             await client.initialize();
             console.log('🔁 Cliente reinicializado com sucesso.');
         } catch (e) {
