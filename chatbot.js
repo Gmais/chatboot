@@ -6276,6 +6276,11 @@ function armarInitWatchdog() {
         try { await client.destroy(); } catch (_) { }
         removerLocksChromeStale();
         armarInitWatchdog();
+        // Mesmo motivo do fix em reiniciarClienteAposFalha (ver comentário lá):
+        // Patch 2 só religa os listeners de mensagem/estado se isso for
+        // resetado antes do initialize() seguinte no mesmo processo. Sem essa
+        // linha, esse retry "funciona" (gera QR, autentica) mas fica surdo.
+        client._listenersJaAnexados = false;
         client.initialize().catch(err => console.error('Erro ao reinicializar client pelo watchdog:', err.message));
     }, INIT_WATCHDOG_MS);
 }
@@ -6324,7 +6329,13 @@ io.on('connection', async (socket) => {
 // =====================================
 client.on('qr', async (qr) => {
     console.log('📲 Novo QR Code gerado! Acesse o painel web para escanear.');
-    desarmarInitWatchdog(); // chegou até aqui — Puppeteer/Chromium subiram normalmente
+    // Rearma (não desarma) o watchdog: cada QR novo prova que a página ainda
+    // responde, mas não prova que vai continuar respondendo até alguém
+    // escanear. Antes disso desarmava de vez aqui, então um Chrome que
+    // travasse DEPOIS do primeiro QR (visto ao vivo: ~50min regenerando QR
+    // e depois nem isso, com timeout do Puppeteer) nunca era detectado — só
+    // o travamento no boot, antes do 1º QR, tinha proteção.
+    armarInitWatchdog();
     sessionWasFresh = true; // a QR/pairing flow is happening — not a silent restore
     clientReadyForPairing = true;
     try {
@@ -6347,6 +6358,7 @@ async function registrarEventoConexao(tipo, motivo = null) {
 
 client.on('authenticated', () => {
     console.log('🔐 WhatsApp autenticado — sessão estabelecida.');
+    armarInitWatchdog(); // ainda falta sincronizar até o 'ready' — continua provando vida até lá
 });
 
 client.on('auth_failure', (msg) => {
