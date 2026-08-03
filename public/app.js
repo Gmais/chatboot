@@ -3492,6 +3492,7 @@ const CM = (() => {
     const btnNovaConversa = document.getElementById('btn-chat-nova-conversa');
     const btnEmoji        = document.getElementById('btn-chat-emoji');
     const emojiPicker     = document.getElementById('chat-emoji-picker');
+    const chatSlashMenu   = document.getElementById('chat-slash-menu');
     const btnAnexo         = document.getElementById('btn-chat-anexo');
     const anexoInput       = document.getElementById('chat-anexo-input');
     const modalNovaConversa = document.getElementById('modal-nova-conversa-overlay');
@@ -3664,6 +3665,7 @@ const CM = (() => {
         if (chatInputBar)       chatInputBar.style.display = 'flex';
         if (chatTypingBar)      chatTypingBar.style.display = 'none';
         if (chatInput)          chatInput.value = '';
+        fecharSlashMenu();
 
         // Atualiza item ativo na lista
         renderContactList();
@@ -3959,8 +3961,74 @@ const CM = (() => {
         }
     }
 
+    // ---- Menu "/" de mensagens pré-definidas ----
+    let mensagensSlash = [];
+    let mensagensSlashCarregadas = false;
+    let slashFiltradas = [];
+    let slashIndex = -1;
+
+    async function carregarMensagensSlash() {
+        mensagensSlashCarregadas = true;
+        try {
+            const res = await fetch('/api/mensagens-personalizadas');
+            const todas = await res.json();
+            mensagensSlash = todas.filter(m => !m.media_path);
+        } catch (_) {
+            mensagensSlash = [];
+        }
+    }
+
+    function renderSlashMenuHtml() {
+        if (!chatSlashMenu) return;
+        if (slashFiltradas.length === 0) {
+            chatSlashMenu.innerHTML = '<div class="chat-slash-menu-vazio">Nenhuma mensagem encontrada</div>';
+            return;
+        }
+        chatSlashMenu.innerHTML = slashFiltradas.map((m, i) => {
+            const info = m.categoria ? CAMPANHAS_INFO[m.categoria] : null;
+            const preview = (m.texto || '').replace(/\s+/g, ' ').trim();
+            return `
+                <div class="chat-slash-item${i === slashIndex ? ' active' : ''}" data-index="${i}">
+                    <div class="chat-slash-item-nome">${info ? info.icon : '📝'} ${escapeHtml(m.nome)}</div>
+                    <div class="chat-slash-item-preview">${escapeHtml(preview)}</div>
+                </div>
+            `;
+        }).join('');
+    }
+
+    function destacarItemSlash() {
+        chatSlashMenu?.querySelectorAll('.chat-slash-item').forEach((el, i) => {
+            el.classList.toggle('active', i === slashIndex);
+            if (i === slashIndex) el.scrollIntoView({ block: 'nearest' });
+        });
+    }
+
+    function abrirSlashMenu(filtro) {
+        const termo = normalizarTexto(filtro);
+        slashFiltradas = mensagensSlash.filter(m => normalizarTexto(m.nome).includes(termo));
+        slashIndex = slashFiltradas.length ? 0 : -1;
+        renderSlashMenuHtml();
+        chatSlashMenu?.classList.add('open');
+    }
+
+    function fecharSlashMenu() {
+        chatSlashMenu?.classList.remove('open');
+        slashFiltradas = [];
+        slashIndex = -1;
+    }
+
+    function aplicarMensagemSlash(msg) {
+        if (!msg || !chatInput) return;
+        chatInput.value = msg.texto || '';
+        fecharSlashMenu();
+        chatInput.focus();
+        chatInput.style.height = 'auto';
+        chatInput.style.height = Math.min(chatInput.scrollHeight, 120) + 'px';
+        chatInput.selectionStart = chatInput.selectionEnd = chatInput.value.length;
+    }
+
     // ---- Emojis (grade fixa, sem depender de biblioteca externa) ----
-    const EMOJI_LISTA = ['😀','😁','😂','🤣','😊','😍','😘','😉','😎','🤔','😅','😢','😭','😡','👍','👎','🙏','👏','💪','🙌','❤️','💚','💙','💛','🔥','✅','❌','⚠️','🎉','🎁','📅','⏰','📎','📸','💬','👋','🙋','🤝','💰','🏋️'];
+    const EMOJI_LISTA =['😀','😁','😂','🤣','😊','😍','😘','😉','😎','🤔','😅','😢','😭','😡','👍','👎','🙏','👏','💪','🙌','❤️','💚','💙','💛','🔥','✅','❌','⚠️','🎉','🎁','📅','⏰','📎','📸','💬','👋','🙋','🤝','💰','🏋️'];
 
     function montarEmojiPicker() {
         if (!emojiPicker || emojiPicker.childElementCount > 0) return;
@@ -4045,18 +4113,62 @@ const CM = (() => {
         // Envio por botão
         btnSend?.addEventListener('click', sendManual);
 
-        // Envio por Enter (Shift+Enter = nova linha)
+        // Envio por Enter (Shift+Enter = nova linha) — quando o menu "/" está
+        // aberto, as teclas de navegação são interceptadas antes de qualquer
+        // outra coisa e o Enter escolhe o item em vez de enviar a mensagem.
         chatInput?.addEventListener('keydown', (e) => {
+            if (chatSlashMenu?.classList.contains('open')) {
+                if (e.key === 'ArrowDown') {
+                    e.preventDefault();
+                    if (slashFiltradas.length) { slashIndex = (slashIndex + 1) % slashFiltradas.length; destacarItemSlash(); }
+                    return;
+                }
+                if (e.key === 'ArrowUp') {
+                    e.preventDefault();
+                    if (slashFiltradas.length) { slashIndex = (slashIndex - 1 + slashFiltradas.length) % slashFiltradas.length; destacarItemSlash(); }
+                    return;
+                }
+                if (e.key === 'Enter' || e.key === 'Tab') {
+                    e.preventDefault();
+                    if (slashIndex >= 0) aplicarMensagemSlash(slashFiltradas[slashIndex]);
+                    return;
+                }
+                if (e.key === 'Escape') {
+                    e.preventDefault();
+                    fecharSlashMenu();
+                    return;
+                }
+            }
             if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault();
                 sendManual();
             }
         });
 
-        // Auto-resize do textarea
+        // Auto-resize do textarea + menu "/" de mensagens pré-definidas:
+        // digitar "/" como primeiro caractere abre a lista (igual Slack),
+        // filtrando pelo nome da mensagem conforme o operador continua digitando.
         chatInput?.addEventListener('input', () => {
             chatInput.style.height = 'auto';
             chatInput.style.height = Math.min(chatInput.scrollHeight, 120) + 'px';
+
+            const slashMatch = /^\/([^\n]*)$/.exec(chatInput.value);
+            if (!slashMatch) { fecharSlashMenu(); return; }
+            if (!mensagensSlashCarregadas) {
+                carregarMensagensSlash().then(() => {
+                    const aindaValido = /^\/([^\n]*)$/.exec(chatInput.value);
+                    if (aindaValido) abrirSlashMenu(aindaValido[1]);
+                });
+            } else {
+                abrirSlashMenu(slashMatch[1]);
+            }
+        });
+
+        // Clique num item do menu "/" aplica a mensagem escolhida
+        chatSlashMenu?.addEventListener('click', (e) => {
+            const item = e.target.closest('.chat-slash-item');
+            if (!item) return;
+            aplicarMensagemSlash(slashFiltradas[Number(item.dataset.index)]);
         });
 
         // Recarregar histórico
@@ -4135,6 +4247,9 @@ const CM = (() => {
         document.addEventListener('click', (e) => {
             if (emojiPicker?.classList.contains('open') && !emojiPicker.contains(e.target) && e.target !== btnEmoji) {
                 emojiPicker.classList.remove('open');
+            }
+            if (chatSlashMenu?.classList.contains('open') && !chatSlashMenu.contains(e.target) && e.target !== chatInput) {
+                fecharSlashMenu();
             }
         });
 

@@ -1186,6 +1186,38 @@ header h1 {
 }
 .chat-emoji-picker span:hover { background: rgba(255,255,255,0.08); }
 
+.chat-slash-menu {
+    display: none;
+    position: absolute;
+    bottom: 100%;
+    left: 1.25rem;
+    margin-bottom: 0.5rem;
+    width: 340px;
+    max-width: calc(100% - 2.5rem);
+    max-height: 260px;
+    overflow-y: auto;
+    background: var(--card-bg);
+    border: 1px solid rgba(255,255,255,0.1);
+    border-radius: var(--radius-sm);
+    box-shadow: var(--shadow);
+    padding: 0.4rem;
+    z-index: 20;
+}
+.chat-slash-menu.open { display: block; }
+.chat-slash-item {
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+    padding: 0.5rem 0.7rem;
+    border-radius: 8px;
+    cursor: pointer;
+}
+.chat-slash-item .chat-slash-item-nome { font-size: 0.85rem; font-weight: 600; color: var(--text-1); }
+.chat-slash-item .chat-slash-item-preview { font-size: 0.75rem; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.chat-slash-item:hover,
+.chat-slash-item.active { background: rgba(255,255,255,0.08); }
+.chat-slash-menu-vazio { padding: 0.8rem 0.7rem; font-size: 0.8rem; color: var(--text-3); text-align: center; }
+
 /* Responsividade */
 @media (max-width: 900px) {
     .chat-layout { grid-template-columns: 1fr; }
