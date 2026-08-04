@@ -6267,6 +6267,26 @@ function armarInitWatchdog() {
         initWatchdogTentativas++;
         console.error(`⏱️ WhatsApp não saiu de "iniciando" em ${INIT_WATCHDOG_MS / 1000}s (tentativa ${initWatchdogTentativas}).`);
         registrarEventoConexao('watchdog_timeout', `tentativa ${initWatchdogTentativas}`);
+
+        // Já existe um reiniciarClienteAposFalha em andamento cujo próprio
+        // initialize() ainda não resolveu (ex: boot lento no container com
+        // memória apertada). Disparar um destroy()/initialize() concorrente
+        // aqui — o watchdog de init não sabia nada sobre esse outro restart
+        // em andamento — foi flagrado ao vivo (05:16-05:19, dois Puppeteer
+        // brigando pelo mesmo userDataDir da sessão) como o gatilho mais
+        // provável do LOGOUT forçado que apagava a sessão pareada sozinho.
+        // Só espera mais um ciclo em vez de competir; a escalada pra
+        // process.exit(1) abaixo continua de pé.
+        if (restartInProgress) {
+            if (initWatchdogTentativas >= 2) {
+                console.error('🔄 Restart em andamento não converge há 2 tentativas — reiniciando o processo inteiro.');
+                process.exit(1);
+                return;
+            }
+            armarInitWatchdog();
+            return;
+        }
+
         if (initWatchdogTentativas >= 2) {
             console.error('🔄 Já travou 2x seguidas — reiniciando o processo inteiro.');
             process.exit(1);
@@ -6275,6 +6295,14 @@ function armarInitWatchdog() {
         console.log('🔁 Reiniciando o client em processo (tentativa automática do watchdog)...');
         try { await client.destroy(); } catch (_) { }
         removerLocksChromeStale();
+        // this.lastLoggedOut é flag interna do whatsapp-web.js (Client.js) que
+        // destroy() nunca reseta — só o próprio framenavigated da lib reseta,
+        // e só quando não é interrompido por exceção no meio do caminho. Se
+        // ficar presa em true de um ciclo anterior, a PRÓXIMA navegação de
+        // página (nada a ver com logout de verdade) dispara um logout
+        // autoinfligido que apaga a sessão pareada do disco. Reaproveitar o
+        // mesmo client entre restarts exige zerar isso manualmente.
+        client.lastLoggedOut = false;
         armarInitWatchdog();
         // Mesmo motivo do fix em reiniciarClienteAposFalha (ver comentário lá):
         // Patch 2 só religa os listeners de mensagem/estado se isso for
@@ -6404,6 +6432,18 @@ client.on('ready', async () => {
 
 client.on('disconnected', (reason) => {
     console.log('⚠️ Desconectado:', reason);
+    // Diagnóstico do incidente de 03→04/08 (LOGOUT forçado apagando sessão):
+    // client.lastLoggedOut é flag interna do whatsapp-web.js que destroy()
+    // nunca reseta — se ficasse presa em true de um ciclo anterior, o próximo
+    // framenavigated normal disparava esse LOGOUT sem ser um comando de
+    // verdade do servidor do WhatsApp. Já corrigido (reset manual antes de
+    // reaproveitar o client + guard de restartInProgress no watchdog de
+    // init), mas loga aqui pra confirmar/refutar se acontecer de novo: true
+    // aqui apontaria pra essa causa ainda não totalmente eliminada; false
+    // apontaria pra outra causa (ex: revogação real do lado do WhatsApp).
+    if (reason === 'LOGOUT') {
+        console.error(`🔎 [DIAGNÓSTICO LOGOUT] client.lastLoggedOut estava ${client.lastLoggedOut} no momento do disconnect.`);
+    }
     isConnected = false;
     registrarEventoConexao('desconectado', String(reason));
     io.emit('disconnected', reason);
@@ -6450,6 +6490,17 @@ async function reiniciarClienteAposFalha(tipoEvento, motivo) {
             // no Node. client.destroy() logo acima já derrubou a página antiga
             // por completo, então não tem risco de duplicar binding ao religar.
             client._listenersJaAnexados = false;
+            // this.lastLoggedOut é flag interna do whatsapp-web.js (Client.js)
+            // que destroy() nunca reseta — só o próprio framenavigated da lib
+            // reseta, e só quando não é interrompido por exceção no meio do
+            // caminho (achado ao vivo: LOGOUT aparecia ~4-5s depois deste
+            // destroy(), tempo insuficiente pra ser um comando fresco do
+            // servidor do WhatsApp, mas exatamente o esperado se a flag já
+            // estava presa em true de um ciclo anterior). Se ficar presa,
+            // a PRÓXIMA navegação de página (nada a ver com logout de
+            // verdade) dispara um logout autoinfligido que apaga a sessão
+            // pareada do disco.
+            client.lastLoggedOut = false;
             await client.initialize();
             console.log('🔁 Cliente reinicializado com sucesso.');
         } catch (e) {
@@ -6502,10 +6553,16 @@ setInterval(async () => {
 // (visibilidade + contador em Estatísticas via registrarEventoConexao, que
 // reiniciarClienteAposFalha já faz sozinho), só que agora só como aviso do
 // que JÁ está sendo corrigido, não como pedido de ação.
-// Limite generoso (20min) porque é detecção passiva: silêncio de verdade
-// (madrugada, horário parado) e travamento de verdade são indistinguíveis
-// sem mandar tráfego ativo — abaixo disso o risco de reiniciar à toa sobe.
-const LIMITE_SILENCIO_MENSAGENS_MS = 20 * 60 * 1000;
+// Limite generoso porque é detecção passiva: silêncio de verdade (madrugada,
+// horário parado) e travamento de verdade são indistinguíveis sem mandar
+// tráfego ativo — abaixo disso o risco de reiniciar à toa sobe. Era 20min até
+// 04/08 e disparava ~20x por noite inteira de silêncio real (academia fechada),
+// cada disparo reiniciando o Chrome/Puppeteer do zero à toa — e cada reinício é
+// mais uma chance de bater na corrida entre este watchdog e o de inicialização
+// que causou um incidente real de LOGOUT forçado (sessão apagada, precisando
+// de QR novo) na madrugada de 03→04/08. Subido pra 90min pra cobrir horário
+// comercial de sobra sem ficar reiniciando a noite inteira sem necessidade.
+const LIMITE_SILENCIO_MENSAGENS_MS = 90 * 60 * 1000;
 setInterval(() => {
     if (!isConnected || restartInProgress) return;
     const silencioMs = Date.now() - ultimaAtividadeMensagem;
