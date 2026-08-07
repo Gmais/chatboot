@@ -4712,6 +4712,18 @@ app.get('/api/broadcast/detalhe', async (req, res) => {
 // mostra a campanha mais recente, via ultimoDisparoIniciadoEm em memória),
 // aqui filtra por uma data específica (fuso America/Sao_Paulo), então
 // funciona pra consultar qualquer dia passado, mesmo depois de reiniciar o servidor.
+//
+// Além dos itens (um por contato, como sempre), devolve também "lotes": um
+// resumo por EXECUÇÃO de disparo em massa concluída nesse dia (ver
+// disparo_execucoes), pra tela agrupar por lista em vez de mostrar tudo
+// junto. Cada item carrega loteId = qual lote cobriu o horário dele —
+// execuções nunca se sobrepõem (o disparo seguinte só começa depois do
+// anterior terminar, via filaDisparos), então a janela iniciado_em..concluido_em
+// de cada execução é suficiente pra separar os itens sem precisar de uma
+// coluna nova em disparo_envios_log. loteId nulo = nenhuma execução conhecida
+// cobre esse horário (disparo ainda rodando no momento da consulta, ou dado
+// de antes de disparo_execucoes existir) — esses caem num lote sintético
+// "avulso" só quando existir pelo menos um, pra não desaparecer da consulta.
 app.get('/api/broadcast/historico', async (req, res) => {
     const dataStr = req.query.data;
     if (!dataStr || !/^\d{4}-\d{2}-\d{2}$/.test(dataStr)) {
@@ -4723,6 +4735,10 @@ app.get('/api/broadcast/historico', async (req, res) => {
 
         const linhas = await db.all(
             'SELECT telefone, sucesso, erro, numero_envio, descricao, enviado_em FROM disparo_envios_log WHERE enviado_em >= ? AND enviado_em <= ? ORDER BY enviado_em ASC LIMIT 1000',
+            [inicio, fim]
+        );
+        const execucoes = await db.all(
+            'SELECT * FROM disparo_execucoes WHERE concluido_em >= ? AND concluido_em <= ? ORDER BY concluido_em ASC',
             [inicio, fim]
         );
 
@@ -4743,13 +4759,37 @@ app.get('/api/broadcast/historico', async (req, res) => {
             numeroEnvio: l.numero_envio || null,
             descricao: l.descricao || null,
             enviadoEm: sqliteTsParaIso(l.enviado_em),
+            loteId: execucoes.find(ex => l.enviado_em >= ex.iniciado_em && l.enviado_em <= ex.concluido_em)?.id ?? null,
         }));
+
+        const lotes = execucoes.map(ex => ({
+            id: ex.id,
+            descricao: ex.descricao,
+            iniciadoEm: sqliteTsParaIso(ex.iniciado_em),
+            concluidoEm: sqliteTsParaIso(ex.concluido_em),
+            total: ex.total,
+            enviados: ex.enviados,
+            falhas: ex.falhas,
+        }));
+        const avulsos = itens.filter(i => i.loteId === null);
+        if (avulsos.length) {
+            lotes.push({
+                id: null,
+                descricao: 'Envios sem execução registrada (em andamento ou de antes desse histórico)',
+                iniciadoEm: avulsos[0].enviadoEm,
+                concluidoEm: avulsos[avulsos.length - 1].enviadoEm,
+                total: avulsos.length,
+                enviados: avulsos.filter(i => i.sucesso).length,
+                falhas: avulsos.filter(i => !i.sucesso).length,
+            });
+        }
 
         res.json({
             data: dataStr,
             total: itens.length,
             sucesso: itens.filter(i => i.sucesso).length,
             falhas: itens.filter(i => !i.sucesso).length,
+            lotes,
             itens,
         });
     } catch (err) {

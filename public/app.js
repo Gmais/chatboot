@@ -3286,6 +3286,9 @@ if (disparoHistoricoData && !disparoHistoricoData.value) {
 // Guarda a última lista carregada — "Reenviar Todos" e o scroll-to-top usam
 // isso, sem precisar buscar de novo no servidor.
 let ultimoHistoricoDisparoItens = [];
+// Guarda os lotes (execuções) do dia carregado — abrir/fechar um lote só
+// reaproveita e re-renderiza isso, sem precisar buscar de novo no servidor.
+let ultimoHistoricoDisparoLotes = [];
 
 // "Reenviar" não manda de novo sozinho — a tabela disparo_envios_log não guarda
 // o texto/mídia originalmente enviado (só telefone e sucesso/erro), então não
@@ -3302,16 +3305,65 @@ function reenviarNumerosNoFormulario(telefones) {
     showToast('Número(s) prontos pra reenviar', 'Revise a mensagem e clique em "Iniciar Disparo".', 'info', 4000);
 }
 
+// Lotes com o "▼"/"▲" aberto agora (chave = lote.id, ou a string 'null' pro
+// avulso) — Set em vez de um único valor pra permitir mais de um aberto ao
+// mesmo tempo, mesmo padrão de outras listas expansíveis do painel.
+const lotesDisparoAbertos = new Set();
+
+function renderItemDisparoHistorico(l) {
+    return `
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:.6rem;font-size:.78rem;padding:.3rem 0;border-bottom:1px solid rgba(255,255,255,0.05)">
+            <span style="color:var(--text-3);white-space:nowrap;flex-shrink:0">${new Date(l.enviadoEm).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}</span>
+            <span style="color:var(--text-1);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-left:.6rem">
+                ${l.nome || l.telefone}${l.nome ? ` <span style="color:var(--text-3)">· ${l.telefone}</span>` : ''}${l.numeroEnvio ? ` <span style="color:var(--text-3)">· via ${l.numeroEnvio}</span>` : ''}
+            </span>
+            <span style="color:${l.sucesso ? 'var(--green)' : 'var(--red)'};overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:right;flex-shrink:0;margin-left:.6rem">${l.sucesso ? '✅ Enviado' : `❌ ${l.erro || 'Falhou'}`}</span>
+            <button type="button" class="btn-secondary btn-disparo-historico-reenviar" data-telefone="${l.telefone}" style="padding:.2rem .5rem;font-size:.7rem;flex-shrink:0" title="Colocar esse número no campo de Disparo">🔁</button>
+        </div>
+    `;
+}
+
+function renderDisparoHistoricoLotes(lotes, itens) {
+    if (!lotes.length) {
+        disparoHistoricoLista.innerHTML = '<p style="color:var(--text-3);font-size:.78rem;text-align:center;padding:.5rem 0">Nenhum disparo nesse dia.</p>';
+        return;
+    }
+    disparoHistoricoLista.innerHTML = lotes.map(lote => {
+        // String sempre — data-lote no HTML e Set() de abertos só funcionam
+        // com um tipo consistente; lote.id/loteId vêm como number (ou null)
+        // do JSON, mas dataset.lote sempre devolve string na hora do clique.
+        const chave = String(lote.id ?? 'null');
+        const aberto = lotesDisparoAbertos.has(chave);
+        const itensDoLote = itens.filter(i => String(i.loteId ?? 'null') === chave);
+        return `
+            <div>
+                <button type="button" class="btn-secondary btn-disparo-historico-lote" data-lote="${chave}" style="width:100%;display:flex;justify-content:space-between;align-items:center;gap:.6rem;font-size:.8rem;padding:.55rem .7rem;text-align:left">
+                    <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+                        ${aberto ? '▲' : '▼'} ${lote.descricao || '<span style="color:var(--text-3)">(sem descrição)</span>'}
+                        <span style="color:var(--text-3)"> · ${new Date(lote.concluidoEm).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}</span>
+                    </span>
+                    <span style="color:var(--text-2);white-space:nowrap;flex-shrink:0">Total: ${lote.total}</span>
+                    <span style="color:var(--green);white-space:nowrap;flex-shrink:0">✅ ${lote.enviados}</span>
+                    ${lote.falhas > 0 ? `<span style="color:var(--red);white-space:nowrap;flex-shrink:0">❌ ${lote.falhas}</span>` : ''}
+                </button>
+                ${aberto ? `<div style="padding:.2rem .7rem .4rem 1.2rem">${itensDoLote.map(renderItemDisparoHistorico).join('')}</div>` : ''}
+            </div>
+        `;
+    }).join('');
+}
+
 async function carregarDisparoHistorico() {
     if (!disparoHistoricoLista || !disparoHistoricoData?.value) return;
     disparoHistoricoLista.innerHTML = '<p style="color:var(--text-3);font-size:.78rem;text-align:center;padding:.5rem 0">Carregando...</p>';
     disparoHistoricoResumo?.classList.add('hidden');
+    lotesDisparoAbertos.clear();
     try {
         const res = await fetch(`/api/broadcast/historico?data=${disparoHistoricoData.value}`);
         const dados = await res.json();
         if (!res.ok) throw new Error(dados.error || 'Erro ao buscar histórico.');
 
         ultimoHistoricoDisparoItens = dados.itens;
+        ultimoHistoricoDisparoLotes = dados.lotes;
 
         if (disparoHistoricoResumo) {
             disparoHistoricoResumo.classList.remove('hidden');
@@ -3320,19 +3372,7 @@ async function carregarDisparoHistorico() {
             disparoHistoricoFalhas.textContent = dados.falhas;
         }
 
-        disparoHistoricoLista.innerHTML = dados.itens.length
-            ? dados.itens.map(l => `
-                <div style="display:flex;justify-content:space-between;align-items:center;gap:.6rem;font-size:.78rem;padding:.3rem 0;border-bottom:1px solid rgba(255,255,255,0.05)">
-                    <span style="color:var(--text-3);white-space:nowrap;flex-shrink:0">${new Date(l.enviadoEm).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}</span>
-                    <span style="color:var(--text-1);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-left:.6rem">
-                        ${l.nome || l.telefone}${l.nome ? ` <span style="color:var(--text-3)">· ${l.telefone}</span>` : ''}${l.numeroEnvio ? ` <span style="color:var(--text-3)">· via ${l.numeroEnvio}</span>` : ''}
-                        ${l.descricao ? `<br><span style="color:var(--text-3);font-style:italic">💬 ${l.descricao}</span>` : ''}
-                    </span>
-                    <span style="color:${l.sucesso ? 'var(--green)' : 'var(--red)'};overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:right;flex-shrink:0;margin-left:.6rem">${l.sucesso ? '✅ Enviado' : `❌ ${l.erro || 'Falhou'}`}</span>
-                    <button type="button" class="btn-secondary btn-disparo-historico-reenviar" data-telefone="${l.telefone}" style="padding:.2rem .5rem;font-size:.7rem;flex-shrink:0" title="Colocar esse número no campo de Disparo">🔁</button>
-                </div>
-            `).join('')
-            : '<p style="color:var(--text-3);font-size:.78rem;text-align:center;padding:.5rem 0">Nenhum disparo nesse dia.</p>';
+        renderDisparoHistoricoLotes(dados.lotes, dados.itens);
     } catch (e) {
         disparoHistoricoLista.innerHTML = '<p style="color:var(--text-3);font-size:.78rem;text-align:center;padding:.5rem 0">Erro ao carregar histórico.</p>';
     }
@@ -3367,6 +3407,14 @@ async function carregarDisparoExecucoesHoje() {
 btnDisparoHistoricoBuscar?.addEventListener('click', carregarDisparoHistorico);
 
 disparoHistoricoLista?.addEventListener('click', (e) => {
+    const btnLote = e.target.closest('.btn-disparo-historico-lote');
+    if (btnLote) {
+        const chave = btnLote.dataset.lote;
+        if (lotesDisparoAbertos.has(chave)) lotesDisparoAbertos.delete(chave);
+        else lotesDisparoAbertos.add(chave);
+        renderDisparoHistoricoLotes(ultimoHistoricoDisparoLotes, ultimoHistoricoDisparoItens);
+        return;
+    }
     const btn = e.target.closest('.btn-disparo-historico-reenviar');
     if (!btn) return;
     reenviarNumerosNoFormulario([btn.dataset.telefone]);
