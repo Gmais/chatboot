@@ -4713,17 +4713,23 @@ app.get('/api/broadcast/detalhe', async (req, res) => {
 // aqui filtra por uma data específica (fuso America/Sao_Paulo), então
 // funciona pra consultar qualquer dia passado, mesmo depois de reiniciar o servidor.
 //
-// Além dos itens (um por contato, como sempre), devolve também "lotes": um
-// resumo por EXECUÇÃO de disparo em massa concluída nesse dia (ver
-// disparo_execucoes), pra tela agrupar por lista em vez de mostrar tudo
-// junto. Cada item carrega loteId = qual lote cobriu o horário dele —
-// execuções nunca se sobrepõem (o disparo seguinte só começa depois do
-// anterior terminar, via filaDisparos), então a janela iniciado_em..concluido_em
-// de cada execução é suficiente pra separar os itens sem precisar de uma
-// coluna nova em disparo_envios_log. loteId nulo = nenhuma execução conhecida
-// cobre esse horário (disparo ainda rodando no momento da consulta, ou dado
-// de antes de disparo_execucoes existir) — esses caem num lote sintético
-// "avulso" só quando existir pelo menos um, pra não desaparecer da consulta.
+// Junta duas origens bem diferentes no mesmo histórico:
+//  - "disparo" = Disparo em massa manual (disparo_envios_log), agrupado pela
+//    descrição da campanha (ex: "Mensagem faltosos 2") — o MESMO nome usado
+//    em execuções diferentes no mesmo dia vira uma linha só, não uma por vez
+//    que alguém clicou "Iniciar Disparo".
+//  - "automacao" = envio automático de qualquer Automação (Aniversariante,
+//    Cobrança, Confirmação de Agendamento etc — ver automacao_envios_log /
+//    automacao_envios_erros_log), agrupado pelo NOME DA AUTOMAÇÃO, não pela
+//    mensagem sorteada dentro dela: Aniversariante manda uma de várias
+//    ("Aniversário 1", "Aniversário 2"...) escolhida ao acaso por contato,
+//    mas isso é detalhe de CADA envio, não motivo pra virar uma aba própria.
+// "tipos" = 1 linha por (origem, chave de agrupamento) somando o dia inteiro;
+// cada item carrega tipoChave apontando pra qual dessas linhas ele pertence.
+// automacao agrupa por ID (não pelo nome) porque nomes de automação podem se
+// repetir (ex: duas automações diferentes já existiram chamadas "Aluno
+// Novo") — agrupar pelo texto do nome juntaria estatísticas de automações
+// diferentes por engano.
 app.get('/api/broadcast/historico', async (req, res) => {
     const dataStr = req.query.data;
     if (!dataStr || !/^\d{4}-\d{2}-\d{2}$/.test(dataStr)) {
@@ -4733,17 +4739,29 @@ app.get('/api/broadcast/historico', async (req, res) => {
         const inicio = moment.tz(dataStr, 'YYYY-MM-DD', 'America/Sao_Paulo').startOf('day').utc().format('YYYY-MM-DD HH:mm:ss');
         const fim = moment.tz(dataStr, 'YYYY-MM-DD', 'America/Sao_Paulo').endOf('day').utc().format('YYYY-MM-DD HH:mm:ss');
 
-        const linhas = await db.all(
+        const linhasDisparo = await db.all(
             'SELECT telefone, sucesso, erro, numero_envio, descricao, enviado_em FROM disparo_envios_log WHERE enviado_em >= ? AND enviado_em <= ? ORDER BY enviado_em ASC LIMIT 1000',
             [inicio, fim]
         );
-        const execucoes = await db.all(
-            'SELECT * FROM disparo_execucoes WHERE concluido_em >= ? AND concluido_em <= ? ORDER BY concluido_em ASC',
+        const sucessosAutomacao = await db.all(
+            `SELECT ael.automacao_id, ael.telefone, ael.nome, ael.mensagem_nome, ael.enviado_em, a.nome AS automacao_nome
+             FROM automacao_envios_log ael JOIN automacoes a ON a.id = ael.automacao_id
+             WHERE ael.enviado_em >= ? AND ael.enviado_em <= ? ORDER BY ael.enviado_em ASC LIMIT 1000`,
+            [inicio, fim]
+        );
+        const falhasAutomacao = await db.all(
+            `SELECT ael.automacao_id, ael.telefone, ael.erro, ael.ocorrido_em, a.nome AS automacao_nome
+             FROM automacao_envios_erros_log ael JOIN automacoes a ON a.id = ael.automacao_id
+             WHERE ael.ocorrido_em >= ? AND ael.ocorrido_em <= ? ORDER BY ael.ocorrido_em ASC LIMIT 1000`,
             [inicio, fim]
         );
 
-        // Mesmo cruzamento com "leads" pra mostrar nome, igual /api/broadcast/detalhe.
-        const numerosNormalizados = linhas.map(l => normalizarTelefoneBR(l.telefone));
+        // Cruzamento com "leads" pra mostrar nome — automação já guarda o nome
+        // resolvido na hora do envio (sucessosAutomacao.nome), só falta pro
+        // disparo manual (guarda telefone cru) e pra falha de automação (não
+        // guarda nome nenhum).
+        const telefonesParaNome = [...linhasDisparo.map(l => l.telefone), ...falhasAutomacao.map(l => l.telefone)];
+        const numerosNormalizados = telefonesParaNome.map(t => normalizarTelefoneBR(t));
         const variantes = [...new Set(numerosNormalizados.flatMap(n => [n, `${n}@c.us`, `${n}@lid`]))];
         const contatos = variantes.length
             ? await db.all(`SELECT telefone, nome FROM leads WHERE telefone IN (${variantes.map(() => '?').join(',')})`, variantes)
@@ -4751,56 +4769,68 @@ app.get('/api/broadcast/historico', async (req, res) => {
         const nomePorTelefone = new Map();
         contatos.forEach(c => nomePorTelefone.set(c.telefone.replace('@c.us', '').replace('@lid', ''), c.nome));
 
-        // Um lote pode terminar no mesmíssimo segundo em que o próximo da fila
-        // começa (handoff automático via filaDisparos, sem pausa nenhuma) —
-        // timestamp de segundo (não milissegundo) do SQLite faz as duas janelas
-        // colidirem nesse instante exato. Tenta casar pela descrição primeiro
-        // (cada lote carrega a sua própria, igual em todo item que pertence a
-        // ele) pra desempatar; só cai pra janela de tempo pura se não bater
-        // descrição nenhuma.
-        const acharLote = (l) =>
-            execucoes.find(ex => l.enviado_em >= ex.iniciado_em && l.enviado_em <= ex.concluido_em && ex.descricao === l.descricao)
-            ?? execucoes.find(ex => l.enviado_em >= ex.iniciado_em && l.enviado_em <= ex.concluido_em);
-
-        const itens = linhas.map((l, i) => ({
+        const itensDisparo = linhasDisparo.map(l => ({
+            origem: 'disparo',
+            tipo: l.descricao || '(sem descrição)',
+            tipoChave: `disparo::${l.descricao || ''}`,
             telefone: l.telefone,
-            nome: nomePorTelefone.get(numerosNormalizados[i]) || null,
+            nome: nomePorTelefone.get(normalizarTelefoneBR(l.telefone)) || null,
             sucesso: !!l.sucesso,
             erro: l.erro,
             numeroEnvio: l.numero_envio || null,
-            descricao: l.descricao || null,
+            detalhe: null,
             enviadoEm: sqliteTsParaIso(l.enviado_em),
-            loteId: acharLote(l)?.id ?? null,
+        }));
+        const itensAutomacaoSucesso = sucessosAutomacao.map(l => ({
+            origem: 'automacao',
+            tipo: l.automacao_nome,
+            tipoChave: `automacao::${l.automacao_id}`,
+            telefone: l.telefone,
+            nome: l.nome,
+            sucesso: true,
+            erro: null,
+            numeroEnvio: null,
+            detalhe: l.mensagem_nome || null,
+            enviadoEm: sqliteTsParaIso(l.enviado_em),
+        }));
+        const itensAutomacaoFalha = falhasAutomacao.map(l => ({
+            origem: 'automacao',
+            tipo: l.automacao_nome,
+            tipoChave: `automacao::${l.automacao_id}`,
+            telefone: l.telefone,
+            nome: nomePorTelefone.get(normalizarTelefoneBR(l.telefone)) || null,
+            sucesso: false,
+            erro: l.erro,
+            numeroEnvio: null,
+            detalhe: null,
+            enviadoEm: sqliteTsParaIso(l.ocorrido_em),
         }));
 
-        const lotes = execucoes.map(ex => ({
-            id: ex.id,
-            descricao: ex.descricao,
-            iniciadoEm: sqliteTsParaIso(ex.iniciado_em),
-            concluidoEm: sqliteTsParaIso(ex.concluido_em),
-            total: ex.total,
-            enviados: ex.enviados,
-            falhas: ex.falhas,
-        }));
-        const avulsos = itens.filter(i => i.loteId === null);
-        if (avulsos.length) {
-            lotes.push({
-                id: null,
-                descricao: 'Envios sem execução registrada (em andamento ou de antes desse histórico)',
-                iniciadoEm: avulsos[0].enviadoEm,
-                concluidoEm: avulsos[avulsos.length - 1].enviadoEm,
-                total: avulsos.length,
-                enviados: avulsos.filter(i => i.sucesso).length,
-                falhas: avulsos.filter(i => !i.sucesso).length,
-            });
+        const itens = [...itensDisparo, ...itensAutomacaoSucesso, ...itensAutomacaoFalha]
+            .sort((a, b) => a.enviadoEm.localeCompare(b.enviadoEm));
+
+        const tiposMap = new Map();
+        for (const item of itens) {
+            if (!tiposMap.has(item.tipoChave)) {
+                tiposMap.set(item.tipoChave, {
+                    tipoChave: item.tipoChave, origem: item.origem, tipo: item.tipo,
+                    total: 0, enviados: 0, falhas: 0, primeiroEnvio: item.enviadoEm, ultimoEnvio: item.enviadoEm,
+                });
+            }
+            const t = tiposMap.get(item.tipoChave);
+            t.total++;
+            if (item.sucesso) t.enviados++; else t.falhas++;
+            if (item.enviadoEm < t.primeiroEnvio) t.primeiroEnvio = item.enviadoEm;
+            if (item.enviadoEm > t.ultimoEnvio) t.ultimoEnvio = item.enviadoEm;
         }
+        const tipos = [...tiposMap.values()].sort((a, b) => a.primeiroEnvio.localeCompare(b.primeiroEnvio));
 
         res.json({
             data: dataStr,
             total: itens.length,
             sucesso: itens.filter(i => i.sucesso).length,
             falhas: itens.filter(i => !i.sucesso).length,
-            lotes,
+            tipos,
             itens,
         });
     } catch (err) {
