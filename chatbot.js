@@ -627,13 +627,15 @@ async function initDB() {
     } catch (e) { console.error('Erro ao criar tabela de dedup do Instagram:', e.message); }
 
     // Semeia as programações automáticas que antes eram horários fixos no
-    // código (Agenda de Avaliação às 06:00, Situação Financeira às 06:05,
-    // dias úteis) — agora editáveis em Integração → "Criar Programação". Só
-    // roda se a chave ainda não existir, pra não sobrescrever o que o usuário
-    // já configurou. "Importar Contatos do Pacto" não tinha automático antes,
-    // então não ganha semente — fica sem programação até o usuário criar uma.
+    // código (Situação Financeira às 06:05, dias úteis) — agora editável em
+    // Integração → "Criar Programação". Só roda se a chave ainda não
+    // existir, pra não sobrescrever o que o usuário já configurou.
+    // "Importar Contatos do Pacto" não tinha automático antes, então não
+    // ganha semente — fica sem programação até o usuário criar uma. Agenda
+    // de Avaliação também não ganha mais semente: virou ciclo automático
+    // próprio de hora em hora (ver setInterval em processarAgendaAvaliacao),
+    // então uma programação diária fixa aqui só duplicaria esforço à toa.
     try {
-        await db.run(`INSERT OR IGNORE INTO integracao_programacoes (chave, dias, horario, ativo) VALUES ('agenda_avaliacao', '1,2,3,4,5', '06:00', 1)`);
         await db.run(`INSERT OR IGNORE INTO integracao_programacoes (chave, dias, horario, ativo) VALUES ('situacao_financeira', '1,2,3,4,5', '06:05', 1)`);
     } catch (e) { console.error('Erro ao semear programações de integração:', e.message); }
 
