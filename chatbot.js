@@ -4751,6 +4751,17 @@ app.get('/api/broadcast/historico', async (req, res) => {
         const nomePorTelefone = new Map();
         contatos.forEach(c => nomePorTelefone.set(c.telefone.replace('@c.us', '').replace('@lid', ''), c.nome));
 
+        // Um lote pode terminar no mesmíssimo segundo em que o próximo da fila
+        // começa (handoff automático via filaDisparos, sem pausa nenhuma) —
+        // timestamp de segundo (não milissegundo) do SQLite faz as duas janelas
+        // colidirem nesse instante exato. Tenta casar pela descrição primeiro
+        // (cada lote carrega a sua própria, igual em todo item que pertence a
+        // ele) pra desempatar; só cai pra janela de tempo pura se não bater
+        // descrição nenhuma.
+        const acharLote = (l) =>
+            execucoes.find(ex => l.enviado_em >= ex.iniciado_em && l.enviado_em <= ex.concluido_em && ex.descricao === l.descricao)
+            ?? execucoes.find(ex => l.enviado_em >= ex.iniciado_em && l.enviado_em <= ex.concluido_em);
+
         const itens = linhas.map((l, i) => ({
             telefone: l.telefone,
             nome: nomePorTelefone.get(numerosNormalizados[i]) || null,
@@ -4759,7 +4770,7 @@ app.get('/api/broadcast/historico', async (req, res) => {
             numeroEnvio: l.numero_envio || null,
             descricao: l.descricao || null,
             enviadoEm: sqliteTsParaIso(l.enviado_em),
-            loteId: execucoes.find(ex => l.enviado_em >= ex.iniciado_em && l.enviado_em <= ex.concluido_em)?.id ?? null,
+            loteId: acharLote(l)?.id ?? null,
         }));
 
         const lotes = execucoes.map(ex => ({
