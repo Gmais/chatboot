@@ -29,38 +29,46 @@ try {
 
 // =====================================
 // PATCH 2 — CAUSA RAIZ do "conecta mas para de receber mensagem depois de um tempo"
-// whatsapp-web.js religa TODOS os listeners (attachEventListeners, incluindo
-// onAddMessageEvent) toda vez que a página dispara 'framenavigated' — o que
-// acontece várias vezes sozinho, sem que a gente peça, enquanto o WhatsApp Web
-// resincroniza em segundo plano. Cada religação corre o risco de colidir com
-// a anterior (fica no ar entre remover e recriar o binding no Puppeteer) e
-// deixar o robô sem NENHUM listener funcional de mensagem — sem erro, sem log,
-// só silêncio. Trava attachEventListeners pra rodar só uma vez por "geração"
-// do Client e ignorar as reinicializações redundantes que a própria página
-// dispara sozinha (framenavigated).
-// ATUALIZAÇÃO: o processo ATUALMENTE reaproveita o mesmo Client depois de uma
-// falha/logout sem reiniciar o container (ver reiniciarClienteAposFalha) —
-// diferente da suposição original deste patch. Por isso reiniciarClienteAposFalha
-// reseta client._listenersJaAnexados = false antes de cada client.initialize()
-// dela: sem isso, esse novo initialize() "funciona" sem erro mas não religa
-// NENHUM listener (mesmo sintoma que este patch existe pra evitar, só que
-// causado por ele mesmo) — visto ao vivo travando o QR por 90min sem nunca
-// completar o pareamento.
+// whatsapp-web.js religa os listeners (attachEventListeners, incluindo
+// onAddMessageEvent) toda vez que a própria página dispara 'framenavigated' E
+// o contexto injetado (window.WWebJS) sumiu — ver Client.js `inject()`, gate
+// `if (!injected)`. Duas religações correndo ao mesmo tempo competem pelo
+// mesmo binding no Puppeteer (uma remove/recria por cima da outra) e podem
+// deixar o robô sem NENHUM listener funcional de mensagem — sem erro, sem
+// log, só silêncio. Serializa attachEventListeners (só uma execução por vez,
+// a próxima chamada concorrente espera a mesma promise em vez de disparar
+// outra em paralelo) SEM bloquear reanexações depois que a anterior já
+// terminou — essas reanexações não são redundantes: o próprio whatsapp-web.js
+// só pede de novo quando window.WWebJS realmente sumiu da página (reload de
+// verdade do contexto), e nesse caso o listener antigo morreu junto — recusar
+// religar é exatamente o mesmo "sem erro, sem log, só silêncio" que esse
+// patch existe pra evitar, só que causado por ele mesmo. Bug real visto ao
+// vivo em 07/08: client.getState() (usado pelo watchdog de runtime) lê
+// window.require('WAWebSocketModel').Socket.state direto — não depende de
+// window.WWebJS nem desses listeners — por isso o painel seguia "conectado"
+// e o watchdog de runtime nunca detectava, enquanto nenhuma mensagem nova
+// chegava havia mais de 90min.
 // =====================================
 try {
     const ClientClass = require('./node_modules/whatsapp-web.js/src/Client');
     const _origAttach = ClientClass.prototype.attachEventListeners;
     ClientClass.prototype.attachEventListeners = async function (...args) {
-        if (this._listenersJaAnexados) return;
-        try {
-            await _origAttach.apply(this, args);
-            this._listenersJaAnexados = true; // só marca como feito se realmente completou sem erro
-        } catch (e) {
-            console.error('🧨 [attachEventListeners falhou]', e.message);
-            throw e;
+        if (this._attachEventListenersEmAndamento) {
+            return this._attachEventListenersEmAndamento;
         }
+        this._attachEventListenersEmAndamento = (async () => {
+            try {
+                await _origAttach.apply(this, args);
+            } catch (e) {
+                console.error('🧨 [attachEventListeners falhou]', e.message);
+                throw e;
+            } finally {
+                this._attachEventListenersEmAndamento = null;
+            }
+        })();
+        return this._attachEventListenersEmAndamento;
     };
-    console.log('✅ Patch 2 aplicado (attachEventListeners roda só 1x por processo).');
+    console.log('✅ Patch 2 aplicado (attachEventListeners serializado, sem travar reanexação legítima).');
 } catch (_) { }
 
 // =====================================
@@ -6304,11 +6312,6 @@ function armarInitWatchdog() {
         // mesmo client entre restarts exige zerar isso manualmente.
         client.lastLoggedOut = false;
         armarInitWatchdog();
-        // Mesmo motivo do fix em reiniciarClienteAposFalha (ver comentário lá):
-        // Patch 2 só religa os listeners de mensagem/estado se isso for
-        // resetado antes do initialize() seguinte no mesmo processo. Sem essa
-        // linha, esse retry "funciona" (gera QR, autentica) mas fica surdo.
-        client._listenersJaAnexados = false;
         client.initialize().catch(err => console.error('Erro ao reinicializar client pelo watchdog:', err.message));
     }, INIT_WATCHDOG_MS);
 }
@@ -6477,19 +6480,6 @@ async function reiniciarClienteAposFalha(tipoEvento, motivo) {
         try {
             removerLocksChromeStale();
             armarInitWatchdog(); // protege esse initialize() também, não só o do boot
-            // Destrava o Patch 2 (ver topo do arquivo) pra esse novo initialize()
-            // religar os listeners de verdade — sem isso, client.initialize()
-            // "funciona" (não lança erro, gera QR, até autentica) mas nenhum
-            // listener de mensagem/estado é anexado de novo, porque o Patch 2
-            // foi escrito assumindo que o processo nunca reaproveita o mesmo
-            // Client (só reinicia via container inteiro). reiniciarClienteAposFalha
-            // quebra essa suposição de propósito (restart rápido, sem derrubar o
-            // container) — encontrado ao vivo: o watchdog de atividade chamou
-            // isso, "reiniciou", e ficou 90min só regenerando QR sem nunca
-            // completar o pareamento, porque nenhum evento novo conseguia chegar
-            // no Node. client.destroy() logo acima já derrubou a página antiga
-            // por completo, então não tem risco de duplicar binding ao religar.
-            client._listenersJaAnexados = false;
             // this.lastLoggedOut é flag interna do whatsapp-web.js (Client.js)
             // que destroy() nunca reseta — só o próprio framenavigated da lib
             // reseta, e só quando não é interrompido por exceção no meio do
