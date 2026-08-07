@@ -1164,7 +1164,7 @@ Sempre tente agendar uma aula experimental."></textarea>
                     <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:.8rem;margin-bottom:1rem">
                         <div>
                             <h3 style="margin-bottom:.3rem">📅 Agenda de Avaliação Física</h3>
-                            <p style="color:var(--text-2);font-size:.85rem;max-width:560px">Busca a agenda de avaliações físicas do dia (sistema de agendamento Planeta Corpo — só traz matrícula, horário e professor) e correlaciona a matrícula com um contato já existente aqui pra achar o WhatsApp; quem tem contato correlacionado é etiquetado sozinho como "Agendamento AF" — some quando a avaliação deixa de estar na agenda de hoje. Roda sozinha nos dias e horário programados em "Criar Programação" (padrão: dias úteis às 06:00), e também pode ser atualizada na hora aqui. Não envia mensagem nenhuma sozinho — use "Importar Lista" e "Disparar Mensagens" na automação "Agendamento Avaliação" pra confirmar de verdade com os alunos.</p>
+                            <p style="color:var(--text-2);font-size:.85rem;max-width:560px">Busca a agenda de avaliações físicas das PRÓXIMAS 24 HORAS (sistema de agendamento Planeta Corpo — só traz matrícula, horário e professor) e correlaciona a matrícula com um contato já existente aqui pra achar o WhatsApp; quem tem contato correlacionado é etiquetado como "Agendamento AF" — some da lista quando a avaliação sai das próximas 24h (remarcada, cancelada, ou o horário já passou). Atualiza e já tenta disparar a confirmação sozinha, de hora em hora, o dia inteiro — só uma confirmação por agendamento — respeitando a janela de horário configurada na automação "Agendamento Avaliação". "Atualizar Lista" força uma atualização na hora, sem esperar o próximo ciclo.</p>
                         </div>
                     </div>
 
@@ -1186,13 +1186,14 @@ Sempre tente agendar uma aula experimental."></textarea>
                                 <tr>
                                     <th>Contato</th>
                                     <th>Matrícula</th>
+                                    <th>Data</th>
                                     <th>Horário</th>
                                     <th>Professor</th>
                                     <th style="text-align:right">Ações</th>
                                 </tr>
                             </thead>
                             <tbody id="agenda-avaliacao-lista">
-                                <tr><td colspan="5" style="padding:1.5rem;text-align:center;color:var(--text-3)">Nenhum dado ainda.</td></tr>
+                                <tr><td colspan="6" style="padding:1.5rem;text-align:center;color:var(--text-3)">Nenhum dado ainda.</td></tr>
                             </tbody>
                         </table>
                     </div>

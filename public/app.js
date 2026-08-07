@@ -4833,6 +4833,7 @@ async function loadAgendaAvaliacao() {
     try {
         const res = await fetch('/api/agenda-avaliacao');
         const lista = await res.json();
+        const hojeYMD = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Sao_Paulo' }); // YYYY-MM-DD
         agendaAvaliacaoBody.innerHTML = lista.length
             ? lista.map(i => `
                 <tr>
@@ -4841,6 +4842,7 @@ async function loadAgendaAvaliacao() {
                         <div style="font-size:.75rem;color:${i.telefone ? 'var(--text-3)' : 'var(--red)'}">${i.telefone || '⚠️ Matrícula não encontrada nos Contatos'}</div>
                     </td>
                     <td style="color:var(--text-2);font-size:.85rem">${i.matricula || '-'}</td>
+                    <td style="color:var(--text-2);font-size:.85rem">${i.data ? (i.data === hojeYMD ? 'Hoje' : 'Amanhã') : '-'}</td>
                     <td style="color:var(--text-2);font-size:.85rem">${i.horario || '-'}</td>
                     <td style="color:var(--text-2);font-size:.85rem">${i.professor || '-'}</td>
                     <td style="text-align:right;white-space:nowrap">
@@ -4849,9 +4851,9 @@ async function loadAgendaAvaliacao() {
                     </td>
                 </tr>
             `).join('')
-            : '<tr><td colspan="5" style="padding:1.5rem;text-align:center;color:var(--text-3)">Nenhuma avaliação agendada pra hoje.</td></tr>';
+            : '<tr><td colspan="6" style="padding:1.5rem;text-align:center;color:var(--text-3)">Nenhuma avaliação agendada pras próximas 24 horas.</td></tr>';
     } catch (e) {
-        agendaAvaliacaoBody.innerHTML = '<tr><td colspan="5" style="padding:1.5rem;text-align:center;color:var(--text-3)">Erro ao carregar.</td></tr>';
+        agendaAvaliacaoBody.innerHTML = '<tr><td colspan="6" style="padding:1.5rem;text-align:center;color:var(--text-3)">Erro ao carregar.</td></tr>';
     }
 }
 

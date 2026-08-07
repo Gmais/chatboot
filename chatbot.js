@@ -790,6 +790,16 @@ async function initDB() {
         await db.run(`UPDATE mensagens_personalizadas SET categoria = 'inadimplentes' WHERE categoria IS NULL AND nome LIKE 'Cobrança%'`);
         await db.run(`UPDATE mensagens_personalizadas SET categoria = 'ex-alunos' WHERE categoria IS NULL AND (nome LIKE 'Ex Aluno%' OR nome LIKE 'Ex-Aluno%')`);
     } catch (e) { }
+    // Agenda de Avaliação Física virou uma janela rolante de 24h (ver
+    // processarAgendaAvaliacao) em vez de "hoje" fixo — precisa saber a DATA
+    // de cada agendamento (não só o horário) pra combinar as duas e filtrar
+    // certo, já que agora um agendamento de amanhã também pode aparecer aqui.
+    try { await db.exec(`ALTER TABLE agenda_avaliacoes_hoje ADD COLUMN data TEXT DEFAULT NULL`); } catch (e) { }
+    // Marca quando a confirmação desse agendamento específico já foi pedida —
+    // de-dup por appointment_id (não por dia civil): sem isso, um agendamento
+    // de amanhã visto hoje à noite E de novo amanhã de manhã (ainda dentro da
+    // janela de 24h) tomaria confirmação duplicada.
+    try { await db.exec(`ALTER TABLE agenda_avaliacoes_hoje ADD COLUMN confirmacao_solicitada_em DATETIME DEFAULT NULL`); } catch (e) { }
     // Feature "Fluxos" (Flow Builder visual) removida a pedido — limpeza única
     // das tabelas que sobraram de quando ela existia.
     try { await db.exec(`DROP TABLE IF EXISTS fluxos`); } catch (e) { }
@@ -5536,7 +5546,7 @@ app.get('/api/agenda-avaliacao/status', async (req, res) => {
 });
 
 app.get('/api/agenda-avaliacao', async (req, res) => {
-    const lista = await db.all('SELECT * FROM agenda_avaliacoes_hoje ORDER BY horario ASC');
+    const lista = await db.all('SELECT * FROM agenda_avaliacoes_hoje ORDER BY data ASC, horario ASC');
     res.json(lista);
 });
 
@@ -5587,7 +5597,23 @@ app.put('/api/agenda-avaliacao/:appointmentId', async (req, res) => {
         if (linha.telefone !== telefoneNovo) {
             const etiquetaId = await garantirEtiquetaAgendamentoAF();
             if (linha.telefone) await removerEtiquetaContato(linha.telefone, etiquetaId);
-            if (telefoneNovo) await aplicarEtiquetaContato(telefoneNovo, etiquetaId);
+            if (telefoneNovo) {
+                await aplicarEtiquetaContato(telefoneNovo, etiquetaId);
+                // Mesma regra do ciclo automático: só pede confirmação 1x por
+                // agendamento. Corrigir o telefone é o caso de uso principal
+                // pra entrar na fila pela primeira vez (aluno sem WhatsApp
+                // cadastrado até então), então tenta disparar já — a janela de
+                // horário da automação decide se sai agora ou espera.
+                if (!linha.confirmacao_solicitada_em) {
+                    await db.run('UPDATE agenda_avaliacoes_hoje SET confirmacao_solicitada_em = CURRENT_TIMESTAMP WHERE appointment_id = ?', appointmentId);
+                    const automacaoAF = await db.get('SELECT id FROM automacoes WHERE etiqueta_id = ?', etiquetaId);
+                    if (automacaoAF) {
+                        await importarContatosParaAutomacao(automacaoAF.id);
+                        io.emit('automacoes_atualizadas');
+                        await dispararAutomacaoComGuardas(automacaoAF.id, 'Agenda de Avaliação (correção manual de telefone)');
+                    }
+                }
+            }
         }
 
         res.json({ success: true });
@@ -5596,13 +5622,16 @@ app.put('/api/agenda-avaliacao/:appointmentId', async (req, res) => {
     }
 });
 
-// Varre a agenda de avaliação física do dia (via Supabase da Planeta Corpo) e
-// etiqueta cada aluno como "Agendamento AF" — NÃO manda mensagem nenhuma
-// sozinha. A automação "Agendamento Avaliação" (já configurada pelo usuário,
-// vinculada a essa mesma etiqueta) é quem cuida do envio, e só dispara quando
-// alguém clica "Importar Lista" + "Disparar Mensagens" nela, igual toda
-// automação do sistema — essa varredura só alimenta a etiqueta/lista, não
-// põe ninguém na fila de envio sozinha.
+// Varre a agenda de avaliação física das PRÓXIMAS 24 HORAS (via Supabase da
+// Planeta Corpo — a API só devolve 1 dia por chamada, então busca hoje +
+// amanhã e filtra pelo horário de verdade) e etiqueta cada aluno novo como
+// "Agendamento AF". Quem acabou de ganhar a etiqueta AGORA (nunca tinha
+// confirmação pedida pra esse appointment_id específico) entra na fila da
+// automação "Agendamento Avaliação" e o disparo já é tentado no mesmo ciclo —
+// a janela de horário configurada nela decide se sai agora ou fica na fila
+// pra próxima rodada (ver dispararAutomacaoComGuardas). Roda tanto no clique
+// manual de "Atualizar Lista" quanto sozinha de hora em hora (ver setInterval
+// mais abaixo).
 //
 // Essa integração (sistema de agendamento, NADA a ver com a Pacto) só traz
 // matrícula/horário/professor — não vem telefone nenhum dela. O telefone é
@@ -5616,14 +5645,38 @@ async function processarAgendaAvaliacao() {
     io.emit('agenda_avaliacao_progress', agendaAvaliacaoProgress);
     try {
         const etiquetaId = await garantirEtiquetaAgendamentoAF();
-        const resposta = await buscarAgendaDoDia();
-        const agendamentos = resposta?.appointments || [];
+        const agora = moment.tz('America/Sao_Paulo');
+        const limite24h = agora.clone().add(24, 'hours');
+        const hojeYMD = agora.format('YYYY-MM-DD');
+        const amanhaYMD = agora.clone().add(1, 'day').format('YYYY-MM-DD');
+
+        // Sequencial (não Promise.all) de propósito: cada chamada já faz um
+        // login novo na Agenda (ver agendaLogin em agenda.js) — com esse
+        // scan rodando de hora em hora agora, não vale a pena dobrar a carga
+        // de login simultâneo só pra ganhar um segundo.
+        const respostaHoje = await buscarAgendaDoDia({ date: hojeYMD });
+        const respostaAmanha = await buscarAgendaDoDia({ date: amanhaYMD });
+        const agendamentosComData = [
+            ...(respostaHoje?.appointments || []).map(ag => ({ ag, data: hojeYMD })),
+            ...(respostaAmanha?.appointments || []).map(ag => ({ ag, data: amanhaYMD })),
+        ];
+
+        // Só entra quem cai de verdade nas próximas 24h a partir de AGORA —
+        // um horário de hoje já passado (consultado de noite pra um horário
+        // de manhã) fica de fora, e um de amanhã fora das 24h também.
+        const agendamentos = agendamentosComData.filter(({ ag, data }) => {
+            const horario = (ag.time || '').slice(0, 5);
+            if (!horario) return false;
+            const dataHora = moment.tz(`${data} ${horario}`, 'YYYY-MM-DD HH:mm', 'America/Sao_Paulo');
+            return dataHora.isValid() && dataHora.isSameOrAfter(agora) && dataHora.isBefore(limite24h);
+        });
         agendaAvaliacaoProgress.total = agendamentos.length;
 
         const jaEstavam = await db.all('SELECT appointment_id, telefone FROM agenda_avaliacoes_hoje');
         const idsNovos = new Set();
+        const telefonesNovosPraConfirmar = [];
 
-        for (const ag of agendamentos) {
+        for (const { ag, data } of agendamentos) {
             // appointment_id é a chave da linha agora (telefone pode não existir
             // ainda) — sem ele não dá pra rastrear esse agendamento entre
             // varreduras nem editar depois, então esse caso raro é pulado de verdade.
@@ -5665,24 +5718,33 @@ async function processarAgendaAvaliacao() {
                 console.log(`⚠️ Agenda de Avaliação: ${ag.aluno?.nome || 'aluno'} (matrícula ${matricula || '?'}) sem contato correlacionado nos Contatos — sem etiqueta até corrigir na tela.`);
             }
 
+            // Preserva confirmacao_solicitada_em de uma varredura anterior — o
+            // de-dup é por appointment_id, não por dia civil: um agendamento de
+            // amanhã visto hoje à noite e de novo amanhã de manhã (ainda dentro
+            // da janela de 24h) não pode tomar confirmação em dobro.
+            const linhaAnterior = await db.get('SELECT confirmacao_solicitada_em FROM agenda_avaliacoes_hoje WHERE appointment_id = ?', appointmentId);
             const horario = (ag.time || '').slice(0, 5);
             await db.run(
-                `INSERT INTO agenda_avaliacoes_hoje (appointment_id, telefone, nome, matricula, horario, professor, atualizado_em)
-                 VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                `INSERT INTO agenda_avaliacoes_hoje (appointment_id, telefone, nome, matricula, horario, professor, data, atualizado_em)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                  ON CONFLICT(appointment_id) DO UPDATE SET telefone = excluded.telefone, nome = excluded.nome,
                     matricula = excluded.matricula, horario = excluded.horario, professor = excluded.professor,
-                    atualizado_em = CURRENT_TIMESTAMP`,
-                [appointmentId, numLimpo, ag.aluno?.nome || null, ag.aluno?.matricula || null, horario, ag.professor?.nome || null]
+                    data = excluded.data, atualizado_em = CURRENT_TIMESTAMP`,
+                [appointmentId, numLimpo, ag.aluno?.nome || null, ag.aluno?.matricula || null, horario, ag.professor?.nome || null, data]
             );
             if (numLimpo) {
                 await aplicarEtiquetaContato(numLimpo, etiquetaId);
                 agendaAvaliacaoProgress.encontrados++;
+                if (!linhaAnterior?.confirmacao_solicitada_em) {
+                    await db.run('UPDATE agenda_avaliacoes_hoje SET confirmacao_solicitada_em = CURRENT_TIMESTAMP WHERE appointment_id = ?', appointmentId);
+                    telefonesNovosPraConfirmar.push(numLimpo);
+                }
             }
         }
 
-        // Quem estava na lista de uma varredura anterior mas não está na de
-        // agora: sai da lista e perde a etiqueta (não é mais um agendamento
-        // válido pra hoje — foi cancelado, remarcado ou já passou o dia).
+        // Quem estava na lista de uma varredura anterior mas não está mais nas
+        // próximas 24h: sai da lista e perde a etiqueta (foi cancelado,
+        // remarcado, ou o horário já passou).
         for (const c of jaEstavam) {
             if (!idsNovos.has(c.appointment_id)) {
                 await db.run('DELETE FROM agenda_avaliacoes_hoje WHERE appointment_id = ?', c.appointment_id);
@@ -5695,7 +5757,27 @@ async function processarAgendaAvaliacao() {
         agendaAvaliacaoProgress.running = false;
         io.emit('agenda_avaliacao_progress', agendaAvaliacaoProgress);
         io.emit('agenda_avaliacao_done', { ...agendaAvaliacaoProgress, ultima_atualizacao: ultimaAtualizacao });
-        console.log(`✅ Agenda de Avaliação: ${agendaAvaliacaoProgress.encontrados} aluno(s) etiquetado(s), ${agendaAvaliacaoProgress.sem_whatsapp} sem WhatsApp válido, de ${agendaAvaliacaoProgress.total} agendamento(s) hoje.`);
+        console.log(`✅ Agenda de Avaliação: ${agendaAvaliacaoProgress.encontrados} aluno(s) etiquetado(s), ${agendaAvaliacaoProgress.sem_whatsapp} sem WhatsApp válido, de ${agendaAvaliacaoProgress.total} agendamento(s) nas próximas 24h.`);
+
+        // Tenta disparar sempre, mesmo sem nenhuma confirmação NOVA neste ciclo
+        // — quem foi descoberto fora da janela de horário num ciclo anterior
+        // (ex: agendamento visto às 22h, janela 07h–21h) fica esperando na fila
+        // e só sai quando um ciclo dentro da janela tentar de novo; se só
+        // disparasse quando havia gente nova, esse caso ficaria preso pra
+        // sempre até aparecer outro agendamento novo. importarContatosParaAutomacao
+        // é idempotente (sincroniza com quem tem a etiqueta hoje) e
+        // dispararAutomacaoComGuardas já respeita a janela de horário
+        // configurada na automação: fora dela, só devolve erro e a fila fica
+        // intacta pra tentar de novo no próximo ciclo (1h).
+        const automacaoAF = await db.get('SELECT id, nome FROM automacoes WHERE etiqueta_id = ?', etiquetaId);
+        if (automacaoAF) {
+            await importarContatosParaAutomacao(automacaoAF.id);
+            io.emit('automacoes_atualizadas');
+            const resultado = await dispararAutomacaoComGuardas(automacaoAF.id, 'Agenda de Avaliação (ciclo automático 24h)');
+            if (!resultado.ok && telefonesNovosPraConfirmar.length > 0) {
+                console.log(`⏳ Agenda de Avaliação: ${telefonesNovosPraConfirmar.length} confirmação(ões) nova(s) na fila, aguardando pra disparar — ${resultado.error}`);
+            }
+        }
     } catch (e) {
         console.error('❌ Erro na varredura da Agenda de Avaliação:', e.message);
         agendaAvaliacaoProgress.running = false;
@@ -5711,6 +5793,15 @@ app.post('/api/agenda-avaliacao/atualizar', async (req, res) => {
     res.json({ success: true });
     processarAgendaAvaliacao().catch(e => console.error('Erro ao processar agenda de avaliação:', e.message));
 });
+
+// Ciclo automático: varre as próximas 24h, etiqueta quem é novo e tenta
+// disparar a confirmação — de hora em hora, o dia inteiro (a janela de
+// horário configurada na automação "Agendamento Avaliação", não isso aqui, é
+// quem decide se o disparo sai agora ou espera a próxima rodada). setTimeout
+// inicial dá um respiro pro boot (conexão do WhatsApp, carga de leads) antes
+// do primeiro ciclo.
+setInterval(() => processarAgendaAvaliacao().catch(e => console.error('Erro no ciclo automático da Agenda de Avaliação:', e.message)), 60 * 60 * 1000);
+setTimeout(() => processarAgendaAvaliacao().catch(e => console.error('Erro no ciclo automático da Agenda de Avaliação:', e.message)), 3 * 60 * 1000);
 
 // =====================================
 // INTEGRAÇÃO — SORTEIO DE RESGATE EX-ALUNOS
