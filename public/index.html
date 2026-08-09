@@ -461,8 +461,9 @@
                         <button type="button" class="btn-secondary btn-inserir-placeholder-mp" data-placeholder="{dias_atrasados}" style="padding:.25rem .6rem;font-size:.72rem">➕ Dias atrasados</button>
                         <button type="button" class="btn-secondary btn-inserir-placeholder-mp" data-placeholder="{horario}" style="padding:.25rem .6rem;font-size:.72rem">➕ Horário</button>
                         <button type="button" class="btn-secondary btn-inserir-placeholder-mp" data-placeholder="{professor}" style="padding:.25rem .6rem;font-size:.72rem">➕ Professor</button>
+                        <button type="button" class="btn-secondary btn-inserir-placeholder-mp" data-placeholder="{dia}" style="padding:.25rem .6rem;font-size:.72rem">➕ Dia (hoje/amanhã)</button>
                     </div>
-                    <span class="hint">{parcelas} e {valor} preenchem pra quem está na lista de Inadimplentes, Parcelas Atrasadas ou Vence Hoje; {dias_atrasados} só pra Inadimplentes/Parcelas Atrasadas; {horario} e {professor} só pra quem está na lista da Agenda de Avaliação (todas em Integração).</span>
+                    <span class="hint">{parcelas} e {valor} preenchem pra quem está na lista de Inadimplentes, Parcelas Atrasadas ou Vence Hoje; {dias_atrasados} só pra Inadimplentes/Parcelas Atrasadas; {horario}, {professor} e {dia} só pra quem está na lista da Agenda de Avaliação (todas em Integração) — {dia} vira "hoje" ou "amanhã" dependendo de quando a avaliação está marcada.</span>
                 </div>
                 <div class="form-group">
                     <label>Mídia (opcional)</label>
@@ -1479,7 +1480,7 @@ Sempre tente agendar uma aula experimental."></textarea>
             <label style="display:block;font-size:.78rem;color:var(--text-3);margin-bottom:.3rem">Professor</label>
             <input type="text" id="editar-agenda-avaliacao-professor" style="width:100%;background:var(--input-bg);border:1px solid rgba(255,255,255,0.1);border-radius:var(--radius-sm);padding:.6rem .8rem;color:var(--text-1);font-size:.9rem;margin-bottom:1rem">
 
-            <span class="hint">Nome/matrícula/horário/professor preenchem {nome}/{matricula}/{horario}/{professor} na mensagem da automação "Agendamento Avaliação". O WhatsApp normalmente é achado sozinho correlacionando a matrícula com um contato existente — esse campo é só pra quando a correlação falha (matrícula não encontrada nos Contatos) e alguém precisa corrigir na mão.</span>
+            <span class="hint">Nome/matrícula/horário/professor preenchem {nome}/{matricula}/{horario}/{professor} na mensagem da automação "Agendamento Avaliação" — use também {dia}, que vira "hoje" ou "amanhã" sozinho conforme a data do agendamento (a Agenda de Avaliação traz compromissos de hoje e de amanhã na mesma janela). O WhatsApp normalmente é achado sozinho correlacionando a matrícula com um contato existente — esse campo é só pra quando a correlação falha (matrícula não encontrada nos Contatos) e alguém precisa corrigir na mão.</span>
 
             <div class="modal-footer">
                 <button class="btn-cancel" id="modal-editar-agenda-avaliacao-fechar">Fechar</button>

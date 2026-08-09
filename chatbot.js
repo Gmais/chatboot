@@ -884,17 +884,21 @@ async function resolverMatriculaContato(telefone) {
 }
 
 // Substitui {nome}/{nome_completo}/{matricula}/{saudacao}/{parcelas}/{valor}/
-// {dias_atrasados}/{horario}/{professor} (e a forma com colchetes) por dados
-// reais do contato — usado tanto quando o ROBÔ dispara uma regra
+// {dias_atrasados}/{horario}/{professor}/{dia} (e a forma com colchetes) por
+// dados reais do contato — usado tanto quando o ROBÔ dispara uma regra
 // automaticamente quanto no envio manual pelo Bate Papo ao Vivo e em Disparos
 // em massa. Sem isso no envio manual, digitar {nome} na caixa de texto manda
 // a chave crua pro cliente em vez do nome dele (foi exatamente o bug
-// relatado). {parcelas}/{valor}/{dias_atrasados}/{horario}/{professor} vêm
-// das mesmas tabelas de integração usadas no disparo de automação
+// relatado). {parcelas}/{valor}/{dias_atrasados}/{horario}/{professor}/{dia}
+// vêm das mesmas tabelas de integração usadas no disparo de automação
 // (pacto_inadimplentes/pacto_vencem_hoje/agenda_avaliacoes_hoje) — antes só
 // existiam ali, então mandar um template com {horario}/{professor} manualmente
 // saía com a chave crua em vez do valor (bug relatado: confirmação de
-// avaliação sem hora nem professor).
+// avaliação sem hora nem professor). {dia} resolve "hoje"/"amanhã" comparando
+// a data do agendamento com a data atual NO MOMENTO DO ENVIO (não da
+// varredura) — a Agenda de Avaliação traz compromissos de hoje E de amanhã
+// na mesma janela de 24h, e o template tinha "hoje" fixo no texto, então uma
+// avaliação de amanhã saía confirmando "hoje" (bug relatado).
 async function substituirPlaceholdersPessoais(texto, telefone) {
     const hora = moment.tz('America/Sao_Paulo').hours();
     const saudacao = hora >= 5 && hora < 12 ? 'Bom dia' : hora >= 12 && hora < 18 ? 'Boa tarde' : 'Boa noite';
@@ -922,6 +926,9 @@ async function substituirPlaceholdersPessoais(texto, telefone) {
     );
     const horarioExibir = agendamentoAF?.horario || '';
     const professorExibir = agendamentoAF?.professor || '';
+    const hojeYMD = moment.tz('America/Sao_Paulo').format('YYYY-MM-DD');
+    const amanhaYMD = moment.tz('America/Sao_Paulo').add(1, 'day').format('YYYY-MM-DD');
+    const diaExibir = !agendamentoAF ? '' : agendamentoAF.data === hojeYMD ? 'hoje' : agendamentoAF.data === amanhaYMD ? 'amanhã' : '';
     return texto
         .replace(/{saudacao}/gi, saudacao)
         .replace(/\[nome\]/gi, nomeExibir || '')
@@ -934,7 +941,8 @@ async function substituirPlaceholdersPessoais(texto, telefone) {
         .replace(/\[valor\]/gi, valorExibir).replace(/{valor}/gi, valorExibir)
         .replace(/\[dias_atrasados\]/gi, diasAtrasadosExibir).replace(/{dias_atrasados}/gi, diasAtrasadosExibir)
         .replace(/\[horario\]/gi, horarioExibir).replace(/{horario}/gi, horarioExibir)
-        .replace(/\[professor\]/gi, professorExibir).replace(/{professor}/gi, professorExibir);
+        .replace(/\[professor\]/gi, professorExibir).replace(/{professor}/gi, professorExibir)
+        .replace(/\[dia\]/gi, diaExibir).replace(/{dia}/gi, diaExibir);
 }
 
 // SQLite CURRENT_TIMESTAMP grava 'YYYY-MM-DD HH:MM:SS' em UTC mas sem indicador
