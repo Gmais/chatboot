@@ -6667,6 +6667,14 @@ async function reiniciarClienteAposFalha(tipoEvento, motivo) {
     // reconexão (crash da página + watchdog de runtime batendo ao mesmo tempo).
     setTimeout(async () => {
         try {
+            // client.destroy() acima às vezes não mata o processo Chrome de
+            // verdade (achado ao vivo: 18 processos chrome acumulados depois
+            // de vários reinícios em sequência — cada um brigando pelo mesmo
+            // profile em .wwebjs_auth, causando "storage bucket persistence
+            // denied" e módulos do WhatsApp Web quebrando ao carregar). Mesma
+            // limpeza que já roda uma vez no boot (linha ~6343) — aqui precisa
+            // rodar a cada reinício, não só na primeira inicialização do processo.
+            try { require('child_process').execSync('pkill -f chrome || true', { stdio: 'ignore' }); } catch (_) { }
             removerLocksChromeStale();
             armarInitWatchdog(); // protege esse initialize() também, não só o do boot
             // this.lastLoggedOut é flag interna do whatsapp-web.js (Client.js)
