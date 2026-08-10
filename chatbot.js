@@ -7,7 +7,7 @@
 // Ocorre quando whatsapp-web.js reexpõe os mesmos bindings (ex: onAddMessageEvent,
 // onAuthAppStateChangedEvent) durante reinicializações internas do Store.
 //
-// Já tentamos duas variações "mais espertas" disso (upsert via
+// Já tentamos duas variações "mais espertas" disso (upsert viaconfiro
 // removeExposedFunction) — uma causou crash loop, outra quebrou o pareamento
 // (celular linkava mas o robô nunca recebia o evento). Esta é a versão
 // ORIGINAL, simples, que comprovadamente funcionou (conectou e trocou
@@ -3450,6 +3450,12 @@ async function dispararMensagensDaAutomacao(automacaoId) {
                     );
                     const horarioStr = agendamentoAF?.horario || '';
                     const professorStr = agendamentoAF?.professor || '';
+                    // {dia} resolve "hoje"/"amanhã" na hora do envio (não da varredura) —
+                    // a Agenda de Avaliação traz compromissos de hoje E de amanhã na
+                    // mesma janela de 24h (mesma lógica de substituirPlaceholdersPessoais).
+                    const hojeYMD = moment.tz('America/Sao_Paulo').format('YYYY-MM-DD');
+                    const amanhaYMD = moment.tz('America/Sao_Paulo').add(1, 'day').format('YYYY-MM-DD');
+                    const diaStr = !agendamentoAF ? '' : agendamentoAF.data === hojeYMD ? 'hoje' : agendamentoAF.data === amanhaYMD ? 'amanhã' : '';
                     const texto = (msg.texto || '')
                         .replace(/\{nome\}/gi, primeiroNome).replace(/\[nome\]/gi, primeiroNome)
                         .replace(/\{nome_completo\}/gi, nomeCompleto).replace(/\[nome_completo\]/gi, nomeCompleto)
@@ -3458,7 +3464,8 @@ async function dispararMensagensDaAutomacao(automacaoId) {
                         .replace(/\{valor\}/gi, valorStr).replace(/\[valor\]/gi, valorStr)
                         .replace(/\{dias_atrasados\}/gi, diasAtrasadosStr).replace(/\[dias_atrasados\]/gi, diasAtrasadosStr)
                         .replace(/\{horario\}/gi, horarioStr).replace(/\[horario\]/gi, horarioStr)
-                        .replace(/\{professor\}/gi, professorStr).replace(/\[professor\]/gi, professorStr);
+                        .replace(/\{professor\}/gi, professorStr).replace(/\[professor\]/gi, professorStr)
+                        .replace(/\{dia\}/gi, diaStr).replace(/\[dia\]/gi, diaStr);
 
                     let sucesso = false;
                     if (canalContato === 'instagram') {
