@@ -4444,10 +4444,16 @@ app.get('/api/conversas/:telefone', async (req, res) => {
     const { telefone } = req.params;
     const limite = Math.min(parseInt(req.query.limit) || 100, 500);
     try {
-        const msgs = await db.all(
-            'SELECT * FROM conversas WHERE telefone = ? ORDER BY ts ASC LIMIT ?',
+        // ORDER BY ts ASC ... LIMIT sozinho pegava as mais ANTIGAS quando a
+        // conversa passa de "limite" mensagens (achado ao vivo: contato de
+        // teste com 150+ mensagens no total mostrava só até 05/08, cortando
+        // antes de chegar nas mensagens de hoje). Pega as mais recentes por
+        // ts DESC, depois reordena ASC pra exibir na ordem cronológica certa.
+        const msgsDesc = await db.all(
+            'SELECT * FROM conversas WHERE telefone = ? ORDER BY ts DESC LIMIT ?',
             [telefone, limite]
         );
+        const msgs = msgsDesc.reverse();
         // SQLite guarda manual como 0/1 — o front compara com "=== true", então
         // precisa virar boolean de verdade aqui, senão a bolha nunca marca
         // "👤 Atendente" mesmo quando manual=1 no banco.
