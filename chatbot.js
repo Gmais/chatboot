@@ -6379,6 +6379,24 @@ function removerLocksChromeStale(clientId) {
     }
 }
 
+// client.destroy() nem sempre mata o processo Chrome de verdade (ver uso em
+// reiniciarClienteAposFalha/reiniciarClientePoolAposFalha) — sem matar antes
+// de reinicializar, processos zumbis acumulam e brigam pelo mesmo profile.
+// Não pode ser um "pkill -f chrome" cego: com o pool de números de Disparo,
+// isso mataria o Chrome de OUTROS números (principal ou outros do pool) que
+// estão conectados e saudáveis, derrubando gente que não tinha nada a ver
+// com essa falha. Cada Chrome roda com --user-data-dir apontando pra pasta
+// da sua PRÓPRIA sessão (session, ou session-<clientId> pro pool — clientId
+// é sempre um randomUUID, então o padrão já é único por si só, sem precisar
+// de fronteira extra). Pro principal, "session" sozinho colidiria com
+// "session-<uuid>" de qualquer número do pool — por isso o espaço depois:
+// esse "session" é sempre seguido de mais alguma flag do Chrome na mesma
+// linha de comando, nunca é o último token.
+function matarChromeDaSessao(clientId) {
+    const padrao = clientId ? `session-${clientId}` : 'session ';
+    try { require('child_process').execSync(`pkill -f "${padrao}" || true`, { stdio: 'ignore' }); } catch (_) { }
+}
+
 // Fábrica compartilhada entre o client principal (atendimento) e os clients
 // do pool de Disparo (só envio — ver seção "POOL DE NÚMEROS PARA DISPARO"
 // mais abaixo). Sem clientId (client principal), o LocalAuth usa a pasta
@@ -6680,7 +6698,8 @@ async function reiniciarClienteAposFalha(tipoEvento, motivo) {
             // denied" e módulos do WhatsApp Web quebrando ao carregar). Mesma
             // limpeza que já roda uma vez no boot (linha ~6343) — aqui precisa
             // rodar a cada reinício, não só na primeira inicialização do processo.
-            try { require('child_process').execSync('pkill -f chrome || true', { stdio: 'ignore' }); } catch (_) { }
+            // Escopado só pra sessão do principal — ver matarChromeDaSessao.
+            matarChromeDaSessao();
             removerLocksChromeStale();
             armarInitWatchdog(); // protege esse initialize() também, não só o do boot
             // this.lastLoggedOut é flag interna do whatsapp-web.js (Client.js)
@@ -6859,6 +6878,12 @@ async function reiniciarClientePoolAposFalha(clientId, entry, motivo) {
     try { await entry.client.destroy(); } catch (_) { }
     setTimeout(async () => {
         try {
+            // Mesmo achado do client principal (ver matarChromeDaSessao): sem
+            // isso, o Chrome desse número específico pode ficar zumbi e
+            // brigar pelo próprio profile a cada reinício do watchdog,
+            // causando esse padrão de "conecta e cai de novo em poucos
+            // minutos" (achado ao vivo: número auxiliar de disparo).
+            matarChromeDaSessao(clientId);
             removerLocksChromeStale(clientId);
             entry.client = criarClienteWhatsApp(clientId);
             entry.status = 'initializing';
