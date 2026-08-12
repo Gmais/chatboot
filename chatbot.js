@@ -3531,6 +3531,15 @@ async function dispararMensagensDaAutomacao(automacaoId) {
             ]);
         } catch (e) {
             console.error(`Erro ao disparar mensagem da automação #${automacaoId} pra ${estado.telefone}:`, e.message);
+            // Mesmo gatilho de recuperação do envio manual (ver rota /enviar) —
+            // "Timeout de 45s" (Promise.race acima) e timeout de protocolo são
+            // sinal de Chrome travado de verdade, não falha pontual daquele
+            // contato. Sem isso, uma automação inteira passava por todos os
+            // contatos falhando um a um até o watchdog passivo (até 90min)
+            // notar sozinho — foi exatamente o padrão visto na automação #14.
+            if (!restartInProgress && (e.message.includes('Timeout de 45s') || e.message.includes('timed out') || e.message.includes('Protocol error'))) {
+                reiniciarClienteAposFalha('travamento_disparo_automacao', e.message);
+            }
             await db.run(
                 'UPDATE contato_automacao_estado SET ultimo_erro = ?, ultimo_erro_em = CURRENT_TIMESTAMP WHERE telefone = ? AND automacao_id = ?',
                 [e.message, estado.telefone, automacaoId]
@@ -4494,6 +4503,16 @@ app.post('/api/conversas/:telefone/enviar', async (req, res) => {
         res.json({ success: true });
     } catch (err) {
         console.error('Erro envio manual:', err.message);
+        // Mesma classe de erro que enviarResposta (caminho do robô) já trata
+        // reiniciando sozinho — timeout de protocolo (Runtime.callFunctionOn/
+        // "Protocol error") é sinal de Chrome travado de verdade, não erro
+        // pontual daquele contato. Sem isso, um envio manual travado só era
+        // detectado pelo watchdog passivo de atividade (até 90min de espera —
+        // ver LIMITE_SILENCIO_MENSAGENS_MS), deixando o painel "parado" até
+        // alguém notar e pedir pra reiniciar na mão.
+        if (!restartInProgress && err.message && (err.message.includes('timed out') || err.message.includes('Protocol error'))) {
+            reiniciarClienteAposFalha('travamento_envio_manual', err.message);
+        }
         res.status(500).json({ error: err.message });
     }
 });
