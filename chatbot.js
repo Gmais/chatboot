@@ -7745,13 +7745,16 @@ client.on('message_create', async (msg) => {
             // antiga do dia, não a mais recente) sempre que houvesse mais de uma
             // pendente. strftime('%s', ...) compara os dois lados como número
             // (epoch), sem essa ambiguidade de formato.
-            await db.run(
+            const rBackfill = await db.run(
                 `UPDATE conversas SET msg_id = ? WHERE id = (
                     SELECT id FROM conversas WHERE telefone = ? AND direcao = 'out' AND msg_id IS NULL
                     AND strftime('%s', ts) >= strftime('%s', 'now', '-10 minutes') ORDER BY ts ASC LIMIT 1
                 )`,
                 [msgId, numLimpo]
             );
+            console.log(`🩺 [DEBUG BACKFILL] msgId=${msgId} numLimpo=${numLimpo} changes=${rBackfill.changes}`);
+        } else {
+            console.log(`🩺 [DEBUG BACKFILL] msgId ausente (msg.id?._serialized indefinido) — msg.id=${JSON.stringify(msg.id)}`);
         }
 
         // Fallback do dedup acima: sem um id de verdade pra marcar em
