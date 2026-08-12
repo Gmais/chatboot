@@ -1615,6 +1615,15 @@ app.post('/webhooks/gympulse-daily-report', async (req, res) => {
         // idsMensagensDoSistema, fazendo o resumo de treino ser gravado (e
         // aparecer) duplicado no Bate Papo ao Vivo mesmo com um único envio
         // real pro WhatsApp.
+        // Marca o conteúdo como "do sistema" ANTES de tentar enviar, não só
+        // depois de confirmar sucesso — se "Lid is missing" esgotar as
+        // retentativas (ver sendMessageComRetryLid), o eco otimista local do
+        // WhatsApp Web (message_create) ainda dispara mesmo com a mensagem
+        // JAMAIS entregue de verdade. Sem essa marca ANTES, esse eco batia no
+        // fallback "mandado direto do celular" (ver client.on('message_create'))
+        // e gravava no Bate Papo ao Vivo como se tivesse sido enviado — exatamente
+        // o "chatbot faz de conta que envia" visto ao vivo num incidente real.
+        marcarMensagemComoDoSistema(null, lead.telefone.replace('@c.us', '').replace('@lid', ''), mensagem);
         const sentMsg = await sendMessageComRetryLid(client, chatId, mensagem, { waitUntilMsgSent: true });
         await registrarMensagemEnviada(lead.telefone, mensagem, nomeExibir, sentMsg?.id?._serialized);
 
@@ -3492,6 +3501,8 @@ async function dispararMensagensDaAutomacao(automacaoId) {
                             // pra tentar de novo) mais de uma vez — mesmo fix já aplicado no envio
                             // manual (df28ae7) e no webhook de resumo de treino (515d56e), só
                             // faltava aqui no disparo de automação.
+                            // Marca ANTES de tentar — ver explicação completa no webhook do Gympulse (marcarMensagemComoDoSistema).
+                            if (texto) marcarMensagemComoDoSistema(null, numLimpo, texto);
                             const sent = await sendMessageComRetryLid(client, chatId, media, { ...(texto ? { caption: texto } : {}), waitUntilMsgSent: true });
                             // client.sendMessage pode devolver undefined (sem lançar erro) mesmo
                             // quando a mensagem FOI entregue de verdade — é um comportamento
@@ -3513,6 +3524,8 @@ async function dispararMensagensDaAutomacao(automacaoId) {
                         // mesmo contato receber a mensagem mais de uma vez (marcada como erro
                         // aqui por não confirmar a tempo, mas entregue de verdade, e reenviada
                         // de novo na próxima tentativa da fila).
+                        // Marca ANTES de tentar — ver explicação completa no webhook do Gympulse (marcarMensagemComoDoSistema).
+                        marcarMensagemComoDoSistema(null, numLimpo, texto);
                         const sent = await sendMessageComRetryLid(client, chatId, texto, { waitUntilMsgSent: true });
                         await registrarMensagemEnviada(numLimpo, texto, nome, sent?.id?._serialized);
                         sucesso = true;
@@ -4497,6 +4510,8 @@ app.post('/api/conversas/:telefone/enviar', async (req, res) => {
         // "enviada" e gravar sucesso mesmo quando a mensagem nunca chegou no
         // destinatário — só passando essa opção o await espera a confirmação
         // real de envio (e propaga erro se falhar).
+        // Marca ANTES de tentar — ver explicação completa no webhook do Gympulse (marcarMensagemComoDoSistema).
+        marcarMensagemComoDoSistema(null, telefone, textoFinal);
         const sentMsg = await sendMessageComRetryLid(client, chatId, textoFinal, { waitUntilMsgSent: true });
         const nome = await resolverNomeContato(telefone);
         await registrarMensagemEnviada(telefone, textoFinal, nome, sentMsg?.id?._serialized, true);
@@ -7632,8 +7647,12 @@ async function resolverChatId(clienteWpp, numeroLimpo) {
 // mais de uma rodada pra a tabela terminar de carregar — 1 tentativa só
 // deixava passar disparo em massa pra quem nunca falou com o número (visto
 // em disparo real: 2 contatos falhando com esse erro mesmo após 1 retry).
-// Backoff crescente (1.5s, depois 3s) em vez de martelar a mesma espera.
-const LID_RETRY_DELAYS_MS = [1500, 3000];
+// Subido de 2 pra 3 tentativas depois de outro incidente real (11-12/08):
+// disparo logo após reconectar viu vários contatos ainda falhando após as 2
+// tentativas — a tabela de LID demora mais pra terminar de carregar bem no
+// início de uma sessão nova/recém-reconectada do que num contato isolado no
+// meio do dia. Backoff crescente em vez de martelar a mesma espera.
+const LID_RETRY_DELAYS_MS = [1500, 3000, 5000];
 async function sendMessageComRetryLid(clienteWpp, chatId, conteudo, opcoes) {
     for (let tentativa = 0; ; tentativa++) {
         try {
