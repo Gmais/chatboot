@@ -7719,6 +7719,7 @@ client.on('message_create', async (msg) => {
     if (msg.type === 'chat' && !msg.body) return;
 
     const msgId = idSerializado(msg);
+    console.log(`🩺 [DEBUG2] msgId=${msgId} typeof=${typeof msgId} raw_id=${JSON.stringify(msg.id)}`);
     if (msgId) {
         // message_create pode disparar ANTES do nosso próprio código terminar de
         // registrar o ID em idsMensagensDoSistema (a marcação só acontece depois
