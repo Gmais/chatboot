@@ -7736,10 +7736,19 @@ client.on('message_create', async (msg) => {
         // troca, 100% das mensagens enviadas ficavam "nunca confirmadas", sem
         // jeito de saber se realmente chegaram ou não.
         if (msgId) {
+            // strftime('%s', ts) em vez de comparar a string ts direto contra
+            // datetime('now', ...) — achado ao vivo que ts guarda "T"/milissegundos
+            // (formato ISO) e datetime() devolve espaço em vez de "T" ("2026-08-12
+            // 18:11:06"); comparação de string trata "T" (0x54) como MAIOR que
+            // espaço (0x20), então QUALQUER ts de hoje passava no filtro
+            // independente do horário, casando com a mensagem errada (a mais
+            // antiga do dia, não a mais recente) sempre que houvesse mais de uma
+            // pendente. strftime('%s', ...) compara os dois lados como número
+            // (epoch), sem essa ambiguidade de formato.
             await db.run(
                 `UPDATE conversas SET msg_id = ? WHERE id = (
                     SELECT id FROM conversas WHERE telefone = ? AND direcao = 'out' AND msg_id IS NULL
-                    AND ts >= datetime('now', '-10 minutes') ORDER BY ts ASC LIMIT 1
+                    AND strftime('%s', ts) >= strftime('%s', 'now', '-10 minutes') ORDER BY ts ASC LIMIT 1
                 )`,
                 [msgId, numLimpo]
             );
