@@ -94,6 +94,27 @@ const { buscarAlunoPorMatricula, buscarAlunoPorCodigo, obterParcelasEmAberto, cr
 const { enviarMensagemInstagram, obterNomeUsuarioInstagram, verificarAssinaturaWebhook } = require('./instagram');
 const { buscarAgendaDoDia } = require('./agenda');
 
+// Atualização do WhatsApp Web (jul/2026) renomeou o getter interno do id
+// serializado de id._serialized pra id.$1 — a whatsapp-web.js (rodando via
+// github:pedroslopez/whatsapp-web.js, sem versão fixa) ainda não acompanhou
+// essa mudança (ver wwebjs/whatsapp-web.js#201833). Um ponto isolado do
+// código já tinha esse contorno só pra mensagem recebida — achado ao vivo
+// que o problema é BEM mais amplo: client.sendMessage() também devolve id
+// sem _serialized, então TODA mensagem enviada pelo sistema (webhook do
+// Gympulse, automação, disparo, envio manual) ficava sem id de verdade —
+// sem isso, não tinha como confirmar entrega real (msg_id sempre nulo) nem
+// rastrear ack (✓/✓✓/✓✓azul), que foi exatamente o "chatbot mostra como
+// enviado mas não confirma nada" visto num incidente real. Centralizado
+// aqui pra cobrir todo mundo que precisa do id — client.sendMessage(),
+// message_create, message_ack, mensagem recebida.
+function idSerializado(msgOuId) {
+    const id = msgOuId?.id ?? msgOuId; // aceita tanto a Message inteira quanto o .id direto
+    if (!id) return null;
+    if (id._serialized) return id._serialized;
+    if (id.$1) return id.$1;
+    return null;
+}
+
 // =====================================
 // REDE DE SEGURANÇA — exceção não tratada nunca derruba o servidor inteiro
 // =====================================
@@ -1634,7 +1655,7 @@ app.post('/webhooks/gympulse-daily-report', async (req, res) => {
         // o "chatbot faz de conta que envia" visto ao vivo num incidente real.
         marcarMensagemComoDoSistema(null, lead.telefone.replace('@c.us', '').replace('@lid', ''), mensagem);
         const sentMsg = await sendMessageComRetryLid(client, chatId, mensagem, { waitUntilMsgSent: true });
-        await registrarMensagemEnviada(lead.telefone, mensagem, nomeExibir, sentMsg?.id?._serialized);
+        await registrarMensagemEnviada(lead.telefone, mensagem, nomeExibir, idSerializado(sentMsg));
 
         res.json({ success: true });
     } catch (err) {
@@ -3522,7 +3543,7 @@ async function dispararMensagensDaAutomacao(automacaoId) {
                             // isso só protege a leitura de .id (evita o crash de antes,
                             // "Cannot read properties of undefined"), sem tratar como falha.
                             const tipoMedia = msg.media_tipo === 'file' ? 'document' : (msg.media_tipo || 'document');
-                            await registrarMensagemEnviada(numLimpo, texto || '[mídia]', nome, sent?.id?._serialized, false, tipoMedia, msg.media_path);
+                            await registrarMensagemEnviada(numLimpo, texto || '[mídia]', nome, idSerializado(sent), false, tipoMedia, msg.media_path);
                             sucesso = true;
                         } else {
                             console.error(`Disparo automação #${automacaoId}: mídia não encontrada (${msg.media_path}) pra ${numLimpo}`);
@@ -3536,7 +3557,7 @@ async function dispararMensagensDaAutomacao(automacaoId) {
                         // Marca ANTES de tentar — ver explicação completa no webhook do Gympulse (marcarMensagemComoDoSistema).
                         marcarMensagemComoDoSistema(null, numLimpo, texto);
                         const sent = await sendMessageComRetryLid(client, chatId, texto, { waitUntilMsgSent: true });
-                        await registrarMensagemEnviada(numLimpo, texto, nome, sent?.id?._serialized);
+                        await registrarMensagemEnviada(numLimpo, texto, nome, idSerializado(sent));
                         sucesso = true;
                     }
 
@@ -4523,7 +4544,7 @@ app.post('/api/conversas/:telefone/enviar', async (req, res) => {
         marcarMensagemComoDoSistema(null, telefone, textoFinal);
         const sentMsg = await sendMessageComRetryLid(client, chatId, textoFinal, { waitUntilMsgSent: true });
         const nome = await resolverNomeContato(telefone);
-        await registrarMensagemEnviada(telefone, textoFinal, nome, sentMsg?.id?._serialized, true);
+        await registrarMensagemEnviada(telefone, textoFinal, nome, idSerializado(sentMsg), true);
         res.json({ success: true });
     } catch (err) {
         console.error('Erro envio manual:', err.message);
@@ -4683,8 +4704,8 @@ app.post('/api/conversas/:telefone/enviar-arquivo', upload.single('arquivo'), as
         // Chave de conteúdo usa "legenda" crua (o que msg.body de verdade vai
         // trazer no message_create, vazio se não teve legenda) — não o nome do
         // arquivo, que só é usado como texto de exibição quando falta legenda.
-        marcarMensagemComoDoSistema(sentMsg?.id?._serialized, numeroLimpo, legenda);
-        await salvarNaConversa(numeroLimpo, nome, 'out', legenda || req.file.originalname, tipo, null, true, mediaUrl, 'whatsapp', sentMsg?.id?._serialized);
+        marcarMensagemComoDoSistema(idSerializado(sentMsg), numeroLimpo, legenda);
+        await salvarNaConversa(numeroLimpo, nome, 'out', legenda || req.file.originalname, tipo, null, true, mediaUrl, 'whatsapp', idSerializado(sentMsg));
         io.emit('stats', stats);
         res.json({ success: true });
     } catch (err) {
@@ -7212,7 +7233,7 @@ async function enviarEregistrar(telefone, conteudo) {
         return null;
     }
     const resultado = await client.sendMessage(chatId, conteudo);
-    await registrarMensagemEnviada(numLimpoCheck, typeof conteudo === 'string' ? conteudo : '[mídia]', null, resultado?.id?._serialized);
+    await registrarMensagemEnviada(numLimpoCheck, typeof conteudo === 'string' ? conteudo : '[mídia]', null, idSerializado(resultado));
     return resultado;
 }
 
@@ -7697,7 +7718,7 @@ client.on('message_create', async (msg) => {
     // aparelhos disfarçado de mensagem de texto legítima (mesmo msg.type).
     if (msg.type === 'chat' && !msg.body) return;
 
-    const msgId = msg.id?._serialized;
+    const msgId = idSerializado(msg);
     if (msgId) {
         // message_create pode disparar ANTES do nosso próprio código terminar de
         // registrar o ID em idsMensagensDoSistema (a marcação só acontece depois
@@ -7745,16 +7766,13 @@ client.on('message_create', async (msg) => {
             // antiga do dia, não a mais recente) sempre que houvesse mais de uma
             // pendente. strftime('%s', ...) compara os dois lados como número
             // (epoch), sem essa ambiguidade de formato.
-            const rBackfill = await db.run(
+            await db.run(
                 `UPDATE conversas SET msg_id = ? WHERE id = (
                     SELECT id FROM conversas WHERE telefone = ? AND direcao = 'out' AND msg_id IS NULL
                     AND strftime('%s', ts) >= strftime('%s', 'now', '-10 minutes') ORDER BY ts ASC LIMIT 1
                 )`,
                 [msgId, numLimpo]
             );
-            console.log(`🩺 [DEBUG BACKFILL] msgId=${msgId} numLimpo=${numLimpo} changes=${rBackfill.changes}`);
-        } else {
-            console.log(`🩺 [DEBUG BACKFILL] msgId ausente (msg.id?._serialized indefinido) — msg.id=${JSON.stringify(msg.id)}`);
         }
 
         // Fallback do dedup acima: sem um id de verdade pra marcar em
@@ -7797,15 +7815,16 @@ client.on('message_create', async (msg) => {
 // sucesso" que a aluna confirmou nunca ter recebido). ack < 0 é a MELHOR
 // evidência possível de que a mensagem falhou de verdade depois de sair.
 client.on('message_ack', async (msg, ack) => {
-    if (!db || !msg.id?._serialized) return;
+    const msgId = idSerializado(msg);
+    if (!db || !msgId) return;
     try {
-        await db.run('UPDATE conversas SET ack = ? WHERE msg_id = ?', [ack, msg.id._serialized]);
+        await db.run('UPDATE conversas SET ack = ? WHERE msg_id = ?', [ack, msgId]);
         // Painel casa bolha por data-msg-id = id interno da linha em "conversas"
         // (não o msg_id do WhatsApp, que só existe pra correlacionar aqui) —
         // manda os dois pra frente atualizar o ✓/✓✓ na conversa aberta ao vivo.
-        const linha = await db.get('SELECT id, telefone FROM conversas WHERE msg_id = ?', msg.id._serialized);
+        const linha = await db.get('SELECT id, telefone FROM conversas WHERE msg_id = ?', msgId);
         if (linha) io.emit('mensagem_ack', { id: linha.id, telefone: linha.telefone, ack });
-        if (ack < 0) console.error(`❌ [ACK_ERRO] WhatsApp confirmou falha de entrega real pra ${msg.to}: msg_id=${msg.id._serialized}`);
+        if (ack < 0) console.error(`❌ [ACK_ERRO] WhatsApp confirmou falha de entrega real pra ${msg.to}: msg_id=${msgId}`);
     } catch (e) {
         console.error('Erro ao registrar ack de mensagem:', e.message);
     }
@@ -8107,7 +8126,7 @@ async function processarComoRobo(msg, numLimpo, texto, telefoneReal, nomeContato
                 const sentIA = await enviarRespostaCanal(canal, msg, telefoneReal, respostaIA);
                 io.emit('bot_digitando', { telefone: numLimpo, ativo: false });
                 if (sentIA) {
-                    await registrarMensagemEnviada(telefoneReal, respostaIA, nomeContato, sentIA.id?._serialized, false, 'text', null, canal);
+                    await registrarMensagemEnviada(telefoneReal, respostaIA, nomeContato, idSerializado(sentIA), false, 'text', null, canal);
                     await encaminharParaHumanoSeEncerrou(respostaIA, numLimpo);
                 }
             } catch (e) {
@@ -8150,7 +8169,7 @@ async function processarComoRobo(msg, numLimpo, texto, telefoneReal, nomeContato
     const sent = await enviarRespostaCanal(canal, msg, telefoneReal, textoFinal);
     io.emit('bot_digitando', { telefone: numLimpo, ativo: false });
     if (sent) {
-        await registrarMensagemEnviada(telefoneReal, textoFinal, nomeContato, sent.id?._serialized, false, 'text', null, canal);
+        await registrarMensagemEnviada(telefoneReal, textoFinal, nomeContato, idSerializado(sent), false, 'text', null, canal);
         await encaminharParaHumanoSeEncerrou(textoFinal, numLimpo);
     }
 
@@ -8165,7 +8184,7 @@ async function processarComoRobo(msg, numLimpo, texto, telefoneReal, nomeContato
             const sentMedia = await enviarRespostaCanal(canal, msg, telefoneReal, media);
             if (sentMedia) {
                 const tipoMedia = regraAtiva.media_tipo === 'file' ? 'document' : (regraAtiva.media_tipo || 'document');
-                await registrarMensagemEnviada(telefoneReal, '[mídia enviada]', nomeContato, sentMedia.id?._serialized, false, tipoMedia, regraAtiva.media_path, canal);
+                await registrarMensagemEnviada(telefoneReal, '[mídia enviada]', nomeContato, idSerializado(sentMedia), false, tipoMedia, regraAtiva.media_path, canal);
             }
         }
     }
@@ -8423,7 +8442,7 @@ async function processarMensagemRecebida(msg, canal = 'whatsapp') {
                 const sentHumano = await enviarRespostaCanal(canal, msg, telefoneReal, mensagemHumanoFinal);
                 if (sentHumano) {
                     ultimaMsgModoHumano.set(numLimpo, hoje);
-                    await registrarMensagemEnviada(telefoneReal, mensagemHumanoFinal, nomeContato, sentHumano.id?._serialized, false, 'text', null, canal);
+                    await registrarMensagemEnviada(telefoneReal, mensagemHumanoFinal, nomeContato, idSerializado(sentHumano), false, 'text', null, canal);
                 }
             }
             await agendarFallbackHumano(msg, numLimpo, texto, telefoneReal, nomeContato, canal);
