@@ -614,6 +614,15 @@ async function initDB() {
     // populado pra mensagens enviadas DEPOIS dessa coluna existir — histórico
     // antigo não tem como ganhar editar/excluir retroativamente.
     try { await db.exec(`ALTER TABLE conversas ADD COLUMN msg_id TEXT DEFAULT NULL`); } catch (e) { }
+    // Confirmação REAL de entrega, direto do WhatsApp (ver client.on('message_ack')
+    // mais abaixo) — mesmo modelo do próprio app: 1 = ✓ (saiu pro servidor),
+    // 2 = ✓✓ cinza (chegou no aparelho), 3 = ✓✓ azul (lida), -1 = erro real de
+    // entrega. Sem isso não tinha NENHUMA forma confiável de saber se uma
+    // mensagem "sem erro" de fato chegou — client.sendMessage(waitUntilMsgSent)
+    // resolvendo sem lançar erro NÃO é garantia de entrega de verdade (achado
+    // ao vivo num incidente real: mensagem "enviada com sucesso" só descoberta
+    // como nunca entregue quando a aluna confirmou que não recebeu nada).
+    try { await db.exec(`ALTER TABLE conversas ADD COLUMN ack INTEGER DEFAULT NULL`); } catch (e) { }
     // Dedup de mensagens do webhook do Instagram — a Meta não garante entrega
     // única, pode reenviar o MESMO evento se a resposta demorar/falhar. Sem
     // isso, uma reentrega processava a mensagem de novo (lead duplicado,
@@ -7718,12 +7727,21 @@ client.on('message_create', async (msg) => {
         // sozinho, incondicional (não depende do Set abaixo ter marcado a
         // tempo, que é uma corrida — o registro de quem manda pode demorar
         // mais que o delay(400) acima em casos mais lentos, ex: resolverNomeContato).
-        if (msgId && msg.body) {
+        // NÃO compara texto = msg.body — achado ao vivo num incidente real que
+        // isso quebra o match (e deixa msg_id nulo pra SEMPRE) por qualquer
+        // diferença boba entre o que a gente guardou e o que o WhatsApp
+        // devolve: \r\n virando \n, emoji renderizado diferente, encoding.
+        // Casa pela ordem de chegada (mais antiga sem confirmação primeiro),
+        // que já resolve certo mesmo com várias mensagens em voo — sem essa
+        // troca, 100% das mensagens enviadas ficavam "nunca confirmadas", sem
+        // jeito de saber se realmente chegaram ou não.
+        if (msgId) {
             await db.run(
                 `UPDATE conversas SET msg_id = ? WHERE id = (
-                    SELECT id FROM conversas WHERE telefone = ? AND direcao = 'out' AND texto = ? AND msg_id IS NULL ORDER BY ts DESC LIMIT 1
+                    SELECT id FROM conversas WHERE telefone = ? AND direcao = 'out' AND msg_id IS NULL
+                    AND ts >= datetime('now', '-10 minutes') ORDER BY ts ASC LIMIT 1
                 )`,
-                [msgId, numLimpo, msg.body]
+                [msgId, numLimpo]
             );
         }
 
@@ -7756,6 +7774,28 @@ client.on('message_create', async (msg) => {
         }
     } catch (e) {
         console.error('Erro ao registrar mensagem enviada pelo celular:', e.message);
+    }
+});
+
+// Confirmação REAL de entrega — mesmo modelo de ✓/✓✓/✓✓azul do próprio
+// WhatsApp (ack: -1 erro, 0 pendente, 1 ✓ enviado pro servidor, 2 ✓✓ chegou
+// no aparelho, 3 ✓✓ azul lida, 4 áudio ouvido). Sem isso a única fonte de
+// "deu certo" era client.sendMessage() não ter lançado erro — que, achado ao
+// vivo num incidente real, não é garantia nenhuma (mensagem "enviada com
+// sucesso" que a aluna confirmou nunca ter recebido). ack < 0 é a MELHOR
+// evidência possível de que a mensagem falhou de verdade depois de sair.
+client.on('message_ack', async (msg, ack) => {
+    if (!db || !msg.id?._serialized) return;
+    try {
+        await db.run('UPDATE conversas SET ack = ? WHERE msg_id = ?', [ack, msg.id._serialized]);
+        // Painel casa bolha por data-msg-id = id interno da linha em "conversas"
+        // (não o msg_id do WhatsApp, que só existe pra correlacionar aqui) —
+        // manda os dois pra frente atualizar o ✓/✓✓ na conversa aberta ao vivo.
+        const linha = await db.get('SELECT id, telefone FROM conversas WHERE msg_id = ?', msg.id._serialized);
+        if (linha) io.emit('mensagem_ack', { id: linha.id, telefone: linha.telefone, ack });
+        if (ack < 0) console.error(`❌ [ACK_ERRO] WhatsApp confirmou falha de entrega real pra ${msg.to}: msg_id=${msg.id._serialized}`);
+    } catch (e) {
+        console.error('Erro ao registrar ack de mensagem:', e.message);
     }
 });
 

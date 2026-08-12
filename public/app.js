@@ -3968,13 +3968,30 @@ const CM = (() => {
             <div class="${bubbleClass}">
                 ${senderLabel}
                 ${buildBubbleBodyHtml(m)}
-                <div class="bubble-time">${formatHoraCompleta(m.ts)}</div>
+                <div class="bubble-time" data-ts="${m.ts}">${formatHoraCompleta(m.ts)}${buildAckHtml(m)}</div>
                 ${acoesHtml}
             </div>
         `;
 
         chatMessages.appendChild(wrap);
         if (scroll) chatMessages.scrollTop = chatMessages.scrollHeight;
+    }
+
+    // ✓/✓✓/✓✓azul igual ao próprio WhatsApp — só faz sentido pra quem a gente
+    // mandou (m.direcao === 'out'). ack vem do evento message_ack (confirmação
+    // REAL do WhatsApp, não só "sendMessage() não deu erro" — ver comentário
+    // completo em client.on('message_ack') no chatbot.js). null = ainda sem
+    // confirmação nenhuma (nem "saiu"); < 0 é o WhatsApp reportando falha de
+    // entrega de verdade depois de ter saído.
+    function buildAckHtml(m) {
+        if (m.direcao !== 'out') return '';
+        const ack = m.ack === undefined || m.ack === null ? null : Number(m.ack);
+        if (ack === null) return ` <span class="bubble-ack" title="Sem confirmação de entrega ainda">🕓</span>`;
+        if (ack < 0) return ` <span class="bubble-ack" style="color:var(--red)" title="Falha de entrega confirmada pelo WhatsApp">⚠️</span>`;
+        if (ack === 0) return ` <span class="bubble-ack" title="Enviando...">🕓</span>`;
+        if (ack === 1) return ` <span class="bubble-ack" title="Enviado">✓</span>`;
+        if (ack === 2) return ` <span class="bubble-ack" title="Entregue no aparelho">✓✓</span>`;
+        return ` <span class="bubble-ack" style="color:#53bdeb" title="Lida">✓✓</span>`; // 3 lida, 4 áudio ouvido
     }
 
     function escapeHtml(str) {
@@ -4420,6 +4437,15 @@ const CM = (() => {
             const senderHtml = corpo.querySelector('.bubble-sender')?.outerHTML || '';
             const acoesHtml = corpo.querySelector('.bubble-acoes')?.outerHTML || '';
             corpo.innerHTML = `${senderHtml}${buildBubbleBodyHtml(data)}${tempoHtml}${acoesHtml}`;
+        });
+
+        // Confirmação real de entrega (✓/✓✓/✓✓azul) chegando ao vivo — troca só
+        // o ícone, sem recarregar a bolha inteira.
+        socket.on('mensagem_ack', ({ id, telefone, ack }) => {
+            if (activePhone !== telefone) return;
+            const bolha = chatMessages?.querySelector(`.chat-bubble-wrap[data-msg-id="${id}"]`);
+            const tempoEl = bolha?.querySelector('.bubble-time');
+            if (tempoEl) tempoEl.innerHTML = `${formatHoraCompleta(tempoEl.dataset.ts || '')}${buildAckHtml({ direcao: 'out', ack })}`;
         });
 
         // Mensagem editada/excluída em OUTRA aba/sessão — reflete aqui também.
