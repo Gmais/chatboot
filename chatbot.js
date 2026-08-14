@@ -8476,11 +8476,19 @@ client.on('message_reaction', async (reaction) => {
         // sessão resincroniza — sem dedup, a MESMA reação vira uma linha nova
         // a cada reconexão/redeploy. msgId+quem reagiu+o emoji identifica a
         // reação de forma estável (o mesmo evento reenviado tem essa mesma
-        // combinação sempre).
-        const chaveReacao = `${reaction.msgId?._serialized || ''}|${reaction.senderId || ''}|${reaction.reaction}`;
-        const jaProcessada = await db.get('SELECT 1 FROM reacoes_processadas WHERE chave = ?', chaveReacao);
-        if (jaProcessada) return;
-        await db.run('INSERT OR IGNORE INTO reacoes_processadas (chave) VALUES (?)', chaveReacao);
+        // combinação sempre). idSerializado (não reaction.msgId?._serialized
+        // direto) pelo mesmo motivo do resto do sistema — ver client.on
+        // ('message_ack') mais acima.
+        const chaveReacao = `${idSerializado(reaction.msgId) || ''}|${reaction.senderId || ''}|${reaction.reaction}`;
+        // SELECT-depois-INSERT tinha uma corrida real: duas reações quase
+        // simultâneas (comum logo após reconexão, quando o WhatsApp reenvia
+        // backlog em rajada) podiam passar pelo SELECT antes de qualquer uma
+        // confirmar o INSERT, e as duas seguiam pra salvarNaConversa — achado
+        // ao vivo (mesma reação, mesmo milissegundo, duas linhas na conversa).
+        // INSERT OR IGNORE sozinho é atômico: só uma das duas de fato insere
+        // linha nova (changes > 0), a outra vê 0 e para aqui.
+        const resultadoDedup = await db.run('INSERT OR IGNORE INTO reacoes_processadas (chave) VALUES (?)', chaveReacao);
+        if (!resultadoDedup.changes) return;
 
         const telefoneResolvido = await resolveJid(remoteChat);
         const numLimpo = telefoneResolvido.replace('@c.us', '').replace('@lid', '');
