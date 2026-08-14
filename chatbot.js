@@ -4547,7 +4547,7 @@ app.post('/api/conversas/:telefone/enviar', async (req, res) => {
         await registrarMensagemEnviada(telefone, textoFinal, nome, idSerializado(sentMsg), true);
         res.json({ success: true });
     } catch (err) {
-        console.error('Erro envio manual:', err.message);
+        console.error('Erro envio manual:', err.message, '| stack:', err.stack);
         // Mesma classe de erro que enviarResposta (caminho do robô) já trata
         // reiniciando sozinho — timeout de protocolo (Runtime.callFunctionOn/
         // "Protocol error") é sinal de Chrome travado de verdade, não erro
