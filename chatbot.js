@@ -4339,7 +4339,12 @@ async function listarConversasComEtiquetas() {
         base AS (
             SELECT
                 c.telefone,
-                COALESCE(mn.nome, c.nome) AS nome,
+                -- Nome cadastrado manualmente (tela de Contatos/Audiência) tem
+                -- prioridade sobre o pushname do WhatsApp — mesma regra já
+                -- aplicada em /api/contatos (ver comentário lá). Sem isso, um
+                -- nome digitado à mão aqui no Bate Papo ao Vivo nunca aparecia:
+                -- o pushname da própria pessoa no WhatsApp sempre ganhava.
+                COALESCE(NULLIF(TRIM(ld.nome), ''), mn.nome, c.nome) AS nome,
                 c.texto AS ultimo_texto,
                 c.direcao AS ultima_direcao,
                 c.tipo AS ultimo_tipo,
@@ -4360,6 +4365,7 @@ async function listarConversasComEtiquetas() {
                 INNER JOIN melhor_nome mnn ON mnn.telefone = cn.telefone AND mnn.max_ts = cn.ts
                 GROUP BY cn.telefone
             ) mn ON mn.telefone = c.telefone
+            LEFT JOIN leads ld ON REPLACE(REPLACE(ld.telefone, '@c.us', ''), '@lid', '') = c.telefone
             LEFT JOIN conversas_humano ch ON ch.telefone = c.telefone
             LEFT JOIN conversas_status cs ON cs.telefone = c.telefone
             GROUP BY c.telefone
