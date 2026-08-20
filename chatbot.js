@@ -768,6 +768,11 @@ async function initDB() {
     } catch (e) { console.error('Erro ao definir padrão da rede de segurança de horário:', e.message); }
 
     // Adiciona colunas novas se migrando de versão anterior
+    // 'whatsapp_web' (sessão via QR/pareamento, padrão de sempre) ou
+    // 'cloud_api' (WhatsApp Business Cloud API — sem sessão de navegador,
+    // sempre pronto assim que Token de Acesso + Phone Number ID estiverem
+    // salvos em Configurações). Ver singleton logo abaixo de reidratarPoolNaInicializacao().
+    try { await db.exec(`ALTER TABLE disparo_numeros ADD COLUMN tipo TEXT NOT NULL DEFAULT 'whatsapp_web'`); } catch (e) { }
     try { await db.exec(`ALTER TABLE respostas ADD COLUMN media_path TEXT DEFAULT NULL`); } catch (e) { }
     try { await db.exec(`ALTER TABLE respostas ADD COLUMN media_tipo TEXT DEFAULT NULL`); } catch (e) { }
     try { await db.exec(`ALTER TABLE respostas ADD COLUMN etiqueta_id INTEGER DEFAULT NULL`); } catch (e) { }
@@ -5164,7 +5169,7 @@ function iniciarBroadcast(job) {
         for (const numero of listaNumeros) {
             if (!broadcastRunning) break;
 
-            const entryEnvio = proximoClienteDoPool(job.numerosPermitidosIds);
+            const entryEnvio = await proximoClienteDoPool(job.numerosPermitidosIds);
             if (!entryEnvio) {
                 // Nenhum número do pool (elegível pra essa campanha) segue
                 // conectado — aborta o resto da lista em vez de gastar o
@@ -5179,20 +5184,29 @@ function iniciarBroadcast(job) {
 
             try {
                 const numeroCompleto = numero.startsWith('55') ? numero : `55${numero}`;
-                const chatId = await resolverChatId(entryEnvio.client, numeroCompleto);
                 // Cada número da lista tem seu próprio nome/matrícula — substitui
                 // {nome}/{matricula}/{saudacao} POR DESTINATÁRIO (mesmo texto
                 // "mensagem" cru, mas personalizado a cada envio do laço).
                 const textoPersonalizado = await substituirPlaceholdersPessoais(mensagem, numeroCompleto);
-                // waitUntilMsgSent:true — mesmo motivo do envio manual (df28ae7): sem
-                // isso o sendMessage() resolve no eco local antes de confirmar saída
-                // real pela rede, e sessão instável pode fazer o número do pool
-                // "reenviar" sem perceber que já tinha saído de verdade.
-                await sendMessageComRetryLid(entryEnvio.client, chatId, textoPersonalizado, { waitUntilMsgSent: true });
 
-                if (mediaFile) {
-                    const media = MessageMedia.fromFilePath(mediaFile.path);
-                    await sendMessageComRetryLid(entryEnvio.client, chatId, media, { waitUntilMsgSent: true });
+                if (entryEnvio.tipo === 'cloud_api') {
+                    // Só texto nessa 1ª versão (mesma limitação do canal geral) — cai
+                    // no catch de baixo igual qualquer outra falha desse contato,
+                    // sem travar o resto da lista.
+                    if (mediaFile) throw new Error('Mídia não é suportada via WhatsApp Business API nessa 1ª versão.');
+                    await enviarMensagemWhatsappCloud(numeroCompleto, textoPersonalizado, entryEnvio.config);
+                } else {
+                    const chatId = await resolverChatId(entryEnvio.client, numeroCompleto);
+                    // waitUntilMsgSent:true — mesmo motivo do envio manual (df28ae7): sem
+                    // isso o sendMessage() resolve no eco local antes de confirmar saída
+                    // real pela rede, e sessão instável pode fazer o número do pool
+                    // "reenviar" sem perceber que já tinha saído de verdade.
+                    await sendMessageComRetryLid(entryEnvio.client, chatId, textoPersonalizado, { waitUntilMsgSent: true });
+
+                    if (mediaFile) {
+                        const media = MessageMedia.fromFilePath(mediaFile.path);
+                        await sendMessageComRetryLid(entryEnvio.client, chatId, media, { waitUntilMsgSent: true });
+                    }
                 }
 
                 broadcastProgress.sent++;
@@ -7221,6 +7235,10 @@ async function reidratarPoolNaInicializacao() {
     try {
         const linhas = await db.all('SELECT * FROM disparo_numeros WHERE ativo = 1');
         for (const row of linhas) {
+            // Linha 'cloud_api' não tem sessão de navegador — status dela vem
+            // direto da config do WhatsApp Business (ver GET /api/disparo-numeros),
+            // nunca entra em poolClients.
+            if (row.tipo === 'cloud_api') continue;
             const temSessao = fs.existsSync(pastaSessaoPool(row.client_id));
             if (temSessao) {
                 iniciarClientePool(row);
@@ -7233,11 +7251,45 @@ async function reidratarPoolNaInicializacao() {
     }
 }
 
+// Garante que a linha "WhatsApp Business API" (tipo 'cloud_api') sempre
+// exista em disparo_numeros, criada sozinha, sem precisar de "Adicionar
+// Número" — ela só reflete a config já salva em Configurações, nunca abre
+// sessão de navegador nenhuma. client_id é só um UUID qualquer pra satisfazer
+// o UNIQUE da tabela; nunca é usado de verdade (não vira pasta de sessão).
+async function garantirNumeroDisparoCloudApi() {
+    if (!db) return;
+    try {
+        const existente = await db.get("SELECT 1 FROM disparo_numeros WHERE tipo = 'cloud_api' LIMIT 1");
+        if (existente) return;
+        const clientId = require('crypto').randomUUID();
+        await db.run(
+            "INSERT INTO disparo_numeros (nome, client_id, ativo, tipo) VALUES (?, ?, 1, 'cloud_api')",
+            ['WhatsApp Business API', clientId]
+        );
+    } catch (e) {
+        console.error('Erro ao garantir número de disparo da WhatsApp Business API:', e.message);
+    }
+}
+
 // Round-robin — só entre números CONECTADOS agora, opcionalmente restrito a
 // um subconjunto (roteamento por campanha, ver /api/broadcast/start).
 let poolRoundRobinIdx = 0;
-function proximoClienteDoPool(idsPermitidos) {
+async function proximoClienteDoPool(idsPermitidos) {
     let candidatos = [...poolClients.values()].filter(e => e.status === 'connected');
+
+    // Número "WhatsApp Business API" (tipo cloud_api) não vive em poolClients
+    // (não tem sessão de navegador) — entra no rodízio à parte, só quando
+    // Token de Acesso + Phone Number ID já estiverem salvos em Configurações.
+    const rowCloudApi = await db.get("SELECT id, nome FROM disparo_numeros WHERE tipo = 'cloud_api' AND ativo = 1 LIMIT 1");
+    let entryCloudApi = null;
+    if (rowCloudApi) {
+        const configCloudApi = await obterConfigWhatsappCloud();
+        if (configCloudApi.accessToken && configCloudApi.phoneNumberId) {
+            entryCloudApi = { dbId: rowCloudApi.id, nome: rowCloudApi.nome, tipo: 'cloud_api', config: configCloudApi };
+            candidatos.push(entryCloudApi);
+        }
+    }
+
     // Ids que não correspondem a NENHUM número cadastrado agora em "Números de
     // Envio" (o número foi excluído depois que a regra de roteamento foi
     // criada em disparo_roteamento) não contam como restrição válida — sem
@@ -7247,8 +7299,9 @@ function proximoClienteDoPool(idsPermitidos) {
     // desmarcar um id que já não está mais lá). Números que ainda EXISTEM mas
     // estão só desconectados continuam sendo respeitados à risca (não caem
     // pro principal) — essa parte da lógica original permanece.
+    const idsExistentes = [...poolClients.values()].map(e => e.dbId).concat(rowCloudApi ? [rowCloudApi.id] : []);
     const idsValidos = Array.isArray(idsPermitidos)
-        ? idsPermitidos.filter(id => [...poolClients.values()].some(e => e.dbId === id))
+        ? idsPermitidos.filter(id => idsExistentes.includes(id))
         : [];
     if (idsValidos.length > 0) {
         // Roteamento explícito pra essa campanha — respeita à risca, sem
@@ -7271,12 +7324,28 @@ function proximoClienteDoPool(idsPermitidos) {
 app.get('/api/disparo-numeros', async (req, res) => {
     try {
         const linhas = await db.all('SELECT * FROM disparo_numeros ORDER BY criado_em ASC');
+        // Linha 'cloud_api' não tem entrada em poolClients (nunca teve sessão de
+        // navegador) — status dela vem direto da config salva em Configurações.
+        const configCloudApi = linhas.some(l => l.tipo === 'cloud_api') ? await obterConfigWhatsappCloud() : null;
         res.json(linhas.map(row => {
+            if (row.tipo === 'cloud_api') {
+                const configurado = !!(configCloudApi?.accessToken && configCloudApi?.phoneNumberId);
+                return {
+                    id: row.id,
+                    nome: row.nome,
+                    ativo: !!row.ativo,
+                    tipo: 'cloud_api',
+                    status: configurado ? 'connected' : 'dormant',
+                    numeroConectado: configCloudApi?.phoneNumberId || null,
+                    qrDataUrl: null,
+                };
+            }
             const entry = poolClients.get(row.client_id);
             return {
                 id: row.id,
                 nome: row.nome,
                 ativo: !!row.ativo,
+                tipo: 'whatsapp_web',
                 status: entry?.status || 'dormant',
                 numeroConectado: entry?.numeroConectado || null,
                 qrDataUrl: entry?.qrDataUrl || null,
@@ -7305,6 +7374,7 @@ app.post('/api/disparo-numeros/:id/conectar', async (req, res) => {
     try {
         const row = await db.get('SELECT * FROM disparo_numeros WHERE id = ?', req.params.id);
         if (!row) return res.status(404).json({ error: 'Número não encontrado.' });
+        if (row.tipo === 'cloud_api') return res.status(400).json({ error: 'Esse número já usa a API oficial — configure o Token de Acesso em Configurações, não precisa conectar aqui.' });
         iniciarClientePool(row);
         res.json({ success: true });
     } catch (err) {
@@ -7316,6 +7386,7 @@ app.post('/api/disparo-numeros/:id/desconectar', async (req, res) => {
     try {
         const row = await db.get('SELECT * FROM disparo_numeros WHERE id = ?', req.params.id);
         if (!row) return res.status(404).json({ error: 'Número não encontrado.' });
+        if (row.tipo === 'cloud_api') return res.status(400).json({ error: 'Esse número já usa a API oficial — configure o Token de Acesso em Configurações, não precisa conectar aqui.' });
         const entry = poolClients.get(row.client_id);
         if (!entry) return res.status(400).json({ error: 'Esse número não está conectado.' });
         await desconectarClientePool(entry);
@@ -7331,6 +7402,7 @@ app.post('/api/disparo-numeros/:id/pairing-code', async (req, res) => {
     try {
         const row = await db.get('SELECT * FROM disparo_numeros WHERE id = ?', req.params.id);
         if (!row) return res.status(404).json({ error: 'Número não encontrado.' });
+        if (row.tipo === 'cloud_api') return res.status(400).json({ error: 'Esse número já usa a API oficial — configure o Token de Acesso em Configurações, não precisa conectar aqui.' });
         const entry = poolClients.get(row.client_id);
         if (!entry?.readyForPairing) return res.status(400).json({ error: 'Aguarde o QR Code aparecer antes de solicitar o código.' });
         const numero = String(telefone).replace(/\D/g, '');
@@ -7345,6 +7417,10 @@ app.delete('/api/disparo-numeros/:id', async (req, res) => {
     try {
         const row = await db.get('SELECT * FROM disparo_numeros WHERE id = ?', req.params.id);
         if (!row) return res.status(404).json({ error: 'Número não encontrado.' });
+        // Singleton — se apagasse, garantirNumeroDisparoCloudApi() recriava
+        // sozinho no próximo boot. Pra "desativar", é só apagar o Token de
+        // Acesso em Configurações (fica com status "não configurado").
+        if (row.tipo === 'cloud_api') return res.status(400).json({ error: 'Esse número não pode ser removido. Pra desativar, apague o Token de Acesso em Configurações.' });
         const entry = poolClients.get(row.client_id);
         await removerClientePool(row, entry);
         await db.run('DELETE FROM disparo_numeros WHERE id = ?', row.id);
@@ -8733,6 +8809,7 @@ client.on('message_reaction', async (reaction) => {
     removerLocksChromeStale();
     armarInitWatchdog();
     client.initialize();
+    await garantirNumeroDisparoCloudApi();
     await reidratarPoolNaInicializacao();
     const PORT = process.env.PORT || 3000;
     server.listen(PORT, () => console.log(`🌐 Painel rodando em: http://localhost:${PORT}`));

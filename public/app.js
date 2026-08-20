@@ -2932,6 +2932,20 @@ function renderDisparoNumerosLista() {
         return;
     }
     disparoNumerosLista.innerHTML = disparoNumerosCache.map(n => {
+        // Número da WhatsApp Business API não tem sessão de navegador — nada
+        // pra conectar/desconectar/parear/remover aqui, só reflete a config
+        // já salva na aba Configurações.
+        if (n.tipo === 'cloud_api') {
+            const online = n.status === 'connected';
+            return `
+                <div class="disparo-numero-row" data-id="${n.id}" style="display:flex;align-items:center;gap:.7rem;padding:.6rem;background:rgba(255,255,255,0.03);border-radius:8px;flex-wrap:wrap">
+                    <div style="flex:1;min-width:140px">
+                        <div style="font-size:.88rem;color:var(--text-1);font-weight:500">🟢 ${n.nome}</div>
+                        <div style="font-size:.75rem;color:${online ? 'var(--green)' : 'var(--text-3)'}">● ${online ? `Online${n.numeroConectado ? ` (${n.numeroConectado})` : ''}` : 'Não configurado — veja em Configurações'}</div>
+                    </div>
+                </div>
+            `;
+        }
         const statusInfo = DISPARO_NUMERO_STATUS_LABEL[n.status] || DISPARO_NUMERO_STATUS_LABEL.dormant;
         const podeConectar = n.status === 'dormant' || n.status === 'disconnected';
         const mostrarQr = n.status === 'qr' && n.qrDataUrl;
