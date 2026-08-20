@@ -1637,7 +1637,7 @@ app.delete('/api/respostas/:id', async (req, res) => {
 // qualquer um com a URL do painel conseguiria ler a chave da OpenAI/Groq
 // em texto puro. Quem realmente precisa da chave (tela Inteligência
 // Artificial, pra mostrar/editar o que já está salvo) usa /api/ia/config.
-const CONFIG_CHAVES_SENSIVEIS = ['openai_api_key', 'groq_api_key', 'instagram_page_access_token', 'instagram_app_secret', 'instagram_verify_token', 'whatsapp_cloud_access_token', 'whatsapp_cloud_app_secret', 'whatsapp_cloud_verify_token', 'gympulse_webhook_key'];
+const CONFIG_CHAVES_SENSIVEIS = ['openai_api_key', 'groq_api_key', 'instagram_page_access_token', 'instagram_app_secret', 'instagram_verify_token', 'whatsapp_cloud_access_token', 'whatsapp_cloud_app_secret', 'whatsapp_cloud_verify_token', 'whatsapp_cloud_phone_number_id', 'whatsapp_cloud_waba_id', 'gympulse_webhook_key'];
 app.get('/api/configuracoes', async (req, res) => {
     const rows = await db.all('SELECT * FROM configuracoes');
     const config = {};
