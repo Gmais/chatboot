@@ -92,6 +92,7 @@ const OpenAI = require('openai');
 const moment = require('moment-timezone');
 const { buscarAlunoPorMatricula, buscarAlunoPorCodigo, obterParcelasEmAberto, criarCliente, matricularAluno, gerarLinkPagamentoPixSantander } = require('./pacto');
 const { enviarMensagemInstagram, obterNomeUsuarioInstagram, verificarAssinaturaWebhook } = require('./instagram');
+const { enviarMensagemWhatsappCloud } = require('./whatsappCloudApi');
 const { buscarAgendaDoDia } = require('./agenda');
 
 // Atualização do WhatsApp Web (jul/2026) renomeou o getter interno do id
@@ -655,6 +656,14 @@ async function initDB() {
             processado_em DATETIME DEFAULT CURRENT_TIMESTAMP
         )`);
     } catch (e) { console.error('Erro ao criar tabela de dedup do Instagram:', e.message); }
+    // Mesmo motivo/padrão acima, só que pro webhook do WhatsApp Business Cloud
+    // API — a Meta reenvia o mesmo evento (wamid) se a resposta demorar/falhar.
+    try {
+        await db.exec(`CREATE TABLE IF NOT EXISTS whatsapp_cloud_mensagens_processadas (
+            wamid TEXT PRIMARY KEY,
+            processado_em DATETIME DEFAULT CURRENT_TIMESTAMP
+        )`);
+    } catch (e) { console.error('Erro ao criar tabela de dedup do WhatsApp Business API:', e.message); }
 
     // Semeia as programações automáticas que antes eram horários fixos no
     // código (Situação Financeira às 06:05, dias úteis) — agora editável em
@@ -1367,6 +1376,142 @@ async function processarMensagemInstagram(evento) {
 }
 
 // =====================================
+// INTEGRAÇÃO COM WHATSAPP BUSINESS CLOUD API (API oficial da Meta)
+// =====================================
+// Mesmo padrão do Instagram acima: credenciais em `configuracoes` (tela de
+// Configurações), webhook com handshake GET + eventos POST assinados. Canal
+// próprio ('whatsapp_cloud'), sem depender de whatsapp-web.js/QR Code — por
+// isso não tem risco de banimento por automação, ao custo de só aceitar
+// texto livre dentro da janela de 24h desde a última mensagem do cliente
+// (fora disso, só mensagem de template aprovado — não suportado nessa 1ª
+// versão, mesma limitação que o Instagram já tem hoje).
+async function obterConfigWhatsappCloud() {
+    const rows = await db.all("SELECT chave, valor FROM configuracoes WHERE chave LIKE 'whatsapp_cloud_%'");
+    const config = {};
+    rows.forEach(r => config[r.chave] = r.valor);
+    return {
+        accessToken: config.whatsapp_cloud_access_token || null,
+        phoneNumberId: config.whatsapp_cloud_phone_number_id || null,
+        wabaId: config.whatsapp_cloud_waba_id || null,
+        appSecret: config.whatsapp_cloud_app_secret || null,
+        verifyToken: config.whatsapp_cloud_verify_token || null,
+    };
+}
+
+// Handshake de verificação do webhook — mesmo mecanismo GET que todo
+// produto da Meta usa (Instagram, WhatsApp, Messenger).
+app.get('/webhook/whatsapp-cloud', async (req, res) => {
+    try {
+        const { verifyToken } = await obterConfigWhatsappCloud();
+        const modo = req.query['hub.mode'];
+        const tokenRecebido = req.query['hub.verify_token'];
+        if (modo === 'subscribe' && verifyToken && tokenRecebido === verifyToken) {
+            console.log('✅ Webhook do WhatsApp Business API verificado pela Meta.');
+            return res.status(200).send(req.query['hub.challenge']);
+        }
+        res.sendStatus(403);
+    } catch (e) {
+        console.error('Erro na verificação do webhook do WhatsApp Business API:', e.message);
+        res.sendStatus(500);
+    }
+});
+
+// Evento de verdade (nova mensagem etc). `express.raw` só nessa rota — mesmo
+// motivo do webhook do Instagram: a assinatura precisa do corpo CRU.
+app.post('/webhook/whatsapp-cloud', express.raw({ type: 'application/json' }), async (req, res) => {
+    // Responde 200 JÁ — a Meta reenvia agressivamente se demorar ou não
+    // receber 200 (mesmo padrão já usado no webhook do Instagram).
+    res.sendStatus(200);
+    try {
+        const { appSecret } = await obterConfigWhatsappCloud();
+        const assinatura = req.headers['x-hub-signature-256'];
+        if (!verificarAssinaturaWebhook(req.body, assinatura, appSecret)) {
+            console.error('⚠️ Webhook do WhatsApp Business API: assinatura inválida — evento ignorado.');
+            return;
+        }
+        const payload = JSON.parse(req.body.toString('utf8'));
+        await processarWebhookWhatsappCloud(payload);
+    } catch (e) {
+        console.error('Erro ao processar webhook do WhatsApp Business API:', e.message);
+    }
+});
+
+// Formato do payload é DIFERENTE do Instagram/Messenger: mensagens vêm em
+// entry[].changes[].value.messages[], não em entry[].messaging[]. O mesmo
+// "value" também pode trazer statuses[] (confirmação de entrega/leitura das
+// mensagens que A GENTE mandou) em vez de messages[] — ignorado aqui, não é
+// mensagem recebida de verdade.
+async function processarWebhookWhatsappCloud(payload) {
+    if (payload?.object !== 'whatsapp_business_account') return;
+    for (const entry of payload.entry || []) {
+        for (const change of entry.changes || []) {
+            const valor = change.value;
+            for (const mensagem of valor?.messages || []) {
+                try {
+                    await processarMensagemWhatsappCloud(mensagem, valor);
+                } catch (e) {
+                    console.error('Erro ao processar mensagem do WhatsApp Business API:', e.message);
+                }
+            }
+        }
+    }
+}
+
+// Mesmo fluxo do processarMensagemInstagram (registerLead → salvarNaConversa
+// → conversas_humano → modo humano/robô, entrega via enviarRespostaCanal).
+// Diferença: o nome do contato já vem no próprio payload do webhook
+// (value.contacts[].profile.name) — não precisa de uma chamada extra à API
+// como obterNomeUsuarioInstagram faz pro Instagram.
+async function processarMensagemWhatsappCloud(mensagem, valor) {
+    const numLimpo = mensagem.from; // já vem em E.164 sem "+", ex: "5542999998888"
+    const wamid = mensagem.id;
+    if (!numLimpo || !wamid) return;
+
+    const jaProcessado = await db.get('SELECT 1 FROM whatsapp_cloud_mensagens_processadas WHERE wamid = ?', wamid);
+    if (jaProcessado) return; // reentrega do mesmo evento — Meta não garante entrega única
+    await db.run('INSERT OR IGNORE INTO whatsapp_cloud_mensagens_processadas (wamid) VALUES (?)', wamid);
+
+    // Só texto nessa 1ª versão — mesma limitação que o Instagram já tem hoje.
+    if (mensagem.type !== 'text') {
+        console.log(`ℹ️ WhatsApp Business API: mensagem tipo "${mensagem.type}" de ${numLimpo} — só texto é suportado nessa 1ª versão, ignorada.`);
+        return;
+    }
+    const texto = mensagem.text?.body;
+    if (!texto) return;
+
+    const nomeContato = valor?.contacts?.[0]?.profile?.name || numLimpo;
+    const textoNormalizado = texto.trim().toLowerCase();
+
+    registerLead(numLimpo, 'whatsapp_cloud').catch(e => console.error('Erro ao registrar lead do WhatsApp Business API:', e.message));
+    await salvarNaConversa(numLimpo, nomeContato, 'in', texto, 'text', null, false, null, 'whatsapp_cloud');
+    io.emit('message_in', { from: numLimpo, nome: nomeContato, text: texto, ts: Date.now() });
+
+    const assumidaPorHumano = await db.get('SELECT 1 FROM conversas_humano WHERE telefone = ?', numLimpo);
+    if (assumidaPorHumano) return;
+
+    // Shim: ver comentário equivalente em processarMensagemInstagram — só
+    // msg.body é lido por processarComoRobo/agendarFallbackHumano.
+    const msgShim = { body: texto };
+
+    const { modo, mensagemHumano, timezone } = await obterModoAtual();
+    if (modo === 'humano') {
+        const hoje = moment.tz(timezone || 'America/Sao_Paulo').format('YYYY-MM-DD');
+        if (mensagemHumano && ultimaMsgModoHumano.get(numLimpo) !== hoje) {
+            const mensagemHumanoFinal = await substituirPlaceholdersPessoais(mensagemHumano, numLimpo);
+            const sentHumano = await enviarRespostaCanal('whatsapp_cloud', msgShim, numLimpo, mensagemHumanoFinal);
+            if (sentHumano) {
+                ultimaMsgModoHumano.set(numLimpo, hoje);
+                await registrarMensagemEnviada(numLimpo, mensagemHumanoFinal, nomeContato, null, false, 'text', null, 'whatsapp_cloud');
+            }
+        }
+        await agendarFallbackHumano(msgShim, numLimpo, textoNormalizado, numLimpo, nomeContato, 'whatsapp_cloud');
+        return;
+    }
+
+    await processarComoRobo(msgShim, numLimpo, textoNormalizado, numLimpo, nomeContato, 'whatsapp_cloud');
+}
+
+// =====================================
 // OVERRIDE MANUAL — BOTÃO "ATIVAR ROBÔ"
 // =====================================
 // Permite à recepcionista assumir manualmente por um tempo (ex: foi ao banheiro,
@@ -1492,7 +1637,7 @@ app.delete('/api/respostas/:id', async (req, res) => {
 // qualquer um com a URL do painel conseguiria ler a chave da OpenAI/Groq
 // em texto puro. Quem realmente precisa da chave (tela Inteligência
 // Artificial, pra mostrar/editar o que já está salvo) usa /api/ia/config.
-const CONFIG_CHAVES_SENSIVEIS = ['openai_api_key', 'groq_api_key', 'instagram_page_access_token', 'instagram_app_secret', 'instagram_verify_token', 'gympulse_webhook_key'];
+const CONFIG_CHAVES_SENSIVEIS = ['openai_api_key', 'groq_api_key', 'instagram_page_access_token', 'instagram_app_secret', 'instagram_verify_token', 'whatsapp_cloud_access_token', 'whatsapp_cloud_app_secret', 'whatsapp_cloud_verify_token', 'gympulse_webhook_key'];
 app.get('/api/configuracoes', async (req, res) => {
     const rows = await db.all('SELECT * FROM configuracoes');
     const config = {};
@@ -1538,6 +1683,32 @@ app.put('/api/instagram/config', async (req, res) => {
     if (page_access_token !== undefined) await db.run('INSERT OR REPLACE INTO configuracoes (chave, valor) VALUES (?, ?)', ['instagram_page_access_token', page_access_token]);
     if (app_secret !== undefined) await db.run('INSERT OR REPLACE INTO configuracoes (chave, valor) VALUES (?, ?)', ['instagram_app_secret', app_secret]);
     if (verify_token !== undefined) await db.run('INSERT OR REPLACE INTO configuracoes (chave, valor) VALUES (?, ?)', ['instagram_verify_token', verify_token]);
+    res.json({ success: true });
+});
+
+// Config do WhatsApp Business Cloud API (token/ids/secret em texto puro) —
+// mesma separação de /api/instagram/config: a rota genérica /api/configuracoes
+// nunca devolve essas chaves.
+app.get('/api/whatsapp-cloud/config', async (req, res) => {
+    const rows = await db.all("SELECT chave, valor FROM configuracoes WHERE chave LIKE 'whatsapp_cloud_%'");
+    const config = {};
+    rows.forEach(r => config[r.chave] = r.valor);
+    res.json({
+        access_token: config.whatsapp_cloud_access_token || '',
+        phone_number_id: config.whatsapp_cloud_phone_number_id || '',
+        waba_id: config.whatsapp_cloud_waba_id || '',
+        app_secret: config.whatsapp_cloud_app_secret || '',
+        verify_token: config.whatsapp_cloud_verify_token || '',
+    });
+});
+
+app.put('/api/whatsapp-cloud/config', async (req, res) => {
+    const { access_token, phone_number_id, waba_id, app_secret, verify_token } = req.body;
+    if (access_token !== undefined) await db.run('INSERT OR REPLACE INTO configuracoes (chave, valor) VALUES (?, ?)', ['whatsapp_cloud_access_token', access_token]);
+    if (phone_number_id !== undefined) await db.run('INSERT OR REPLACE INTO configuracoes (chave, valor) VALUES (?, ?)', ['whatsapp_cloud_phone_number_id', phone_number_id]);
+    if (waba_id !== undefined) await db.run('INSERT OR REPLACE INTO configuracoes (chave, valor) VALUES (?, ?)', ['whatsapp_cloud_waba_id', waba_id]);
+    if (app_secret !== undefined) await db.run('INSERT OR REPLACE INTO configuracoes (chave, valor) VALUES (?, ?)', ['whatsapp_cloud_app_secret', app_secret]);
+    if (verify_token !== undefined) await db.run('INSERT OR REPLACE INTO configuracoes (chave, valor) VALUES (?, ?)', ['whatsapp_cloud_verify_token', verify_token]);
     res.json({ success: true });
 });
 
@@ -3458,7 +3629,7 @@ async function dispararMensagensDaAutomacao(automacaoId) {
                     // default de quem já existia antes dessa coluna existir).
                     const leadRow = await db.get('SELECT canal FROM leads WHERE telefone = ?', numLimpo);
                     const canalContato = leadRow?.canal || 'whatsapp';
-                    const chatId = canalContato === 'instagram' ? null : await resolverChatId(client, numLimpo);
+                    const chatId = (canalContato === 'instagram' || canalContato === 'whatsapp_cloud') ? null : await resolverChatId(client, numLimpo);
                     const nome = await resolverNomeContato(numLimpo);
                     const primeiroNome = (nome && nome !== numLimpo) ? nome.split(' ')[0] : '';
                     const nomeCompleto = (nome && nome !== numLimpo) ? nome : '';
@@ -3507,17 +3678,23 @@ async function dispararMensagensDaAutomacao(automacaoId) {
                         .replace(/\{dia\}/gi, diaStr).replace(/\[dia\]/gi, diaStr);
 
                     let sucesso = false;
-                    if (canalContato === 'instagram') {
-                        // Mídia ainda não é suportada pro Instagram nessa 1ª versão
-                        // (ver plano) — pula a mídia, manda só o texto se tiver.
-                        // Falha aqui (ex: fora da janela de 24h da Meta) sobe pro
-                        // catch de fora igual qualquer outro erro de envio.
+                    if (canalContato === 'instagram' || canalContato === 'whatsapp_cloud') {
+                        // Mídia ainda não é suportada pro Instagram/WhatsApp Business API
+                        // nessa 1ª versão (ver plano) — pula a mídia, manda só o texto
+                        // se tiver. Falha aqui (ex: fora da janela de 24h da Meta) sobe
+                        // pro catch de fora igual qualquer outro erro de envio.
                         if (msg.media_path && !texto) {
-                            console.log(`ℹ️ Automação #${automacaoId}: mensagem só tem mídia (sem texto) e mídia ainda não é suportada pro Instagram — nada enviado pra ${numLimpo}.`);
+                            console.log(`ℹ️ Automação #${automacaoId}: mensagem só tem mídia (sem texto) e mídia ainda não é suportada pro ${canalContato === 'instagram' ? 'Instagram' : 'WhatsApp Business API'} — nada enviado pra ${numLimpo}.`);
                         } else if (texto) {
-                            const { pageAccessToken } = await obterConfigInstagram();
-                            const resultado = await enviarMensagemInstagram(numLimpo, texto, pageAccessToken);
-                            await registrarMensagemEnviada(numLimpo, texto, nome, resultado?.message_id || null, false, 'text', null, 'instagram');
+                            if (canalContato === 'instagram') {
+                                const { pageAccessToken } = await obterConfigInstagram();
+                                const resultado = await enviarMensagemInstagram(numLimpo, texto, pageAccessToken);
+                                await registrarMensagemEnviada(numLimpo, texto, nome, resultado?.message_id || null, false, 'text', null, 'instagram');
+                            } else {
+                                const configWhatsappCloud = await obterConfigWhatsappCloud();
+                                const resultado = await enviarMensagemWhatsappCloud(numLimpo, texto, configWhatsappCloud);
+                                await registrarMensagemEnviada(numLimpo, texto, nome, resultado?.messages?.[0]?.id || null, false, 'text', null, 'whatsapp_cloud');
+                            }
                             sucesso = true;
                         }
                     } else if (msg.media_path) {
@@ -4532,12 +4709,38 @@ app.post('/api/conversas/:telefone/enviar', async (req, res) => {
     const telefone = normalizarTelefoneBR(req.params.telefone);
     const { texto } = req.body;
     if (!texto || !texto.trim()) return res.status(400).json({ error: 'Texto obrigatório.' });
-    if (!isConnected) return res.status(400).json({ error: 'WhatsApp não está conectado.' });
     try {
         // Mesma substituição de {nome}/{nome_completo}/{matricula}/{saudacao}
         // que já existe pra Regras/Automação — sem isso, digitar {nome} na
         // caixa de texto manual manda a chave crua pro cliente em vez do nome dele.
         const textoFinal = await substituirPlaceholdersPessoais(texto.trim(), telefone);
+        const nome = await resolverNomeContato(telefone);
+
+        // Canal do contato decide COMO entregar — mesma fonte usada no despacho
+        // automático (enviarRespostaCanal/automação). Sem essa checagem, uma
+        // resposta manual pra contato do Instagram/WhatsApp Business API tentava
+        // sair pelo whatsapp-web.js de qualquer jeito (bug pré-existente: o
+        // Instagram nunca teve esse branch aqui, então resposta manual pra lead
+        // de Instagram já vinha quebrada).
+        const leadRow = await db.get('SELECT canal FROM leads WHERE telefone = ?', telefone);
+        const canalContato = leadRow?.canal || 'whatsapp';
+
+        if (canalContato === 'instagram' || canalContato === 'whatsapp_cloud') {
+            let resultado, msgId;
+            if (canalContato === 'instagram') {
+                const { pageAccessToken } = await obterConfigInstagram();
+                resultado = await enviarMensagemInstagram(telefone, textoFinal, pageAccessToken);
+                msgId = resultado?.message_id || null;
+            } else {
+                const configWhatsappCloud = await obterConfigWhatsappCloud();
+                resultado = await enviarMensagemWhatsappCloud(telefone, textoFinal, configWhatsappCloud);
+                msgId = resultado?.messages?.[0]?.id || null;
+            }
+            await registrarMensagemEnviada(telefone, textoFinal, nome, msgId, true, 'text', null, canalContato);
+            return res.json({ success: true });
+        }
+
+        if (!isConnected) return res.status(400).json({ error: 'WhatsApp não está conectado.' });
         const chatId = telefone.includes('@') ? telefone : await resolverChatId(client, telefone);
         // waitUntilMsgSent:true — sem isso o sendMessage() resolve assim que o
         // WhatsApp Web adiciona a mensagem LOCALMENTE ao chat (eco otimista da
@@ -4549,8 +4752,7 @@ app.post('/api/conversas/:telefone/enviar', async (req, res) => {
         // Marca ANTES de tentar — ver explicação completa no webhook do Gympulse (marcarMensagemComoDoSistema).
         marcarMensagemComoDoSistema(null, telefone, textoFinal);
         const sentMsg = await sendMessageComRetryLid(client, chatId, textoFinal, { waitUntilMsgSent: true });
-        const nome = await resolverNomeContato(telefone);
-        await registrarMensagemEnviada(telefone, textoFinal, nome, idSerializado(sentMsg), true);
+        await registrarMensagemEnviada(telefone, textoFinal, nome, idSerializado(sentMsg), true, 'text', null, canalContato);
         res.json({ success: true });
     } catch (err) {
         console.error('Erro envio manual:', err.message, '| stack:', err.stack);
@@ -7909,6 +8111,23 @@ async function enviarRespostaPeloClientePrincipal(telefoneReal, conteudo, opcoes
 // mensagem que chegou por um número de disparo — responde pelo principal.
 async function enviarRespostaCanal(canal, msg, telefoneReal, conteudo, opcoes = {}) {
     if (canal === 'whatsapp_pool') return enviarRespostaPeloClientePrincipal(telefoneReal, conteudo, opcoes);
+
+    if (canal === 'whatsapp_cloud') {
+        if (typeof conteudo !== 'string') {
+            console.log(`ℹ️ WhatsApp Business API (${telefoneReal}): mídia em resposta automática ainda não é suportada nesse canal — envio pulado.`);
+            return null;
+        }
+        try {
+            const configWhatsappCloud = await obterConfigWhatsappCloud();
+            const resultado = await enviarMensagemWhatsappCloud(telefoneReal, conteudo, configWhatsappCloud);
+            console.log('✅ Resposta entregue via WhatsApp Business API.');
+            return { id: { _serialized: resultado?.messages?.[0]?.id || null } };
+        } catch (e) {
+            console.error(`❌ Erro ao enviar pelo WhatsApp Business API (${telefoneReal}):`, e.message);
+            return null;
+        }
+    }
+
     if (canal !== 'instagram') return enviarResposta(msg, conteudo, opcoes);
 
     if (typeof conteudo !== 'string') {

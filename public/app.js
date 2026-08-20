@@ -740,7 +740,7 @@ navBtns.forEach(btn => {
         }
         if (targetId === 'mensagens-section') loadRegras();
         if (targetId === 'ia-section') { loadIaConfig(); loadIaExemplosContagem(); }
-        if (targetId === 'configuracoes-section') { loadHorarioConfig(); loadDelayResposta(); loadProgramacoes(); loadInstagramConfig(); }
+        if (targetId === 'configuracoes-section') { loadHorarioConfig(); loadDelayResposta(); loadProgramacoes(); loadInstagramConfig(); loadWhatsappCloudConfig(); }
         if (targetId === 'conversas-section') CM.onEnterSection();
         if (targetId === 'contatos-section' || targetId === 'disparos-section') loadContatos();
         if (targetId === 'integracoes-section') { loadPactoInadimplentes(); loadPactoVencemHoje(); loadAgendaAvaliacao(); loadGympulseConfig(); }
@@ -1116,6 +1116,52 @@ btnInstagramConfigSalvar?.addEventListener('click', async () => {
         showToast('Instagram salvo!', 'Configuração atualizada.', 'success', 3000);
     } catch (e) {
         showToast('Erro', 'Não foi possível salvar a configuração do Instagram.', 'error');
+    }
+});
+
+// =====================================
+// WHATSAPP BUSINESS CLOUD API (API oficial da Meta)
+// =====================================
+const whatsappCloudWebhookUrlInput = document.getElementById('whatsapp-cloud-webhook-url');
+const whatsappCloudVerifyTokenInput = document.getElementById('whatsapp-cloud-verify-token');
+const whatsappCloudAccessTokenInput = document.getElementById('whatsapp-cloud-access-token');
+const whatsappCloudPhoneNumberIdInput = document.getElementById('whatsapp-cloud-phone-number-id');
+const whatsappCloudWabaIdInput = document.getElementById('whatsapp-cloud-waba-id');
+const whatsappCloudAppSecretInput = document.getElementById('whatsapp-cloud-app-secret');
+const btnWhatsappCloudConfigSalvar = document.getElementById('btn-whatsapp-cloud-config-salvar');
+
+async function loadWhatsappCloudConfig() {
+    if (!whatsappCloudWebhookUrlInput) return;
+    whatsappCloudWebhookUrlInput.value = `${window.location.origin}/webhook/whatsapp-cloud`;
+    try {
+        const res = await fetch('/api/whatsapp-cloud/config');
+        const config = await res.json();
+        if (whatsappCloudVerifyTokenInput) whatsappCloudVerifyTokenInput.value = config.verify_token || '';
+        if (whatsappCloudAccessTokenInput) whatsappCloudAccessTokenInput.value = config.access_token || '';
+        if (whatsappCloudPhoneNumberIdInput) whatsappCloudPhoneNumberIdInput.value = config.phone_number_id || '';
+        if (whatsappCloudWabaIdInput) whatsappCloudWabaIdInput.value = config.waba_id || '';
+        if (whatsappCloudAppSecretInput) whatsappCloudAppSecretInput.value = config.app_secret || '';
+    } catch (e) {
+        console.error('Erro ao carregar configuração do WhatsApp Business API', e);
+    }
+}
+
+btnWhatsappCloudConfigSalvar?.addEventListener('click', async () => {
+    try {
+        await fetch('/api/whatsapp-cloud/config', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                verify_token: whatsappCloudVerifyTokenInput?.value || '',
+                access_token: whatsappCloudAccessTokenInput?.value || '',
+                phone_number_id: whatsappCloudPhoneNumberIdInput?.value || '',
+                waba_id: whatsappCloudWabaIdInput?.value || '',
+                app_secret: whatsappCloudAppSecretInput?.value || '',
+            }),
+        });
+        showToast('WhatsApp Business salvo!', 'Configuração atualizada.', 'success', 3000);
+    } catch (e) {
+        showToast('Erro', 'Não foi possível salvar a configuração do WhatsApp Business.', 'error');
     }
 });
 

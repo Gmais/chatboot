@@ -1269,6 +1269,36 @@ Sempre tente agendar uma aula experimental."></textarea>
                 </div>
 
                 <div class="card glass">
+                    <h3 style="margin-bottom:.3rem">🟢 WhatsApp Business (API oficial)</h3>
+                    <p style="color:var(--text-3);font-size:.8rem;margin-bottom:1rem">Conecta o robô à API oficial do WhatsApp Business da Meta — sem QR Code e sem risco de banimento por automação, mas precisa de um número dedicado (não pode estar logado no app comum do WhatsApp) e de um App da Meta com um número do WhatsApp vinculado (configurado por fora, no painel de desenvolvedor). Cole a URL do webhook abaixo lá na Meta, escolha um Verify Token (texto seu) e cole também o Token de Acesso, o Phone Number ID e o App Secret gerados por lá. Use o Token de Acesso <strong>permanente</strong> (gerado via System User em Configurações do Negócio) — o token rápido da tela de teste expira em 24h. Suporta só texto nessa 1ª versão, e só dentro da janela de 24h desde a última mensagem do cliente (regra da própria Meta).</p>
+                    <div class="form-group">
+                        <label>URL do Webhook <span style="color:var(--text-3);font-size:.75rem">(cole exatamente essa na Meta)</span></label>
+                        <input type="text" id="whatsapp-cloud-webhook-url" readonly style="width:100%;background:var(--input-bg);border:1px solid rgba(255,255,255,0.1);border-radius:var(--radius-sm);padding:.6rem .8rem;color:var(--text-2);font-family:monospace;font-size:.82rem">
+                    </div>
+                    <div class="form-group">
+                        <label>Verify Token <span style="color:var(--text-3);font-size:.75rem">(escolha um texto qualquer e cole o mesmo na Meta)</span></label>
+                        <input type="text" id="whatsapp-cloud-verify-token" placeholder="Ex: minha-chave-secreta-123" style="width:100%;background:var(--input-bg);border:1px solid rgba(255,255,255,0.1);border-radius:var(--radius-sm);padding:.6rem .8rem;color:var(--text-1);font-family:'Inter',sans-serif">
+                    </div>
+                    <div class="form-group">
+                        <label>Token de Acesso</label>
+                        <input type="password" id="whatsapp-cloud-access-token" placeholder="Gerado no App da Meta (use o permanente, via System User)" style="width:100%;background:var(--input-bg);border:1px solid rgba(255,255,255,0.1);border-radius:var(--radius-sm);padding:.6rem .8rem;color:var(--text-1);font-family:'Inter',sans-serif">
+                    </div>
+                    <div class="form-group">
+                        <label>Phone Number ID</label>
+                        <input type="text" id="whatsapp-cloud-phone-number-id" placeholder="Ex: 109876543212345" style="width:100%;background:var(--input-bg);border:1px solid rgba(255,255,255,0.1);border-radius:var(--radius-sm);padding:.6rem .8rem;color:var(--text-1);font-family:'Inter',sans-serif">
+                    </div>
+                    <div class="form-group">
+                        <label>WhatsApp Business Account ID (WABA ID) <span style="color:var(--text-3);font-size:.75rem">(opcional por enquanto)</span></label>
+                        <input type="text" id="whatsapp-cloud-waba-id" placeholder="Ex: 123456789012345" style="width:100%;background:var(--input-bg);border:1px solid rgba(255,255,255,0.1);border-radius:var(--radius-sm);padding:.6rem .8rem;color:var(--text-1);font-family:'Inter',sans-serif">
+                    </div>
+                    <div class="form-group">
+                        <label>App Secret</label>
+                        <input type="password" id="whatsapp-cloud-app-secret" placeholder="Configurações Básicas do App na Meta" style="width:100%;background:var(--input-bg);border:1px solid rgba(255,255,255,0.1);border-radius:var(--radius-sm);padding:.6rem .8rem;color:var(--text-1);font-family:'Inter',sans-serif">
+                    </div>
+                    <button class="btn-primary" id="btn-whatsapp-cloud-config-salvar" style="padding:.6rem 1.1rem;font-size:.85rem">💾 Salvar</button>
+                </div>
+
+                <div class="card glass">
                     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem">
                         <h3>🗓️ Programação</h3>
                         <button type="button" class="btn-primary" id="btn-nova-programacao" style="padding:.5rem 1rem;font-size:.85rem">➕ Adicionar Ação</button>
