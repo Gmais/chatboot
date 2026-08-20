@@ -665,28 +665,6 @@
                 </div>
             </div>
 
-            <!-- MODAL: QR / PAIRING CODE DE UM NÚMERO DE ENVIO -->
-            <div class="modal-overlay" id="modal-disparo-numero-qr-overlay">
-                <div class="modal">
-                    <h3 id="modal-disparo-numero-qr-titulo">📲 Conectar Número</h3>
-                    <input type="hidden" id="disparo-numero-qr-id">
-                    <div id="disparo-numero-qr-imagem" style="text-align:center;padding:1rem;min-height:200px;display:flex;align-items:center;justify-content:center">
-                        <span style="color:var(--text-3);font-size:.85rem">⏳ Gerando QR Code...</span>
-                    </div>
-                    <div style="margin-top:1rem">
-                        <label style="display:block;font-size:.78rem;color:var(--text-3);margin-bottom:.4rem">Ou parear por código — informe o número com DDD</label>
-                        <div style="display:flex;gap:.6rem">
-                            <input type="text" id="disparo-numero-pairing-telefone" placeholder="46999998888" style="flex:1;background:var(--input-bg);border:1px solid rgba(255,255,255,0.1);border-radius:var(--radius-sm);padding:.55rem .8rem;color:var(--text-1);font-size:.85rem">
-                            <button type="button" class="btn-secondary" id="btn-disparo-numero-pairing">Gerar Código</button>
-                        </div>
-                        <p id="disparo-numero-pairing-resultado" style="margin-top:.6rem;font-size:1.1rem;font-weight:700;color:var(--green);text-align:center"></p>
-                    </div>
-                    <div class="modal-footer">
-                        <button class="btn-cancel" id="modal-disparo-numero-qr-fechar">Fechar</button>
-                    </div>
-                </div>
-            </div>
-
             <div class="disparo-config-grid">
                 <div class="card glass">
                     <h3>Configurar Disparo</h3>
@@ -1349,6 +1327,35 @@ Sempre tente agendar uma aula experimental."></textarea>
             </div>
         </div>
     </main>
+
+    <!-- MODAL: QR / PAIRING CODE DE UM NÚMERO DE ENVIO -->
+    <!-- Precisa ficar FORA de <main>/page-section: o botão que abre esse
+         modal vive no Painel de Controle, mas o modal em si tinha ficado
+         dentro de #disparos-section (aba "Disparos"). Como .page-section.hidden
+         usa display:none!important, o modal nunca aparecia de verdade pra
+         quem clicava em "Conectar"/"Usar código (sem QR)" estando no Painel
+         de Controle — a classe "open" era aplicada certinho via JS, mas a
+         seção ancestral escondida bloqueava a renderização (0x0, invisível). -->
+    <div class="modal-overlay" id="modal-disparo-numero-qr-overlay">
+        <div class="modal">
+            <h3 id="modal-disparo-numero-qr-titulo">📲 Conectar Número</h3>
+            <input type="hidden" id="disparo-numero-qr-id">
+            <div id="disparo-numero-qr-imagem" style="text-align:center;padding:1rem;min-height:200px;display:flex;align-items:center;justify-content:center">
+                <span style="color:var(--text-3);font-size:.85rem">⏳ Gerando QR Code...</span>
+            </div>
+            <div style="margin-top:1rem">
+                <label style="display:block;font-size:.78rem;color:var(--text-3);margin-bottom:.4rem">Ou parear por código — informe o número com DDD</label>
+                <div style="display:flex;gap:.6rem">
+                    <input type="text" id="disparo-numero-pairing-telefone" placeholder="46999998888" style="flex:1;background:var(--input-bg);border:1px solid rgba(255,255,255,0.1);border-radius:var(--radius-sm);padding:.55rem .8rem;color:var(--text-1);font-size:.85rem">
+                    <button type="button" class="btn-secondary" id="btn-disparo-numero-pairing">Gerar Código</button>
+                </div>
+                <p id="disparo-numero-pairing-resultado" style="margin-top:.6rem;font-size:1.1rem;font-weight:700;color:var(--green);text-align:center"></p>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-cancel" id="modal-disparo-numero-qr-fechar">Fechar</button>
+            </div>
+        </div>
+    </div>
 
     <!-- MODAL: CRIAR / EDITAR REGRA -->
     <div class="modal-overlay" id="modal-overlay">
