@@ -737,6 +737,7 @@ navBtns.forEach(btn => {
             carregarEstatisticas();
             loadDisparoNumeros();
             loadDisparoRoteamento();
+            loadGympulseUsaWhatsappCloud();
         }
         if (targetId === 'mensagens-section') loadRegras();
         if (targetId === 'ia-section') { loadIaConfig(); loadIaExemplosContagem(); }
@@ -3032,6 +3033,42 @@ disparoRoteamentoLista?.addEventListener('change', async (e) => {
         });
     } catch (err) {
         showToast('Erro', 'Não foi possível salvar o roteamento.', 'error');
+    }
+});
+
+// =====================================
+// GYMPULSE — liga/desliga a tentativa pela WhatsApp Business API
+// =====================================
+const gympulseUsaWhatsappCloudCheckbox = document.getElementById('gympulse-usa-whatsapp-cloud');
+
+async function loadGympulseUsaWhatsappCloud() {
+    if (!gympulseUsaWhatsappCloudCheckbox) return;
+    try {
+        const res = await fetch('/api/configuracoes');
+        const config = await res.json();
+        // Ausente = liga por padrão (mesmo comportamento de sempre, sem regressão).
+        gympulseUsaWhatsappCloudCheckbox.checked = config.gympulse_usa_whatsapp_cloud !== 'false';
+    } catch (e) {
+        console.error('Erro ao carregar preferência do Gympulse', e);
+    }
+}
+
+gympulseUsaWhatsappCloudCheckbox?.addEventListener('change', async () => {
+    try {
+        await fetch('/api/configuracoes', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ gympulse_usa_whatsapp_cloud: gympulseUsaWhatsappCloudCheckbox.checked ? 'true' : 'false' }),
+        });
+        showToast(
+            gympulseUsaWhatsappCloudCheckbox.checked ? 'Ligado' : 'Desligado',
+            gympulseUsaWhatsappCloudCheckbox.checked
+                ? 'Gympulse volta a tentar a WhatsApp Business API primeiro.'
+                : 'Gympulse passa a mandar direto pelo número principal.',
+            'success', 3500
+        );
+    } catch (err) {
+        showToast('Erro', 'Não foi possível salvar essa preferência.', 'error');
     }
 });
 

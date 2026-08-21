@@ -1812,10 +1812,15 @@ app.post('/webhooks/gympulse-daily-report', async (req, res) => {
         // texto livre dentro dela, sem template aprovado, não suportado nessa
         // 1ª versão), cai pro número principal em vez de nunca entregar (pedido
         // do usuário: "todos os disparos vão pela API Oficial, mas se falhar
-        // vão pelo número principal").
+        // vão pelo número principal"). Checkbox em Painel de Controle (chave
+        // 'gympulse_usa_whatsapp_cloud') deixa desligar essa tentativa por
+        // completo enquanto o template não estiver aprovado na Meta — nesse
+        // caso já entra direto no número principal, sem tentar a Cloud API.
         let enviadoPelaCloudApi = false;
-        const configWhatsappCloud = await obterConfigWhatsappCloud();
-        if (configWhatsappCloud.accessToken && configWhatsappCloud.phoneNumberId) {
+        const gympulseUsaCloudApiRow = await db.get("SELECT valor FROM configuracoes WHERE chave = 'gympulse_usa_whatsapp_cloud'");
+        const gympulseUsaCloudApi = gympulseUsaCloudApiRow?.valor !== 'false';
+        const configWhatsappCloud = gympulseUsaCloudApi ? await obterConfigWhatsappCloud() : null;
+        if (configWhatsappCloud?.accessToken && configWhatsappCloud?.phoneNumberId) {
             try {
                 const resultado = await enviarMensagemWhatsappCloud(telefoneLimpo, mensagem, configWhatsappCloud);
                 await registrarMensagemEnviada(telefoneLimpo, mensagem, nomeExibir, resultado?.messages?.[0]?.id || null, false, 'text', null, 'whatsapp_cloud');
