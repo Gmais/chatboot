@@ -8206,38 +8206,31 @@ async function resolverChatId(clienteWpp, numeroLimpo) {
     return contato._serialized;
 }
 
-// Envia com uma tentativa de correção automática pro erro "Lid is missing in
-// chat table" — ele acontece quando resolverChatId/getNumberId já achou o
-// chat id certo, mas a tabela interna do WhatsApp Web (dentro da sessão do
-// Puppeteer) ainda não tem o mapeamento LID↔telefone daquele contato
-// carregado. client.getContactLidAndPhone() (já usado em resolveJid, só que
-// pra mensagem RECEBIDA) chama por baixo o mesmo enforceLidAndPnRetrieval que
-// o próprio WhatsApp Web usa pra preencher essa tabela — chamar antes de
-// reenviar geralmente resolve sem precisar reconectar a sessão inteira.
-// Não tenta pra qualquer erro: advSignedDeviceIdentity (sessão de
-// criptografia corrompida) é um problema diferente, esse retry não ajuda
-// nesse caso — só reconectando a sessão resolve.
-// Contato "frio" (nunca trocou mensagem com esse número) às vezes precisa de
-// mais de uma rodada pra a tabela terminar de carregar — 1 tentativa só
-// deixava passar disparo em massa pra quem nunca falou com o número (visto
-// em disparo real: 2 contatos falhando com esse erro mesmo após 1 retry).
-// Subido de 2 pra 3 tentativas depois de outro incidente real (11-12/08):
-// disparo logo após reconectar viu vários contatos ainda falhando após as 2
-// tentativas — a tabela de LID demora mais pra terminar de carregar bem no
-// início de uma sessão nova/recém-reconectada do que num contato isolado no
-// meio do dia. Backoff crescente em vez de martelar a mesma espera.
-const LID_RETRY_DELAYS_MS = [1500, 3000, 5000];
+// INCIDENTE (21/08): o retry por reenvio abaixo partia de uma suposição
+// errada — que "Lid is missing in chat table" acontece ANTES do envio de
+// verdade sair pela rede (só falha na resolução do LID, nada foi
+// transmitido, retry é seguro). Investigando um caso real (contato Ketlin,
+// campanha "Boas vindas 4"), confirmado o oposto: a mensagem estava sendo
+// ENTREGUE DE VERDADE em cada uma das tentativas (4 mensagens idênticas
+// reais, segundos entre uma e outra, cada uma com seu próprio msg_id de
+// verdade no histórico) — o erro "Lid is missing" aparentemente estoura
+// DEPOIS do envio, numa etapa interna de confirmação/atualização de cache do
+// próprio whatsapp-web.js, não antes. client.sendMessage() não é idempotente
+// — reenviar nunca é seguro aqui, é sempre um envio novo de verdade pro
+// contato. Por isso o retry foi removido: agora tenta só 1 vez, e se cair
+// nesse erro, só força a resolução do LID (pra ajudar uma tentativa FUTURA
+// e independente, ex: o operador reenviando manualmente) sem reenviar
+// automaticamente por dentro dessa função.
 async function sendMessageComRetryLid(clienteWpp, chatId, conteudo, opcoes) {
-    for (let tentativa = 0; ; tentativa++) {
-        try {
-            return await clienteWpp.sendMessage(chatId, conteudo, opcoes);
-        } catch (err) {
-            const ehErroLid = (err?.message || '').toLowerCase().includes('lid is missing');
-            if (!ehErroLid || tentativa >= LID_RETRY_DELAYS_MS.length) throw err;
-            console.warn(`⚠️ "Lid is missing" ao enviar pra ${chatId} (tentativa ${tentativa + 1}/${LID_RETRY_DELAYS_MS.length}) — forçando resolução do LID e tentando de novo.`);
+    try {
+        return await clienteWpp.sendMessage(chatId, conteudo, opcoes);
+    } catch (err) {
+        const ehErroLid = (err?.message || '').toLowerCase().includes('lid is missing');
+        if (ehErroLid) {
+            console.warn(`⚠️ "Lid is missing" ao enviar pra ${chatId} — forçando resolução do LID pra próxima tentativa (sem reenviar agora, pra não duplicar).`);
             try { await clienteWpp.getContactLidAndPhone([chatId]); } catch (_) { }
-            await delay(LID_RETRY_DELAYS_MS[tentativa]);
         }
+        throw err;
     }
 }
 
