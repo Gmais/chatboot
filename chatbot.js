@@ -2537,11 +2537,21 @@ app.get('/api/relatorio/erros-whatsapp', async (req, res) => {
             FROM disparo_envios_log WHERE sucesso = 0
         `);
 
+        // Esse relatório é "Erros de NÚMERO de WhatsApp" — só entra quem
+        // realmente tem um número sem WhatsApp (a única mensagem gerada assim
+        // no sistema inteiro é "O número X não tem WhatsApp.", de
+        // resolverChatId). Falha de conectividade ("Nenhum número de disparo
+        // conectado."), "Lid is missing" (sessão instável) e qualquer outro
+        // erro técnico/transitório NÃO são problema do número do contato —
+        // misturavam aqui e faziam aluno ativo com número certo parecer com
+        // cadastro quebrado só porque a sessão caiu bem na hora daquele envio.
+        const ehErroDeNumero = (erro) => /não tem whatsapp/i.test(erro || '');
+
         // Uma linha por telefone — fica só com a ocorrência mais recente entre
         // as duas fontes (comparação lexicográfica funciona porque as duas
         // colunas de origem são DATETIME no mesmo formato 'YYYY-MM-DD HH:MM:SS').
         const porTelefone = new Map();
-        [...errosAutomacao, ...errosDisparo].forEach(e => {
+        [...errosAutomacao, ...errosDisparo].filter(e => ehErroDeNumero(e.erro)).forEach(e => {
             if (!e.telefone) return;
             const telefoneLimpo = e.telefone.replace('@c.us', '').replace('@lid', '');
             const ocorridoEm = e.ocorrido_em || '';
