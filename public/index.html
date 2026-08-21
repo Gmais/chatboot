@@ -871,6 +871,16 @@
                     <h3>⚠️ Erros de Número de WhatsApp</h3>
                 </div>
                 <p style="color:var(--text-3);font-size:.8rem;margin:-.6rem 0 1rem">Contatos que tiveram falha no envio de mensagem (número inválido, sem WhatsApp, etc). Marque "Corrigido" depois de acertar o cadastro — se falhar de novo, volta a aparecer aqui.</p>
+                <div style="display:flex;gap:1.2rem;flex-wrap:wrap;margin:0 0 1rem">
+                    <label style="display:flex;align-items:center;gap:.4rem;font-size:.82rem;color:var(--text-2);cursor:pointer">
+                        <input type="checkbox" id="relatorio-erros-filtro-isadora" style="accent-color:var(--blue);width:16px;height:16px">
+                        Consultora Isadora <span id="relatorio-erros-count-isadora" style="color:var(--text-3)"></span>
+                    </label>
+                    <label style="display:flex;align-items:center;gap:.4rem;font-size:.82rem;color:var(--text-2);cursor:pointer">
+                        <input type="checkbox" id="relatorio-erros-filtro-juliana" style="accent-color:var(--blue);width:16px;height:16px">
+                        Consultora Juliana <span id="relatorio-erros-count-juliana" style="color:var(--text-3)"></span>
+                    </label>
+                </div>
                 <div id="relatorio-erros-lista">
                     <h4 style="font-size:.82rem;color:var(--amber);margin:0 0 .5rem;display:flex;align-items:center;gap:.4rem">🟠 Alunos Ativos <span id="relatorio-erros-ativos-count" style="color:var(--text-3);font-weight:400"></span></h4>
                     <div id="relatorio-erros-ativos-lista" style="display:flex;flex-direction:column;gap:.4rem">

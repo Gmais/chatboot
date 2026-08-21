@@ -2299,7 +2299,12 @@ const relatorioErrosAtivosLista = document.getElementById('relatorio-erros-ativo
 const relatorioErrosInativosLista = document.getElementById('relatorio-erros-inativos-lista');
 const relatorioErrosAtivosCount = document.getElementById('relatorio-erros-ativos-count');
 const relatorioErrosInativosCount = document.getElementById('relatorio-erros-inativos-count');
+const relatorioErrosFiltroIsadora = document.getElementById('relatorio-erros-filtro-isadora');
+const relatorioErrosFiltroJuliana = document.getElementById('relatorio-erros-filtro-juliana');
+const relatorioErrosCountIsadora = document.getElementById('relatorio-erros-count-isadora');
+const relatorioErrosCountJuliana = document.getElementById('relatorio-erros-count-juliana');
 const relatorioSemCadastroLista = document.getElementById('relatorio-sem-cadastro-lista');
+let relatorioErrosDadosCompletos = [];
 
 async function marcarRelatorioDispensa(tipo, telefone, motivo, checked) {
     try {
@@ -2337,6 +2342,45 @@ function relatorioErroLinhaHtml(c) {
     `;
 }
 
+// Checkboxes de "Consultora Isadora"/"Consultora Juliana" filtram a lista
+// pelo campo c.consultor (calculado no backend). Sem nenhum marcado mostra
+// as duas — marcar um ou os dois restringe. Os contadores ao lado do nome
+// da consultora são sempre a contagem total (independente do filtro
+// aplicado no momento), pra servir de referência de quantos alunos cada
+// consultora tem nessa lista de erros.
+function relatorioErrosFiltrar(lista) {
+    const isadora = relatorioErrosFiltroIsadora?.checked;
+    const juliana = relatorioErrosFiltroJuliana?.checked;
+    if (!isadora && !juliana) return lista;
+    return lista.filter(c => (isadora && c.consultor === 'Isadora') || (juliana && c.consultor !== 'Isadora'));
+}
+
+function renderRelatorioErrosWhatsapp() {
+    if (!relatorioErrosLista) return;
+    const totalIsadora = relatorioErrosDadosCompletos.filter(c => c.consultor === 'Isadora').length;
+    const totalJuliana = relatorioErrosDadosCompletos.filter(c => c.consultor && c.consultor !== 'Isadora').length;
+    if (relatorioErrosCountIsadora) relatorioErrosCountIsadora.textContent = `(${totalIsadora})`;
+    if (relatorioErrosCountJuliana) relatorioErrosCountJuliana.textContent = `(${totalJuliana})`;
+
+    const lista = relatorioErrosFiltrar(relatorioErrosDadosCompletos);
+    const ativos = lista.filter(c => c.ativo);
+    const inativos = lista.filter(c => !c.ativo);
+
+    if (relatorioErrosAtivosCount) relatorioErrosAtivosCount.textContent = ativos.length ? `(${ativos.length})` : '';
+    if (relatorioErrosInativosCount) relatorioErrosInativosCount.textContent = inativos.length ? `(${inativos.length})` : '';
+
+    if (relatorioErrosAtivosLista) {
+        relatorioErrosAtivosLista.innerHTML = ativos.length
+            ? ativos.map(relatorioErroLinhaHtml).join('')
+            : '<p style="color:var(--text-3);text-align:center;padding:1rem">Nenhum erro pendente entre os alunos ativos. 🎉</p>';
+    }
+    if (relatorioErrosInativosLista) {
+        relatorioErrosInativosLista.innerHTML = inativos.length
+            ? inativos.map(relatorioErroLinhaHtml).join('')
+            : '<p style="color:var(--text-3);text-align:center;padding:1rem">Nenhum erro pendente por aqui. 🎉</p>';
+    }
+}
+
 // Separado em duas listas (Ativos x Não Ativos/Sem Vínculo) — "ativo" vem do
 // /api/relatorio/erros-whatsapp cruzando com a última varredura de alunos
 // ativos do Pacto. Prioridade pros ativos: são aluno de verdade que o BotPro
@@ -2345,28 +2389,16 @@ async function loadRelatorioErrosWhatsapp() {
     if (!relatorioErrosLista) return;
     try {
         const res = await fetch('/api/relatorio/erros-whatsapp');
-        const lista = await res.json();
-        const ativos = lista.filter(c => c.ativo);
-        const inativos = lista.filter(c => !c.ativo);
-
-        if (relatorioErrosAtivosCount) relatorioErrosAtivosCount.textContent = ativos.length ? `(${ativos.length})` : '';
-        if (relatorioErrosInativosCount) relatorioErrosInativosCount.textContent = inativos.length ? `(${inativos.length})` : '';
-
-        if (relatorioErrosAtivosLista) {
-            relatorioErrosAtivosLista.innerHTML = ativos.length
-                ? ativos.map(relatorioErroLinhaHtml).join('')
-                : '<p style="color:var(--text-3);text-align:center;padding:1rem">Nenhum erro pendente entre os alunos ativos. 🎉</p>';
-        }
-        if (relatorioErrosInativosLista) {
-            relatorioErrosInativosLista.innerHTML = inativos.length
-                ? inativos.map(relatorioErroLinhaHtml).join('')
-                : '<p style="color:var(--text-3);text-align:center;padding:1rem">Nenhum erro pendente por aqui. 🎉</p>';
-        }
+        relatorioErrosDadosCompletos = await res.json();
+        renderRelatorioErrosWhatsapp();
     } catch (e) {
         if (relatorioErrosAtivosLista) relatorioErrosAtivosLista.innerHTML = '<p style="color:var(--text-3);text-align:center;padding:1rem">Erro ao carregar.</p>';
         if (relatorioErrosInativosLista) relatorioErrosInativosLista.innerHTML = '';
     }
 }
+
+relatorioErrosFiltroIsadora?.addEventListener('change', renderRelatorioErrosWhatsapp);
+relatorioErrosFiltroJuliana?.addEventListener('change', renderRelatorioErrosWhatsapp);
 
 relatorioErrosLista?.addEventListener('change', async (e) => {
     const chk = e.target.closest('.relatorio-erro-motivo');
