@@ -92,7 +92,7 @@ const OpenAI = require('openai');
 const moment = require('moment-timezone');
 const { buscarAlunoPorMatricula, buscarAlunoPorCodigo, obterParcelasEmAberto, criarCliente, matricularAluno, gerarLinkPagamentoPixSantander } = require('./pacto');
 const { enviarMensagemInstagram, obterNomeUsuarioInstagram, verificarAssinaturaWebhook } = require('./instagram');
-const { enviarMensagemWhatsappCloud } = require('./whatsappCloudApi');
+const { enviarMensagemWhatsappCloud, enviarTemplateWhatsappCloud } = require('./whatsappCloudApi');
 const { buscarAgendaDoDia } = require('./agenda');
 
 // Atualização do WhatsApp Web (jul/2026) renomeou o getter interno do id
@@ -269,6 +269,56 @@ async function mesclarLeadsDuplicados() {
         console.error('Erro ao mesclar leads duplicados:', e.message);
     }
     return relatorio;
+}
+
+// Liga cada Mensagem Personalizada das 9 campanhas ao template aprovado
+// correspondente na Meta (mesmo texto, variáveis {placeholder} viram {{n}}
+// posicionais). "variaveis" é a ORDEM exata usada na hora de criar o
+// template — dispararMensagensDaAutomacao/webhook do Gympulse usam essa
+// ordem pra montar os parâmetros do envio. Só marca quem AINDA não tem
+// template_whatsapp definido (idempotente — não sobrescreve se o usuário
+// desvincular um manualmente depois).
+async function seedTemplatesWhatsappCloud() {
+    if (!db) return;
+    const mapa = {
+        2: { nome: 'aniversario_1', variaveis: ['nome'] },
+        3: { nome: 'aniversario_2', variaveis: ['nome'] },
+        5: { nome: 'aniversario_3', variaveis: ['nome'] },
+        6: { nome: 'aniversario_4', variaveis: ['nome'] },
+        7: { nome: 'aniversario_5', variaveis: ['nome'] },
+        8: { nome: 'cobranca_1', variaveis: ['nome_completo', 'matricula', 'parcelas', 'valor', 'dias_atrasados'] },
+        9: { nome: 'cobranca_2', variaveis: ['nome_completo', 'matricula', 'valor', 'dias_atrasados'] },
+        10: { nome: 'cobranca_3', variaveis: ['nome_completo', 'matricula', 'valor', 'dias_atrasados'] },
+        11: { nome: 'cobranca_4', variaveis: ['nome_completo', 'matricula', 'valor', 'dias_atrasados'] },
+        12: { nome: 'cobranca_5', variaveis: ['nome_completo', 'matricula', 'valor', 'dias_atrasados'] },
+        13: { nome: 'ex_aluno_1', variaveis: ['nome'] },
+        19: { nome: 'confirmacao_agendamento_1', variaveis: ['nome', 'dia', 'horario', 'professor'] },
+        20: { nome: 'parcela_atrasada_1', variaveis: ['nome', 'dias_atrasados', 'valor'] },
+        21: { nome: 'parcela_atrasada_1', variaveis: ['nome', 'dias_atrasados', 'valor'] },
+        22: { nome: 'vence_hoje_1', variaveis: ['nome', 'valor'] },
+        23: { nome: 'pos_venda_1_1', variaveis: ['nome'] },
+        24: { nome: 'pos_venda_1_2', variaveis: ['nome'] },
+        25: { nome: 'pos_venda_1_3', variaveis: ['nome'] },
+        26: { nome: 'pos_venda_2_1', variaveis: ['nome'] },
+        27: { nome: 'pos_venda_2_2', variaveis: ['nome'] },
+        31: { nome: 'pos_venda_1_4', variaveis: ['nome'] },
+        32: { nome: 'pos_venda_2_3', variaveis: ['nome'] },
+        33: { nome: 'pos_venda_2_4', variaveis: ['nome'] },
+        // Boas Vindas (14-18, alunos-novos) ficam de fora de propósito: os
+        // templates delas têm cabeçalho de documento (PDF), que precisa do
+        // link da mídia reenviado a cada envio — não implementado ainda
+        // nessa 1ª versão. Continuam só com fallback texto → número principal.
+    };
+    try {
+        for (const [id, info] of Object.entries(mapa)) {
+            await db.run(
+                'UPDATE mensagens_personalizadas SET template_whatsapp = ? WHERE id = ? AND template_whatsapp IS NULL',
+                [JSON.stringify(info), Number(id)]
+            );
+        }
+    } catch (e) {
+        console.error('Erro ao vincular templates do WhatsApp Business API:', e.message);
+    }
 }
 
 async function initDB() {
@@ -773,6 +823,12 @@ async function initDB() {
     // sempre pronto assim que Token de Acesso + Phone Number ID estiverem
     // salvos em Configurações). Ver singleton logo abaixo de reidratarPoolNaInicializacao().
     try { await db.exec(`ALTER TABLE disparo_numeros ADD COLUMN tipo TEXT NOT NULL DEFAULT 'whatsapp_web'`); } catch (e) { }
+    // Nome do template aprovado na Meta pra essa mensagem + ordem das variáveis
+    // (JSON: { nome, variaveis: ['nome','matricula',...] }) — usado como 2ª
+    // tentativa via WhatsApp Business API quando o texto livre falha (contato
+    // fora da janela de 24h). NULL = mensagem sem template (cai direto pro
+    // número principal se o texto livre falhar). Ver seedTemplatesWhatsappCloud.
+    try { await db.exec(`ALTER TABLE mensagens_personalizadas ADD COLUMN template_whatsapp TEXT DEFAULT NULL`); } catch (e) { }
     try { await db.exec(`ALTER TABLE respostas ADD COLUMN media_path TEXT DEFAULT NULL`); } catch (e) { }
     try { await db.exec(`ALTER TABLE respostas ADD COLUMN media_tipo TEXT DEFAULT NULL`); } catch (e) { }
     try { await db.exec(`ALTER TABLE respostas ADD COLUMN etiqueta_id INTEGER DEFAULT NULL`); } catch (e) { }
@@ -836,6 +892,7 @@ async function initDB() {
         await db.run(`UPDATE mensagens_personalizadas SET categoria = 'inadimplentes' WHERE categoria IS NULL AND nome LIKE 'Cobrança%'`);
         await db.run(`UPDATE mensagens_personalizadas SET categoria = 'ex-alunos' WHERE categoria IS NULL AND (nome LIKE 'Ex Aluno%' OR nome LIKE 'Ex-Aluno%')`);
     } catch (e) { }
+    await seedTemplatesWhatsappCloud();
     // Agenda de Avaliação Física virou uma janela rolante de 24h (ver
     // processarAgendaAvaliacao) em vez de "hoje" fixo — precisa saber a DATA
     // de cada agendamento (não só o horário) pra combinar as duas e filtrar
@@ -1820,13 +1877,32 @@ app.post('/webhooks/gympulse-daily-report', async (req, res) => {
         const gympulseUsaCloudApiRow = await db.get("SELECT valor FROM configuracoes WHERE chave = 'gympulse_usa_whatsapp_cloud'");
         const gympulseUsaCloudApi = gympulseUsaCloudApiRow?.valor !== 'false';
         const configWhatsappCloud = gympulseUsaCloudApi ? await obterConfigWhatsappCloud() : null;
+        // Template "resumo_treino_diario" só cobre exatamente o formato da
+        // composição padrão acima (nome/kcal/pontos/min, sem a lista de zonas
+        // de frequência, que tem tamanho variável — template não suporta isso).
+        // Texto vindo pronto do GympulsePro ("message") ou com zonas não bate
+        // com o template aprovado, então não tenta — só cai pro número principal.
+        const podeTentarTemplate = !(typeof message === 'string' && message.trim().length > 0) && !(Array.isArray(zoneData) && zoneData.length > 0);
         if (configWhatsappCloud?.accessToken && configWhatsappCloud?.phoneNumberId) {
             try {
                 const resultado = await enviarMensagemWhatsappCloud(telefoneLimpo, mensagem, configWhatsappCloud);
                 await registrarMensagemEnviada(telefoneLimpo, mensagem, nomeExibir, resultado?.messages?.[0]?.id || null, false, 'text', null, 'whatsapp_cloud');
                 enviadoPelaCloudApi = true;
             } catch (e) {
-                console.log(`ℹ️ Gympulse: falha via WhatsApp Business API pra ${telefoneLimpo} (${e.message}) — tentando pelo número principal.`);
+                console.log(`ℹ️ Gympulse: falha via texto livre pra ${telefoneLimpo} (${e.message}).`);
+                if (podeTentarTemplate) {
+                    try {
+                        const parametros = [primeiroNome, String(totalCalories ?? '-'), String(totalPoints ?? '-'), String(totalDurationMin ?? '-')];
+                        const resultadoTemplate = await enviarTemplateWhatsappCloud(telefoneLimpo, 'resumo_treino_diario', parametros, configWhatsappCloud);
+                        await registrarMensagemEnviada(telefoneLimpo, mensagem, nomeExibir, resultadoTemplate?.messages?.[0]?.id || null, false, 'text', null, 'whatsapp_cloud');
+                        enviadoPelaCloudApi = true;
+                        console.log(`✅ Gympulse: entregue via template "resumo_treino_diario" pra ${telefoneLimpo}.`);
+                    } catch (e2) {
+                        console.log(`ℹ️ Gympulse: falha via template também pra ${telefoneLimpo} (${e2.message}) — tentando pelo número principal.`);
+                    }
+                } else {
+                    console.log(`ℹ️ Gympulse: mensagem não bate com o template aprovado (texto customizado ou com zonas) — tentando pelo número principal.`);
+                }
             }
         }
 
@@ -3725,9 +3801,32 @@ async function dispararMensagensDaAutomacao(automacaoId) {
                                     enviadoPelaCloudApi = true;
                                 } catch (e) {
                                     // Falha mais comum: contato fora da janela de 24h desde a
-                                    // última mensagem dele (sem template aprovado, regra da
-                                    // Meta) — cai pro número principal abaixo em vez de desistir.
-                                    console.log(`ℹ️ Automação #${automacaoId}: falha via WhatsApp Business API pra ${numLimpo} (${e.message}) — tentando pelo número principal.`);
+                                    // última mensagem dele — texto livre é rejeitado nesse caso,
+                                    // regra da própria Meta. 2ª tentativa: mesma mensagem como
+                                    // TEMPLATE aprovado, se essa Mensagem Personalizada tiver um
+                                    // vinculado (ver seedTemplatesWhatsappCloud/template_whatsapp).
+                                    // Só cai pro número principal se isso também falhar.
+                                    console.log(`ℹ️ Automação #${automacaoId}: falha via texto livre pra ${numLimpo} (${e.message}).`);
+                                    if (msg.template_whatsapp) {
+                                        try {
+                                            const template = JSON.parse(msg.template_whatsapp);
+                                            const valorPorPlaceholder = {
+                                                nome: primeiroNome, nome_completo: nomeCompleto, matricula,
+                                                parcelas: parcelasStr, valor: valorStr, dias_atrasados: diasAtrasadosStr,
+                                                horario: horarioStr, professor: professorStr, dia: diaStr,
+                                            };
+                                            const parametros = template.variaveis.map(v => valorPorPlaceholder[v] ?? '');
+                                            const resultadoTemplate = await enviarTemplateWhatsappCloud(numLimpo, template.nome, parametros, configWhatsappCloud);
+                                            await registrarMensagemEnviada(numLimpo, texto, nome, resultadoTemplate?.messages?.[0]?.id || null, false, 'text', null, 'whatsapp_cloud');
+                                            sucesso = true;
+                                            enviadoPelaCloudApi = true;
+                                            console.log(`✅ Automação #${automacaoId}: entregue via template "${template.nome}" pra ${numLimpo}.`);
+                                        } catch (e2) {
+                                            console.log(`ℹ️ Automação #${automacaoId}: falha via template também pra ${numLimpo} (${e2.message}) — tentando pelo número principal.`);
+                                        }
+                                    } else {
+                                        console.log(`ℹ️ Automação #${automacaoId}: essa mensagem não tem template vinculado — tentando pelo número principal.`);
+                                    }
                                 }
                             }
                         }

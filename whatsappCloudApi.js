@@ -63,6 +63,32 @@ async function enviarMensagemWhatsappCloud(telefoneE164, texto, { accessToken, p
     });
 }
 
+// Manda uma mensagem usando um template pré-aprovado pela Meta — único jeito
+// de alcançar o contato fora da janela de 24h desde a última mensagem dele
+// (texto livre é rejeitado nesse caso). `parametrosTexto` é um array na
+// MESMA ordem das variáveis {{1}}, {{2}}... definidas no corpo do template
+// aprovado (ver mensagens_personalizadas.template_whatsapp, que guarda essa
+// ordem). Idioma sempre 'pt_BR' — mesmo usado na criação de todos os
+// templates deste sistema.
+async function enviarTemplateWhatsappCloud(telefoneE164, templateNome, parametrosTexto, { accessToken, phoneNumberId } = {}) {
+    if (!accessToken || !phoneNumberId) throw new Error('WhatsApp Business API não configurado: falta o Token de Acesso ou o Phone Number ID (ver Configurações).');
+    const parametros = (parametrosTexto || []).map(valor => ({ type: 'text', text: String(valor ?? '').trim() || '-' }));
+    return graphRequest('POST', `${phoneNumberId}/messages`, {
+        accessToken,
+        body: {
+            messaging_product: 'whatsapp',
+            to: telefoneE164,
+            type: 'template',
+            template: {
+                name: templateNome,
+                language: { code: 'pt_BR' },
+                ...(parametros.length > 0 ? { components: [{ type: 'body', parameters: parametros }] } : {}),
+            },
+        },
+    });
+}
+
 module.exports = {
     enviarMensagemWhatsappCloud,
+    enviarTemplateWhatsappCloud,
 };
