@@ -7522,24 +7522,17 @@ async function garantirNumeroDisparoCloudApi() {
     }
 }
 
-// Round-robin — só entre números CONECTADOS agora, opcionalmente restrito a
-// um subconjunto (roteamento por campanha, ver /api/broadcast/start).
+// Round-robin — só entre números CONECTADOS agora, restrito ao subconjunto
+// marcado em "Roteamento por Campanha" pra essa campanha. Sem regra
+// nenhuma marcada, vai só pelo Principal — sem misturar com a API Oficial
+// nem com outros números do pool (pedido do usuário: "se não está
+// selecionado a API oficial manda pelo Principal e ponto final" — a mistura
+// antiga, herdada de uma fase de transição do pool, é que causava o
+// "Atraso no Pagamento 2" alternar aleatoriamente entre API e Principal
+// mesmo sem ninguém ter marcado a API pra essa campanha).
 let poolRoundRobinIdx = 0;
 async function proximoClienteDoPool(idsPermitidos) {
-    let candidatos = [...poolClients.values()].filter(e => e.status === 'connected');
-
-    // Número "WhatsApp Business API" (tipo cloud_api) não vive em poolClients
-    // (não tem sessão de navegador) — entra no rodízio à parte, só quando
-    // Token de Acesso + Phone Number ID já estiverem salvos em Configurações.
     const rowCloudApi = await db.get("SELECT id, nome FROM disparo_numeros WHERE tipo = 'cloud_api' AND ativo = 1 LIMIT 1");
-    let entryCloudApi = null;
-    if (rowCloudApi) {
-        const configCloudApi = await obterConfigWhatsappCloud();
-        if (configCloudApi.accessToken && configCloudApi.phoneNumberId) {
-            entryCloudApi = { dbId: rowCloudApi.id, nome: rowCloudApi.nome, tipo: 'cloud_api', config: configCloudApi };
-            candidatos.push(entryCloudApi);
-        }
-    }
 
     // Ids que não correspondem a NENHUM número cadastrado agora em "Números de
     // Envio" (o número foi excluído depois que a regra de roteamento foi
@@ -7547,25 +7540,28 @@ async function proximoClienteDoPool(idsPermitidos) {
     // isso, uma regra órfã bloqueia a campanha pra sempre, mesmo com o
     // principal conectado, e não tem como corrigir pela tela de "Roteamento
     // por Campanha" (ela só lista números que existem hoje, não dá pra
-    // desmarcar um id que já não está mais lá). Números que ainda EXISTEM mas
-    // estão só desconectados continuam sendo respeitados à risca (não caem
-    // pro principal) — essa parte da lógica original permanece.
+    // desmarcar um id que já não está mais lá).
     const idsExistentes = [...poolClients.values()].map(e => e.dbId).concat(rowCloudApi ? [rowCloudApi.id] : []);
     const idsValidos = Array.isArray(idsPermitidos)
         ? idsPermitidos.filter(id => idsExistentes.includes(id))
         : [];
-    if (idsValidos.length > 0) {
-        // Roteamento explícito pra essa campanha — respeita à risca, sem
-        // incluir o principal mesmo na fase de transição abaixo.
-        candidatos = candidatos.filter(e => idsValidos.includes(e.dbId));
-    } else if (isConnected) {
-        // TEMPORÁRIO (pedido do usuário): enquanto o pool de números de
-        // envio ainda está sendo montado, o principal também entra no
-        // rodízio das campanhas SEM roteamento restrito — só pra não travar
-        // o Disparo nesse primeiro momento. Remover este "else if" assim
-        // que o pool tiver números suficientes conectados.
-        candidatos = [...candidatos, { dbId: null, nome: 'Principal', client }];
+
+    if (idsValidos.length === 0) {
+        return isConnected ? { dbId: null, nome: 'Principal', client } : null;
     }
+
+    // Roteamento explícito pra essa campanha — respeita à risca: números
+    // selecionados mas desconectados no momento NÃO caem pro principal
+    // (fica de fora do rodízio mesmo, força corrigir a conexão em vez de
+    // mandar por um número que o usuário não escolheu pra essa campanha).
+    let candidatos = [...poolClients.values()].filter(e => e.status === 'connected' && idsValidos.includes(e.dbId));
+    if (rowCloudApi && idsValidos.includes(rowCloudApi.id)) {
+        const configCloudApi = await obterConfigWhatsappCloud();
+        if (configCloudApi.accessToken && configCloudApi.phoneNumberId) {
+            candidatos.push({ dbId: rowCloudApi.id, nome: rowCloudApi.nome, tipo: 'cloud_api', config: configCloudApi });
+        }
+    }
+
     if (candidatos.length === 0) return null;
     const escolhido = candidatos[poolRoundRobinIdx % candidatos.length];
     poolRoundRobinIdx++;
