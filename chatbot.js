@@ -6783,6 +6783,45 @@ async function limparLogsEstatisticasAntigos() {
 setInterval(limparLogsEstatisticasAntigos, 6 * 60 * 60 * 1000); // a cada 6h
 setTimeout(limparLogsEstatisticasAntigos, 3 * 60 * 1000);
 
+// O limite --disk-cache-size (ver criarClienteWhatsApp) segura o Cache HTTP
+// do Chrome, mas não cobre o Code Cache (bytecode compilado do V8) — sozinho
+// ele também cresce com o tempo e, somado ao IndexedDB real da sessão (esse
+// sim não pode ser tocado, é o login/histórico de verdade), voltou a encher
+// o volume de 434MB mesmo com o limite aplicado. Cache e Code Cache são 100%
+// regeneráveis (o Chrome recria on-demand, sem afetar sessão/login). Limpa só
+// o CONTEÚDO desses dois em toda sessão viva (principal + pool de Disparo),
+// nunca a pasta em si — apagar a pasta inteira embaixo de um Chrome rodando
+// pode gerar ENOENT se ele tentar recriar o diretório sozinho.
+function limparCacheChromeTodasSessoes() {
+    const authDir = path.join(DATA_DIR, '.wwebjs_auth');
+    let liberadoBytes = 0;
+    try {
+        if (!fs.existsSync(authDir)) return;
+        const sessoes = fs.readdirSync(authDir, { withFileTypes: true })
+            .filter(e => e.isDirectory() && (e.name === 'session' || e.name.startsWith('session-')));
+        for (const sessao of sessoes) {
+            for (const nomeCache of ['Cache', 'Code Cache']) {
+                const dir = path.join(authDir, sessao.name, 'Default', nomeCache);
+                if (!fs.existsSync(dir)) continue;
+                for (const item of fs.readdirSync(dir)) {
+                    const alvo = path.join(dir, item);
+                    try {
+                        liberadoBytes += fs.statSync(alvo).size;
+                    } catch (_) { }
+                    try { fs.rmSync(alvo, { recursive: true, force: true }); } catch (_) { }
+                }
+            }
+        }
+        if (liberadoBytes > 0) {
+            console.log(`🧹 Cache do Chrome limpo: ~${(liberadoBytes / 1024 / 1024).toFixed(1)}MB liberados`);
+        }
+    } catch (e) {
+        console.error('Erro na limpeza de cache do Chrome:', e.message);
+    }
+}
+setInterval(limparCacheChromeTodasSessoes, 6 * 60 * 60 * 1000); // a cada 6h
+setTimeout(limparCacheChromeTodasSessoes, 5 * 60 * 1000);
+
 app.post('/api/disconnect', async (req, res) => {
     // Responde imediatamente para não travar o frontend
     res.json({ success: true });
