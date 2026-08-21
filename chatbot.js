@@ -1474,6 +1474,23 @@ async function obterConfigWhatsappCloud() {
     };
 }
 
+// Diferente do Disparo manual (proximoClienteDoPool — "nenhum marcado = usa
+// todos os números conectados", convite antigo pra nunca travar um envio
+// que o operador clicou pra mandar AGORA), a Automação automática precisa do
+// oposto: sem regra marcada pra essa categoria em "Roteamento por Campanha",
+// significa que o usuário NÃO quer essa campanha saindo pela API Oficial —
+// só tenta quando o id do número "WhatsApp Business API" está
+// explicitamente marcado ali. Categoria vem de mensagens_personalizadas.categoria.
+async function campanhaUsaWhatsappCloud(categoria) {
+    if (!categoria) return false;
+    const regra = await db.get('SELECT numeros_ids FROM disparo_roteamento WHERE campanha_chave = ?', categoria);
+    if (!regra?.numeros_ids) return false;
+    const rowCloudApi = await db.get("SELECT id FROM disparo_numeros WHERE tipo = 'cloud_api' LIMIT 1");
+    if (!rowCloudApi) return false;
+    const ids = regra.numeros_ids.split(',').filter(Boolean).map(Number);
+    return ids.includes(rowCloudApi.id);
+}
+
 // Handshake de verificação do webhook — mesmo mecanismo GET que todo
 // produto da Meta usa (Instagram, WhatsApp, Messenger).
 app.get('/webhook/whatsapp-cloud', async (req, res) => {
@@ -3800,12 +3817,14 @@ async function dispararMensagensDaAutomacao(automacaoId) {
                         }
                     } else {
                         // WhatsApp (contato veio por número normal ou pela própria API
-                        // Oficial): tenta a API Oficial primeiro — pedido do usuário,
-                        // "todos os disparos vão pela API Oficial, mas se falhar vão
-                        // pelo número principal". Mídia nunca passa por ali (não
-                        // suportada nessa 1ª versão), só o texto puro.
+                        // Oficial): tenta a API Oficial primeiro SE a campanha dessa
+                        // mensagem estiver marcada pra usá-la em "Roteamento por
+                        // Campanha" — sem isso, ficava tentando sempre, mesmo com o
+                        // usuário desmarcando tudo ali (essa tela nunca tinha efeito
+                        // aqui antes, só no Disparo manual). Mídia nunca passa pela API
+                        // Oficial (não suportada nessa 1ª versão), só o texto puro.
                         let enviadoPelaCloudApi = false;
-                        if (texto) {
+                        if (texto && await campanhaUsaWhatsappCloud(msg.categoria)) {
                             const configWhatsappCloud = await obterConfigWhatsappCloud();
                             if (configWhatsappCloud.accessToken && configWhatsappCloud.phoneNumberId) {
                                 try {
