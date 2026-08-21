@@ -145,7 +145,21 @@ const server = http.createServer(app);
 const io = new Server(server);
 
 app.use(express.static(path.join(__dirname, 'public')));
-app.use(express.json());
+// Webhooks da Meta (Instagram e WhatsApp Business API) precisam do corpo CRU
+// pra validar a assinatura (X-Hub-Signature-256) — cada um já usa seu próprio
+// express.raw() na rota (ver /webhook/instagram e /webhook/whatsapp-cloud).
+// Um express.json() global rodando ANTES deles consumia o corpo primeiro e
+// entregava req.body já como objeto parseado pro raw() (que aí não tinha
+// mais nada pra ler) — verificarAssinaturaWebhook então recebia um Object em
+// vez de Buffer/string e quebrava com "The 'data' argument must be of type
+// string or an instance of Buffer..." em TODA mensagem recebida por esses
+// dois webhooks, silenciosamente, desde que cada um foi criado. Excluir
+// esses dois caminhos aqui é o que deixa o express.raw() de cada rota
+// realmente pegar o corpo cru primeiro.
+app.use((req, res, next) => {
+    if (req.path === '/webhook/instagram' || req.path === '/webhook/whatsapp-cloud') return next();
+    express.json()(req, res, next);
+});
 
 // Upload de Mídia (Multer)
 const storage = multer.diskStorage({
