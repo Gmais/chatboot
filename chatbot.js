@@ -5377,6 +5377,7 @@ function iniciarBroadcast(job) {
                 // {nome}/{matricula}/{saudacao} POR DESTINATÁRIO (mesmo texto
                 // "mensagem" cru, mas personalizado a cada envio do laço).
                 const textoPersonalizado = await substituirPlaceholdersPessoais(mensagem, numeroCompleto);
+                const nomeContato = await resolverNomeContato(numeroCompleto);
 
                 // Número "WhatsApp Business API" tenta a Graph API primeiro — se
                 // falhar (fora da janela de 24h sem template aprovado, mídia não
@@ -5388,7 +5389,13 @@ function iniciarBroadcast(job) {
                 if (entryEnvio.tipo === 'cloud_api') {
                     try {
                         if (mediaFile) throw new Error('Mídia não é suportada via WhatsApp Business API nessa 1ª versão.');
-                        await enviarMensagemWhatsappCloud(numeroCompleto, textoPersonalizado, entryEnvio.config);
+                        const resultadoCloud = await enviarMensagemWhatsappCloud(numeroCompleto, textoPersonalizado, entryEnvio.config);
+                        // Disparo pela API Oficial também precisa aparecer no Bate
+                        // Papo igual qualquer outro canal (pedido do usuário: "todo
+                        // disparo e conversa tem que entrar no Bate papo") — antes só
+                        // gravava em disparo_envios_log (histórico do Disparo), nunca
+                        // em conversas (o que alimenta o Bate Papo).
+                        await registrarMensagemEnviada(numeroCompleto, textoPersonalizado, nomeContato, resultadoCloud?.messages?.[0]?.id || null, false, 'text', null, 'whatsapp_cloud');
                         enviadoPelaCloudApi = true;
                     } catch (e) {
                         console.log(`ℹ️ Disparo: falha via WhatsApp Business API pra ${numeroCompleto} (${e.message}) — tentando pelo número principal.`);
@@ -5406,11 +5413,17 @@ function iniciarBroadcast(job) {
                     // isso o sendMessage() resolve no eco local antes de confirmar saída
                     // real pela rede, e sessão instável pode fazer o número do pool
                     // "reenviar" sem perceber que já tinha saído de verdade.
-                    await sendMessageComRetryLid(clienteFallback, chatId, textoPersonalizado, { waitUntilMsgSent: true });
+                    const sentTexto = await sendMessageComRetryLid(clienteFallback, chatId, textoPersonalizado, { waitUntilMsgSent: true });
+                    await registrarMensagemEnviada(numeroCompleto, textoPersonalizado, nomeContato, idSerializado(sentTexto), false, 'text', null, 'whatsapp');
 
                     if (mediaFile) {
                         const media = MessageMedia.fromFilePath(mediaFile.path);
-                        await sendMessageComRetryLid(clienteFallback, chatId, media, { waitUntilMsgSent: true });
+                        const sentMedia = await sendMessageComRetryLid(clienteFallback, chatId, media, { waitUntilMsgSent: true });
+                        const tipoMedia = mediaFile.mimetype.startsWith('image/') ? 'image'
+                            : mediaFile.mimetype.startsWith('video/') ? 'video'
+                                : mediaFile.mimetype.startsWith('audio/') ? 'audio'
+                                    : 'document';
+                        await registrarMensagemEnviada(numeroCompleto, '[mídia]', nomeContato, idSerializado(sentMedia), false, tipoMedia, '/uploads/' + path.basename(mediaFile.path), 'whatsapp');
                     }
                 }
 
