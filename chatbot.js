@@ -1775,15 +1775,6 @@ app.post('/webhooks/gympulse-daily-report', async (req, res) => {
         );
         if (!lead) return res.status(404).json({ error: 'Aluno não encontrado para esta matrícula.' });
 
-        // Resumo de treino (diário e semanal) sai pelo número de Disparo via
-        // WhatsApp Business API — nunca pelo número principal, pra não competir
-        // com atendimento/robô nem contar no limite de envio dele (pedido
-        // explícito do usuário). Sem token configurado, falha claro em vez de
-        // cair pro número principal por baixo do pano.
-        const configWhatsappCloud = await obterConfigWhatsappCloud();
-        if (!configWhatsappCloud.accessToken || !configWhatsappCloud.phoneNumberId) {
-            return res.status(503).json({ error: 'WhatsApp Business API não está configurado (ver Configurações).' });
-        }
         const telefoneLimpo = lead.telefone.replace('@c.us', '').replace('@lid', '');
 
         const nomeExibir = studentName || lead.nome || lead.telefone;
@@ -1813,19 +1804,41 @@ app.post('/webhooks/gympulse-daily-report', async (req, res) => {
             mensagem += `\nContinue assim! 🎉`;
         }
 
-        // Via Graph API — não passa pelo whatsapp-web.js (client principal),
-        // então a preocupação de eco otimista/message_create duplicado (que
-        // existia quando isso saía pelo número principal) não se aplica mais
-        // aqui: é um número totalmente separado, sem sessão de navegador.
-        try {
-            const resultado = await enviarMensagemWhatsappCloud(telefoneLimpo, mensagem, configWhatsappCloud);
-            await registrarMensagemEnviada(telefoneLimpo, mensagem, nomeExibir, resultado?.messages?.[0]?.id || null, false, 'text', null, 'whatsapp_cloud');
-        } catch (e) {
-            // Falha mais comum aqui: aluno fora da janela de 24h desde a última
-            // mensagem dele (regra da Meta) — a Cloud API só aceita texto livre
-            // dentro dessa janela; fora dela precisaria de um template aprovado
-            // (não suportado nessa 1ª versão). Não é erro do BotPro em si.
-            return res.status(422).json({ error: `Falha ao enviar via WhatsApp Business API: ${e.message}` });
+        // Resumo de treino (diário e semanal) tenta sair pelo número de Disparo
+        // via WhatsApp Business API primeiro — não passa pelo whatsapp-web.js
+        // (client principal), então não compete com atendimento/robô nem conta
+        // no limite de envio dele. Se falhar (não configurado, ou aluno fora da
+        // janela de 24h desde a última mensagem dele — a Cloud API só aceita
+        // texto livre dentro dela, sem template aprovado, não suportado nessa
+        // 1ª versão), cai pro número principal em vez de nunca entregar (pedido
+        // do usuário: "todos os disparos vão pela API Oficial, mas se falhar
+        // vão pelo número principal").
+        let enviadoPelaCloudApi = false;
+        const configWhatsappCloud = await obterConfigWhatsappCloud();
+        if (configWhatsappCloud.accessToken && configWhatsappCloud.phoneNumberId) {
+            try {
+                const resultado = await enviarMensagemWhatsappCloud(telefoneLimpo, mensagem, configWhatsappCloud);
+                await registrarMensagemEnviada(telefoneLimpo, mensagem, nomeExibir, resultado?.messages?.[0]?.id || null, false, 'text', null, 'whatsapp_cloud');
+                enviadoPelaCloudApi = true;
+            } catch (e) {
+                console.log(`ℹ️ Gympulse: falha via WhatsApp Business API pra ${telefoneLimpo} (${e.message}) — tentando pelo número principal.`);
+            }
+        }
+
+        if (!enviadoPelaCloudApi) {
+            let chatId;
+            try {
+                chatId = await resolverChatId(client, telefoneLimpo);
+            } catch (e) {
+                return res.status(422).json({ error: 'Aluno sem WhatsApp cadastrado.' });
+            }
+            // Marca ANTES de tentar (ver marcarMensagemComoDoSistema) — sem isso, o
+            // eco otimista local do whatsapp-web.js (message_create) pode gravar a
+            // mensagem como "mandada direto do celular" e duplicar no Bate Papo ao
+            // Vivo, mesmo com o envio de fato saindo só uma vez.
+            marcarMensagemComoDoSistema(null, telefoneLimpo, mensagem);
+            const sentMsg = await sendMessageComRetryLid(client, chatId, mensagem, { waitUntilMsgSent: true });
+            await registrarMensagemEnviada(telefoneLimpo, mensagem, nomeExibir, idSerializado(sentMsg));
         }
 
         res.json({ success: true });
@@ -3629,7 +3642,6 @@ async function dispararMensagensDaAutomacao(automacaoId) {
                     // default de quem já existia antes dessa coluna existir).
                     const leadRow = await db.get('SELECT canal FROM leads WHERE telefone = ?', numLimpo);
                     const canalContato = leadRow?.canal || 'whatsapp';
-                    const chatId = (canalContato === 'instagram' || canalContato === 'whatsapp_cloud') ? null : await resolverChatId(client, numLimpo);
                     const nome = await resolverNomeContato(numLimpo);
                     const primeiroNome = (nome && nome !== numLimpo) ? nome.split(' ')[0] : '';
                     const nomeCompleto = (nome && nome !== numLimpo) ? nome : '';
@@ -3678,64 +3690,85 @@ async function dispararMensagensDaAutomacao(automacaoId) {
                         .replace(/\{dia\}/gi, diaStr).replace(/\[dia\]/gi, diaStr);
 
                     let sucesso = false;
-                    if (canalContato === 'instagram' || canalContato === 'whatsapp_cloud') {
-                        // Mídia ainda não é suportada pro Instagram/WhatsApp Business API
-                        // nessa 1ª versão (ver plano) — pula a mídia, manda só o texto
-                        // se tiver. Falha aqui (ex: fora da janela de 24h da Meta) sobe
-                        // pro catch de fora igual qualquer outro erro de envio.
+                    if (canalContato === 'instagram') {
+                        // Mídia ainda não é suportada pro Instagram nessa 1ª versão —
+                        // pula a mídia, manda só o texto se tiver. Falha aqui (ex: fora
+                        // da janela de 24h/7 dias da Meta) sobe pro catch de fora igual
+                        // qualquer outro erro de envio.
                         if (msg.media_path && !texto) {
-                            console.log(`ℹ️ Automação #${automacaoId}: mensagem só tem mídia (sem texto) e mídia ainda não é suportada pro ${canalContato === 'instagram' ? 'Instagram' : 'WhatsApp Business API'} — nada enviado pra ${numLimpo}.`);
+                            console.log(`ℹ️ Automação #${automacaoId}: mensagem só tem mídia (sem texto) e mídia ainda não é suportada pro Instagram — nada enviado pra ${numLimpo}.`);
                         } else if (texto) {
-                            if (canalContato === 'instagram') {
-                                const { pageAccessToken } = await obterConfigInstagram();
-                                const resultado = await enviarMensagemInstagram(numLimpo, texto, pageAccessToken);
-                                await registrarMensagemEnviada(numLimpo, texto, nome, resultado?.message_id || null, false, 'text', null, 'instagram');
-                            } else {
-                                const configWhatsappCloud = await obterConfigWhatsappCloud();
-                                const resultado = await enviarMensagemWhatsappCloud(numLimpo, texto, configWhatsappCloud);
-                                await registrarMensagemEnviada(numLimpo, texto, nome, resultado?.messages?.[0]?.id || null, false, 'text', null, 'whatsapp_cloud');
+                            const { pageAccessToken } = await obterConfigInstagram();
+                            const resultado = await enviarMensagemInstagram(numLimpo, texto, pageAccessToken);
+                            await registrarMensagemEnviada(numLimpo, texto, nome, resultado?.message_id || null, false, 'text', null, 'instagram');
+                            sucesso = true;
+                        }
+                    } else {
+                        // WhatsApp (contato veio por número normal ou pela própria API
+                        // Oficial): tenta a API Oficial primeiro — pedido do usuário,
+                        // "todos os disparos vão pela API Oficial, mas se falhar vão
+                        // pelo número principal". Mídia nunca passa por ali (não
+                        // suportada nessa 1ª versão), só o texto puro.
+                        let enviadoPelaCloudApi = false;
+                        if (texto) {
+                            const configWhatsappCloud = await obterConfigWhatsappCloud();
+                            if (configWhatsappCloud.accessToken && configWhatsappCloud.phoneNumberId) {
+                                try {
+                                    const resultado = await enviarMensagemWhatsappCloud(numLimpo, texto, configWhatsappCloud);
+                                    await registrarMensagemEnviada(numLimpo, texto, nome, resultado?.messages?.[0]?.id || null, false, 'text', null, 'whatsapp_cloud');
+                                    sucesso = true;
+                                    enviadoPelaCloudApi = true;
+                                } catch (e) {
+                                    // Falha mais comum: contato fora da janela de 24h desde a
+                                    // última mensagem dele (sem template aprovado, regra da
+                                    // Meta) — cai pro número principal abaixo em vez de desistir.
+                                    console.log(`ℹ️ Automação #${automacaoId}: falha via WhatsApp Business API pra ${numLimpo} (${e.message}) — tentando pelo número principal.`);
+                                }
                             }
-                            sucesso = true;
                         }
-                    } else if (msg.media_path) {
-                        const mediaFullPath = path.join(__dirname, 'public', msg.media_path.replace(/^\//, ''));
-                        if (fs.existsSync(mediaFullPath)) {
-                            const media = MessageMedia.fromFilePath(mediaFullPath);
-                            // waitUntilMsgSent:true — sem isso o sendMessage() resolve no eco
-                            // otimista local (antes de sair pela rede de verdade); com sessão
-                            // instável isso fazia a mesma mensagem ser gravada (e reenviada de
-                            // fato, já que o timeout/erro de rede fazia o contato voltar pra fila
-                            // pra tentar de novo) mais de uma vez — mesmo fix já aplicado no envio
-                            // manual (df28ae7) e no webhook de resumo de treino (515d56e), só
-                            // faltava aqui no disparo de automação.
-                            // Marca ANTES de tentar — ver explicação completa no webhook do Gympulse (marcarMensagemComoDoSistema).
-                            if (texto) marcarMensagemComoDoSistema(null, numLimpo, texto);
-                            const sent = await sendMessageComRetryLid(client, chatId, media, { ...(texto ? { caption: texto } : {}), waitUntilMsgSent: true });
-                            // client.sendMessage pode devolver undefined (sem lançar erro) mesmo
-                            // quando a mensagem FOI entregue de verdade — é um comportamento
-                            // conhecido do whatsapp-web.js: o envio em si acontece, só a
-                            // construção do objeto de retorno (wrapper local) que às vezes falha
-                            // por uma corrida interna da lib. Confirmado na prática: mensagem
-                            // marcada como "erro" aqui, mas o cliente recebeu normalmente. Por
-                            // isso só protege a leitura de .id (evita o crash de antes,
-                            // "Cannot read properties of undefined"), sem tratar como falha.
-                            const tipoMedia = msg.media_tipo === 'file' ? 'document' : (msg.media_tipo || 'document');
-                            await registrarMensagemEnviada(numLimpo, texto || '[mídia]', nome, idSerializado(sent), false, tipoMedia, msg.media_path);
-                            sucesso = true;
-                        } else {
-                            console.error(`Disparo automação #${automacaoId}: mídia não encontrada (${msg.media_path}) pra ${numLimpo}`);
+                        if (!enviadoPelaCloudApi) {
+                            const chatId = await resolverChatId(client, numLimpo);
+                            if (msg.media_path) {
+                                const mediaFullPath = path.join(__dirname, 'public', msg.media_path.replace(/^\//, ''));
+                                if (fs.existsSync(mediaFullPath)) {
+                                    const media = MessageMedia.fromFilePath(mediaFullPath);
+                                    // waitUntilMsgSent:true — sem isso o sendMessage() resolve no eco
+                                    // otimista local (antes de sair pela rede de verdade); com sessão
+                                    // instável isso fazia a mesma mensagem ser gravada (e reenviada de
+                                    // fato, já que o timeout/erro de rede fazia o contato voltar pra fila
+                                    // pra tentar de novo) mais de uma vez — mesmo fix já aplicado no envio
+                                    // manual (df28ae7) e no webhook de resumo de treino (515d56e), só
+                                    // faltava aqui no disparo de automação.
+                                    // Marca ANTES de tentar — ver explicação completa no webhook do Gympulse (marcarMensagemComoDoSistema).
+                                    if (texto) marcarMensagemComoDoSistema(null, numLimpo, texto);
+                                    const sent = await sendMessageComRetryLid(client, chatId, media, { ...(texto ? { caption: texto } : {}), waitUntilMsgSent: true });
+                                    // client.sendMessage pode devolver undefined (sem lançar erro) mesmo
+                                    // quando a mensagem FOI entregue de verdade — é um comportamento
+                                    // conhecido do whatsapp-web.js: o envio em si acontece, só a
+                                    // construção do objeto de retorno (wrapper local) que às vezes falha
+                                    // por uma corrida interna da lib. Confirmado na prática: mensagem
+                                    // marcada como "erro" aqui, mas o cliente recebeu normalmente. Por
+                                    // isso só protege a leitura de .id (evita o crash de antes,
+                                    // "Cannot read properties of undefined"), sem tratar como falha.
+                                    const tipoMedia = msg.media_tipo === 'file' ? 'document' : (msg.media_tipo || 'document');
+                                    await registrarMensagemEnviada(numLimpo, texto || '[mídia]', nome, idSerializado(sent), false, tipoMedia, msg.media_path);
+                                    sucesso = true;
+                                } else {
+                                    console.error(`Disparo automação #${automacaoId}: mídia não encontrada (${msg.media_path}) pra ${numLimpo}`);
+                                }
+                            } else if (texto) {
+                                // waitUntilMsgSent:true — mesmo motivo do envio manual (df28ae7) e do
+                                // resumo de treino (515d56e): sem isso, sessão instável podia fazer o
+                                // mesmo contato receber a mensagem mais de uma vez (marcada como erro
+                                // aqui por não confirmar a tempo, mas entregue de verdade, e reenviada
+                                // de novo na próxima tentativa da fila).
+                                // Marca ANTES de tentar — ver explicação completa no webhook do Gympulse (marcarMensagemComoDoSistema).
+                                marcarMensagemComoDoSistema(null, numLimpo, texto);
+                                const sent = await sendMessageComRetryLid(client, chatId, texto, { waitUntilMsgSent: true });
+                                await registrarMensagemEnviada(numLimpo, texto, nome, idSerializado(sent));
+                                sucesso = true;
+                            }
                         }
-                    } else if (texto) {
-                        // waitUntilMsgSent:true — mesmo motivo do envio manual (df28ae7) e do
-                        // resumo de treino (515d56e): sem isso, sessão instável podia fazer o
-                        // mesmo contato receber a mensagem mais de uma vez (marcada como erro
-                        // aqui por não confirmar a tempo, mas entregue de verdade, e reenviada
-                        // de novo na próxima tentativa da fila).
-                        // Marca ANTES de tentar — ver explicação completa no webhook do Gympulse (marcarMensagemComoDoSistema).
-                        marcarMensagemComoDoSistema(null, numLimpo, texto);
-                        const sent = await sendMessageComRetryLid(client, chatId, texto, { waitUntilMsgSent: true });
-                        await registrarMensagemEnviada(numLimpo, texto, nome, idSerializado(sent));
-                        sucesso = true;
                     }
 
                     if (sucesso) {
@@ -5184,28 +5217,44 @@ function iniciarBroadcast(job) {
                 // "mensagem" cru, mas personalizado a cada envio do laço).
                 const textoPersonalizado = await substituirPlaceholdersPessoais(mensagem, numeroCompleto);
 
+                // Número "WhatsApp Business API" tenta a Graph API primeiro — se
+                // falhar (fora da janela de 24h sem template aprovado, mídia não
+                // suportada nessa 1ª versão, etc.), cai pro número PRINCIPAL em vez
+                // de desistir desse contato (pedido do usuário: "todos os disparos
+                // vão pela API Oficial, mas se falhar vão pelo número principal").
+                let nomeEnvioReal = entryEnvio.nome;
+                let enviadoPelaCloudApi = false;
                 if (entryEnvio.tipo === 'cloud_api') {
-                    // Só texto nessa 1ª versão (mesma limitação do canal geral) — cai
-                    // no catch de baixo igual qualquer outra falha desse contato,
-                    // sem travar o resto da lista.
-                    if (mediaFile) throw new Error('Mídia não é suportada via WhatsApp Business API nessa 1ª versão.');
-                    await enviarMensagemWhatsappCloud(numeroCompleto, textoPersonalizado, entryEnvio.config);
-                } else {
-                    const chatId = await resolverChatId(entryEnvio.client, numeroCompleto);
+                    try {
+                        if (mediaFile) throw new Error('Mídia não é suportada via WhatsApp Business API nessa 1ª versão.');
+                        await enviarMensagemWhatsappCloud(numeroCompleto, textoPersonalizado, entryEnvio.config);
+                        enviadoPelaCloudApi = true;
+                    } catch (e) {
+                        console.log(`ℹ️ Disparo: falha via WhatsApp Business API pra ${numeroCompleto} (${e.message}) — tentando pelo número principal.`);
+                    }
+                }
+
+                if (!enviadoPelaCloudApi) {
+                    // Números normais do pool caem aqui direto (comportamento de
+                    // sempre); só o número "WhatsApp Business API" que falhou usa o
+                    // client PRINCIPAL como rede de segurança, não outro do pool.
+                    const clienteFallback = entryEnvio.tipo === 'cloud_api' ? client : entryEnvio.client;
+                    if (entryEnvio.tipo === 'cloud_api') nomeEnvioReal = 'Principal (fallback da API Oficial)';
+                    const chatId = await resolverChatId(clienteFallback, numeroCompleto);
                     // waitUntilMsgSent:true — mesmo motivo do envio manual (df28ae7): sem
                     // isso o sendMessage() resolve no eco local antes de confirmar saída
                     // real pela rede, e sessão instável pode fazer o número do pool
                     // "reenviar" sem perceber que já tinha saído de verdade.
-                    await sendMessageComRetryLid(entryEnvio.client, chatId, textoPersonalizado, { waitUntilMsgSent: true });
+                    await sendMessageComRetryLid(clienteFallback, chatId, textoPersonalizado, { waitUntilMsgSent: true });
 
                     if (mediaFile) {
                         const media = MessageMedia.fromFilePath(mediaFile.path);
-                        await sendMessageComRetryLid(entryEnvio.client, chatId, media, { waitUntilMsgSent: true });
+                        await sendMessageComRetryLid(clienteFallback, chatId, media, { waitUntilMsgSent: true });
                     }
                 }
 
                 broadcastProgress.sent++;
-                db.run('INSERT INTO disparo_envios_log (telefone, sucesso, numero_envio, descricao) VALUES (?, 1, ?, ?)', [numero, entryEnvio.nome, descricao]).catch(() => { });
+                db.run('INSERT INTO disparo_envios_log (telefone, sucesso, numero_envio, descricao) VALUES (?, 1, ?, ?)', [numero, nomeEnvioReal, descricao]).catch(() => { });
             } catch (err) {
                 console.error(`❌ Falha ao enviar para ${numero}:`, err.message);
                 broadcastProgress.failed++;
