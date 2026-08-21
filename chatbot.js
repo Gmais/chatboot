@@ -1775,14 +1775,16 @@ app.post('/webhooks/gympulse-daily-report', async (req, res) => {
         );
         if (!lead) return res.status(404).json({ error: 'Aluno não encontrado para esta matrícula.' });
 
-        if (!isConnected) return res.status(503).json({ error: 'WhatsApp não está conectado no momento.' });
-
-        let chatId;
-        try {
-            chatId = await resolverChatId(client, lead.telefone);
-        } catch (e) {
-            return res.status(422).json({ error: 'Aluno sem WhatsApp cadastrado.' });
+        // Resumo de treino (diário e semanal) sai pelo número de Disparo via
+        // WhatsApp Business API — nunca pelo número principal, pra não competir
+        // com atendimento/robô nem contar no limite de envio dele (pedido
+        // explícito do usuário). Sem token configurado, falha claro em vez de
+        // cair pro número principal por baixo do pano.
+        const configWhatsappCloud = await obterConfigWhatsappCloud();
+        if (!configWhatsappCloud.accessToken || !configWhatsappCloud.phoneNumberId) {
+            return res.status(503).json({ error: 'WhatsApp Business API não está configurado (ver Configurações).' });
         }
+        const telefoneLimpo = lead.telefone.replace('@c.us', '').replace('@lid', '');
 
         const nomeExibir = studentName || lead.nome || lead.telefone;
         const primeiroNome = (nomeExibir.split(' ')[0] || nomeExibir);
@@ -1811,27 +1813,20 @@ app.post('/webhooks/gympulse-daily-report', async (req, res) => {
             mensagem += `\nContinue assim! 🎉`;
         }
 
-        // Mesmo caminho de envio usado pelo disparo de Automação (direto,
-        // sem o delay/digitando/pausa-por-humano do fluxo conversacional do
-        // robô — isso é uma notificação de sistema, não uma resposta a algo
-        // que o aluno perguntou).
-        // waitUntilMsgSent:true — sem isso o sendMessage() resolve no eco
-        // otimista local (antes de sair pela rede); com sessão instável o
-        // message_create real podia chegar só depois do TTL de 60s do Set
-        // idsMensagensDoSistema, fazendo o resumo de treino ser gravado (e
-        // aparecer) duplicado no Bate Papo ao Vivo mesmo com um único envio
-        // real pro WhatsApp.
-        // Marca o conteúdo como "do sistema" ANTES de tentar enviar, não só
-        // depois de confirmar sucesso — se "Lid is missing" esgotar as
-        // retentativas (ver sendMessageComRetryLid), o eco otimista local do
-        // WhatsApp Web (message_create) ainda dispara mesmo com a mensagem
-        // JAMAIS entregue de verdade. Sem essa marca ANTES, esse eco batia no
-        // fallback "mandado direto do celular" (ver client.on('message_create'))
-        // e gravava no Bate Papo ao Vivo como se tivesse sido enviado — exatamente
-        // o "chatbot faz de conta que envia" visto ao vivo num incidente real.
-        marcarMensagemComoDoSistema(null, lead.telefone.replace('@c.us', '').replace('@lid', ''), mensagem);
-        const sentMsg = await sendMessageComRetryLid(client, chatId, mensagem, { waitUntilMsgSent: true });
-        await registrarMensagemEnviada(lead.telefone, mensagem, nomeExibir, idSerializado(sentMsg));
+        // Via Graph API — não passa pelo whatsapp-web.js (client principal),
+        // então a preocupação de eco otimista/message_create duplicado (que
+        // existia quando isso saía pelo número principal) não se aplica mais
+        // aqui: é um número totalmente separado, sem sessão de navegador.
+        try {
+            const resultado = await enviarMensagemWhatsappCloud(telefoneLimpo, mensagem, configWhatsappCloud);
+            await registrarMensagemEnviada(telefoneLimpo, mensagem, nomeExibir, resultado?.messages?.[0]?.id || null, false, 'text', null, 'whatsapp_cloud');
+        } catch (e) {
+            // Falha mais comum aqui: aluno fora da janela de 24h desde a última
+            // mensagem dele (regra da Meta) — a Cloud API só aceita texto livre
+            // dentro dessa janela; fora dela precisaria de um template aprovado
+            // (não suportado nessa 1ª versão). Não é erro do BotPro em si.
+            return res.status(422).json({ error: `Falha ao enviar via WhatsApp Business API: ${e.message}` });
+        }
 
         res.json({ success: true });
     } catch (err) {
