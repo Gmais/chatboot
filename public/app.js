@@ -2295,6 +2295,10 @@ function fecharEditarContato() {
 // RELATÓRIO — erros de WhatsApp + cadastro incompleto
 // =====================================
 const relatorioErrosLista = document.getElementById('relatorio-erros-lista');
+const relatorioErrosAtivosLista = document.getElementById('relatorio-erros-ativos-lista');
+const relatorioErrosInativosLista = document.getElementById('relatorio-erros-inativos-lista');
+const relatorioErrosAtivosCount = document.getElementById('relatorio-erros-ativos-count');
+const relatorioErrosInativosCount = document.getElementById('relatorio-erros-inativos-count');
 const relatorioSemCadastroLista = document.getElementById('relatorio-sem-cadastro-lista');
 
 async function marcarRelatorioDispensa(tipo, telefone, motivo, checked) {
@@ -2313,32 +2317,54 @@ async function marcarRelatorioDispensa(tipo, telefone, motivo, checked) {
 // sumir da lista — cada motivo é corrigido em sistema diferente (o cadastro
 // aqui no BotPro e o cadastro no CRM Pacto), então só considera resolvido
 // quando os dois lados confirmarem.
+function relatorioErroLinhaHtml(c) {
+    return `
+        <div class="contato-row" data-telefone="${c.telefone}" style="display:flex;align-items:center;gap:.8rem;padding:.6rem .7rem;border-radius:8px">
+            <div style="flex:1;min-width:0">
+                <div style="font-size:.88rem;color:var(--text-1);font-weight:500">${c.nome}</div>
+                <div style="font-size:.75rem;color:var(--text-3)">${c.telefone}${c.matricula ? ` · Matrícula ${c.matricula}` : ''}</div>
+                <div style="font-size:.75rem;color:var(--red);margin-top:.2rem">⚠️ ${c.erro}</div>
+            </div>
+            <label style="display:flex;align-items:center;gap:.4rem;font-size:.78rem;color:var(--text-3);cursor:pointer;white-space:nowrap">
+                <input type="checkbox" class="relatorio-erro-motivo" data-telefone="${c.telefone}" data-motivo="botpro" ${c.corrigido_botpro ? 'checked' : ''} style="accent-color:var(--green);width:16px;height:16px">
+                Corrigido BotPro
+            </label>
+            <label style="display:flex;align-items:center;gap:.4rem;font-size:.78rem;color:var(--text-3);cursor:pointer;white-space:nowrap">
+                <input type="checkbox" class="relatorio-erro-motivo" data-telefone="${c.telefone}" data-motivo="pacto" ${c.corrigido_pacto ? 'checked' : ''} style="accent-color:var(--green);width:16px;height:16px">
+                Corrigido Pacto
+            </label>
+        </div>
+    `;
+}
+
+// Separado em duas listas (Ativos x Não Ativos/Sem Vínculo) — "ativo" vem do
+// /api/relatorio/erros-whatsapp cruzando com a última varredura de alunos
+// ativos do Pacto. Prioridade pros ativos: são aluno de verdade que o BotPro
+// não está conseguindo alcançar.
 async function loadRelatorioErrosWhatsapp() {
     if (!relatorioErrosLista) return;
     try {
         const res = await fetch('/api/relatorio/erros-whatsapp');
         const lista = await res.json();
-        relatorioErrosLista.innerHTML = lista.length
-            ? lista.map(c => `
-                <div class="contato-row" data-telefone="${c.telefone}" style="display:flex;align-items:center;gap:.8rem;padding:.6rem .7rem;border-radius:8px">
-                    <div style="flex:1;min-width:0">
-                        <div style="font-size:.88rem;color:var(--text-1);font-weight:500">${c.nome}</div>
-                        <div style="font-size:.75rem;color:var(--text-3)">${c.telefone}${c.matricula ? ` · Matrícula ${c.matricula}` : ''}</div>
-                        <div style="font-size:.75rem;color:var(--red);margin-top:.2rem">⚠️ ${c.erro}</div>
-                    </div>
-                    <label style="display:flex;align-items:center;gap:.4rem;font-size:.78rem;color:var(--text-3);cursor:pointer;white-space:nowrap">
-                        <input type="checkbox" class="relatorio-erro-motivo" data-telefone="${c.telefone}" data-motivo="botpro" ${c.corrigido_botpro ? 'checked' : ''} style="accent-color:var(--green);width:16px;height:16px">
-                        Corrigido BotPro
-                    </label>
-                    <label style="display:flex;align-items:center;gap:.4rem;font-size:.78rem;color:var(--text-3);cursor:pointer;white-space:nowrap">
-                        <input type="checkbox" class="relatorio-erro-motivo" data-telefone="${c.telefone}" data-motivo="pacto" ${c.corrigido_pacto ? 'checked' : ''} style="accent-color:var(--green);width:16px;height:16px">
-                        Corrigido Pacto
-                    </label>
-                </div>
-            `).join('')
-            : '<p style="color:var(--text-3);text-align:center;padding:1.5rem">Nenhum erro de envio pendente. 🎉</p>';
+        const ativos = lista.filter(c => c.ativo);
+        const inativos = lista.filter(c => !c.ativo);
+
+        if (relatorioErrosAtivosCount) relatorioErrosAtivosCount.textContent = ativos.length ? `(${ativos.length})` : '';
+        if (relatorioErrosInativosCount) relatorioErrosInativosCount.textContent = inativos.length ? `(${inativos.length})` : '';
+
+        if (relatorioErrosAtivosLista) {
+            relatorioErrosAtivosLista.innerHTML = ativos.length
+                ? ativos.map(relatorioErroLinhaHtml).join('')
+                : '<p style="color:var(--text-3);text-align:center;padding:1rem">Nenhum erro pendente entre os alunos ativos. 🎉</p>';
+        }
+        if (relatorioErrosInativosLista) {
+            relatorioErrosInativosLista.innerHTML = inativos.length
+                ? inativos.map(relatorioErroLinhaHtml).join('')
+                : '<p style="color:var(--text-3);text-align:center;padding:1rem">Nenhum erro pendente por aqui. 🎉</p>';
+        }
     } catch (e) {
-        relatorioErrosLista.innerHTML = '<p style="color:var(--text-3);text-align:center;padding:1.5rem">Erro ao carregar.</p>';
+        if (relatorioErrosAtivosLista) relatorioErrosAtivosLista.innerHTML = '<p style="color:var(--text-3);text-align:center;padding:1rem">Erro ao carregar.</p>';
+        if (relatorioErrosInativosLista) relatorioErrosInativosLista.innerHTML = '';
     }
 }
 

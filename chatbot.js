@@ -2553,6 +2553,14 @@ app.get('/api/relatorio/erros-whatsapp', async (req, res) => {
             return v?.matricula || null;
         }
 
+        // "Ativo" = matrícula presente na última varredura de alunos ativos do
+        // Pacto (pacto_alunos_ativos, ver /api/pacto/ativos/importar) — mesma
+        // fonte usada pra etiquetar "Ativo" x "Ex-Aluno" em Contatos. Compara
+        // como número (leading-zero-safe, matrícula é TEXT e pode vir com ou
+        // sem zeros à esquerda dos dois lados).
+        const ativosRows = await db.all('SELECT matricula FROM pacto_alunos_ativos WHERE matricula IS NOT NULL');
+        const matriculasAtivas = new Set(ativosRows.map(r => parseInt(r.matricula, 10)).filter(n => !isNaN(n)));
+
         // Dois checkboxes independentes ("Corrigido BotPro" e "Corrigido Pacto")
         // — só sai da lista quando os DOIS estiverem marcados. Cada um só conta
         // como válido se for mais recente que o erro (mesma regra de sempre: um
@@ -2570,10 +2578,13 @@ app.get('/api/relatorio/erros-whatsapp', async (req, res) => {
                 const corrigidoBotpro = !!dispensas.botpro && dispensas.botpro >= e.ocorrido_em;
                 const corrigidoPacto = !!dispensas.pacto && dispensas.pacto >= e.ocorrido_em;
                 const lead = leadPorTelefone.get(e.telefone);
+                const matricula = lead?.matricula || matriculaDoTelefone(e.telefone);
+                const matriculaNum = matricula ? parseInt(matricula, 10) : NaN;
                 return {
                     telefone: e.telefone,
                     nome: lead?.nome || nomePorTelefone.get(e.telefone) || e.telefone,
-                    matricula: lead?.matricula || matriculaDoTelefone(e.telefone),
+                    matricula,
+                    ativo: !isNaN(matriculaNum) && matriculasAtivas.has(matriculaNum),
                     erro: e.erro,
                     ocorrido_em: sqliteTsParaIso(e.ocorrido_em),
                     corrigido_botpro: corrigidoBotpro,
