@@ -2322,7 +2322,7 @@ function relatorioErroLinhaHtml(c) {
         <div class="contato-row" data-telefone="${c.telefone}" style="display:flex;align-items:center;gap:.8rem;padding:.6rem .7rem;border-radius:8px">
             <div style="flex:1;min-width:0">
                 <div style="font-size:.88rem;color:var(--text-1);font-weight:500">${c.nome}</div>
-                <div style="font-size:.75rem;color:var(--text-3)">${c.telefone}${c.matricula ? ` · Matrícula ${c.matricula}` : ''}</div>
+                <div style="font-size:.75rem;color:var(--text-3)">${c.telefone}${c.matricula ? ` · Matrícula ${c.matricula}` : ''}${c.consultor ? ` · Consultora: ${c.consultor.split(' ')[0]}` : ''}</div>
                 <div style="font-size:.75rem;color:var(--red);margin-top:.2rem">⚠️ ${c.erro}</div>
             </div>
             <label style="display:flex;align-items:center;gap:.4rem;font-size:.78rem;color:var(--text-3);cursor:pointer;white-space:nowrap">

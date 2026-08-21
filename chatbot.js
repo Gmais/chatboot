@@ -95,6 +95,18 @@ const { enviarMensagemInstagram, obterNomeUsuarioInstagram, verificarAssinaturaW
 const { enviarMensagemWhatsappCloud, enviarTemplateWhatsappCloud } = require('./whatsappCloudApi');
 const { buscarAgendaDoDia } = require('./agenda');
 
+// Matrículas da carteira da consultora Juliana, extraídas de um relatório
+// exportado do Pacto (consultora_juliana_matriculas.json). Usado só pra
+// exibir o nome da consultora responsável no relatório de "Erros de Número
+// de WhatsApp" — ver /api/relatorio/erros-whatsapp. Quem não está nessa
+// lista é tratado como carteira da consultora Isadora (regra combinada com
+// o usuário: essa lista só cobre a Juliana, o resto cai pra Isadora).
+const CONSULTOR_JULIANA = 'Juliana De Fatima Da Luz De Oliveira';
+const CONSULTOR_PADRAO = 'Isadora';
+const matriculasJuliana = new Set(
+    require('./consultora_juliana_matriculas.json').map(m => parseInt(m, 10)).filter(n => !isNaN(n))
+);
+
 // Atualização do WhatsApp Web (jul/2026) renomeou o getter interno do id
 // serializado de id._serialized pra id.$1 — a whatsapp-web.js (rodando via
 // github:pedroslopez/whatsapp-web.js, sem versão fixa) ainda não acompanhou
@@ -2585,6 +2597,7 @@ app.get('/api/relatorio/erros-whatsapp', async (req, res) => {
                     nome: lead?.nome || nomePorTelefone.get(e.telefone) || e.telefone,
                     matricula,
                     ativo: !isNaN(matriculaNum) && matriculasAtivas.has(matriculaNum),
+                    consultor: !isNaN(matriculaNum) && matriculasJuliana.has(matriculaNum) ? CONSULTOR_JULIANA : CONSULTOR_PADRAO,
                     erro: e.erro,
                     ocorrido_em: sqliteTsParaIso(e.ocorrido_em),
                     corrigido_botpro: corrigidoBotpro,
