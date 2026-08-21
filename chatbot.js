@@ -6878,6 +6878,13 @@ function criarClienteWhatsApp(clientId) {
                 '--memory-pressure-off',
                 '--disable-low-res-tiling',
                 '--disable-smooth-scrolling',
+                // Sem limite, o cache HTTP do Chrome cresce sem parar (visto ao vivo:
+                // 83MB só de "Cache" numa sessão) até encher o volume inteiro (500MB) —
+                // foi o que causou "FILE_ERROR_NO_SPACE" e, pior, um logout de verdade
+                // da sessão do WhatsApp quando o disco chegou a 100%. 50MB é de sobra
+                // pro que o WhatsApp Web precisa cachear (não afeta a sessão/login em
+                // si, que fica em IndexedDB/Local Storage, fora desse limite).
+                '--disk-cache-size=52428800',
                 '--js-flags=--max-old-space-size=350 --optimize-for-size --gc-interval=100',
             ],
         },
