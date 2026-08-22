@@ -6815,6 +6815,46 @@ async function limparMidiaAntigaConversas() {
 setInterval(limparMidiaAntigaConversas, 6 * 60 * 60 * 1000); // a cada 6h
 setTimeout(limparMidiaAntigaConversas, 3 * 60 * 1000);
 
+// Corrige mensagens enviadas que ficaram sem msg_id (sendMessage()/
+// sendMessageComRetryLid devolveu vazio mesmo com a mensagem tendo saído de
+// verdade — bug conhecido do whatsapp-web.js, ver comentário em
+// message_create). O backfill de message_create é passivo (só funciona se o
+// evento chegar a tempo); esse aqui é ATIVO — depois de alguns minutos sem
+// confirmação, busca a mensagem de verdade no histórico do próprio WhatsApp
+// (fetchMessages) e completa msg_id + ack a partir do que o WhatsApp
+// realmente registrou, em vez de deixar "pendente" pra sempre na tela mesmo
+// quando o contato recebeu normalmente (caso real: automação "Vence Hoje").
+async function corrigirMensagensSemMsgId() {
+    if (!isConnected || !db) return;
+    try {
+        const pendentes = await db.all(`
+            SELECT id, telefone, texto FROM conversas
+            WHERE direcao = 'out' AND msg_id IS NULL
+              AND strftime('%s', ts) <= strftime('%s', 'now', '-2 minutes')
+              AND strftime('%s', ts) >= strftime('%s', 'now', '-24 hours')
+            ORDER BY ts ASC
+            LIMIT 30
+        `);
+        for (const p of pendentes) {
+            try {
+                const chatId = await resolverChatId(client, p.telefone);
+                const chat = await client.getChatById(chatId);
+                const mensagens = await chat.fetchMessages({ limit: 30 });
+                const encontrada = [...mensagens].reverse().find(m => m.fromMe && m.body === p.texto);
+                const idReal = encontrada && idSerializado(encontrada);
+                if (idReal) {
+                    await db.run('UPDATE conversas SET msg_id = ?, ack = ? WHERE id = ?', [idReal, encontrada.ack ?? null, p.id]);
+                    console.log(`✅ msg_id recuperado pra conversa #${p.id} (${p.telefone}), ack=${encontrada.ack}.`);
+                }
+            } catch (e) { /* contato sem chat acessível agora — tenta de novo no próximo ciclo */ }
+        }
+    } catch (e) {
+        console.error('Erro ao corrigir mensagens sem msg_id:', e.message);
+    }
+}
+setInterval(corrigirMensagensSemMsgId, 10 * 60 * 1000); // a cada 10min
+setTimeout(corrigirMensagensSemMsgId, 4 * 60 * 1000);
+
 // Limpeza dos logs novos de estatísticas (custo de IA, eventos de conexão,
 // disparo) — mesmo padrão acima, só pra não crescer sem limite no volume.
 // Eventos de conexão são poucos (não crescem como mensagem), então a
