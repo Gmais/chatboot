@@ -1544,8 +1544,33 @@ app.post('/webhook/whatsapp-cloud', express.raw({ type: 'application/json' }), a
 // Formato do payload é DIFERENTE do Instagram/Messenger: mensagens vêm em
 // entry[].changes[].value.messages[], não em entry[].messaging[]. O mesmo
 // "value" também pode trazer statuses[] (confirmação de entrega/leitura das
-// mensagens que A GENTE mandou) em vez de messages[] — ignorado aqui, não é
-// mensagem recebida de verdade.
+// mensagens que A GENTE mandou), tratado separadamente logo abaixo
+// (processarStatusWhatsappCloud) — não é mensagem recebida de verdade, mas
+// deixou de ser ignorado (ver comentário na função).
+// Meta manda status de entrega ('sent'/'delivered'/'read'/'failed') pro
+// mesmo id (wamid) que já guardamos em conversas.msg_id pros envios via API
+// Oficial (ver registrarMensagemEnviada(..., resultado?.messages?.[0]?.id,
+// ..., 'whatsapp_cloud')). Sem processar isso, não tinha NENHUMA forma de
+// saber se uma mensagem "enviada com sucesso" pela API de fato chegou —
+// mesmo problema já resolvido pro canal normal via client.on('message_ack'),
+// só que ali é nativo do whatsapp-web.js; aqui a Meta manda por webhook e
+// esse valor.statuses[] vinha sendo ignorado por completo. Mesma escala de
+// ack usada em todo o resto do sistema (1=✓ saiu, 2=✓✓ chegou, 3=✓✓ azul
+// lida, -1=falha real).
+const ACK_POR_STATUS_CLOUD = { sent: 1, delivered: 2, read: 3, failed: -1 };
+async function processarStatusWhatsappCloud(status) {
+    const wamid = status?.id;
+    const ack = ACK_POR_STATUS_CLOUD[status?.status];
+    if (!wamid || ack === undefined || !db) return;
+    await db.run('UPDATE conversas SET ack = ? WHERE msg_id = ?', [ack, wamid]);
+    const linha = await db.get('SELECT id, telefone FROM conversas WHERE msg_id = ?', wamid);
+    if (linha) io.emit('mensagem_ack', { id: linha.id, telefone: linha.telefone, ack });
+    if (ack < 0) {
+        const erroDetalhe = status.errors?.[0]?.title || 'motivo não informado pela Meta';
+        console.error(`❌ [ACK_ERRO] WhatsApp Business API confirmou falha de entrega real pra ${status.recipient_id}: wamid=${wamid} — ${erroDetalhe}`);
+    }
+}
+
 async function processarWebhookWhatsappCloud(payload) {
     if (payload?.object !== 'whatsapp_business_account') return;
     for (const entry of payload.entry || []) {
@@ -1556,6 +1581,13 @@ async function processarWebhookWhatsappCloud(payload) {
                     await processarMensagemWhatsappCloud(mensagem, valor);
                 } catch (e) {
                     console.error('Erro ao processar mensagem do WhatsApp Business API:', e.message);
+                }
+            }
+            for (const status of valor?.statuses || []) {
+                try {
+                    await processarStatusWhatsappCloud(status);
+                } catch (e) {
+                    console.error('Erro ao processar status de entrega do WhatsApp Business API:', e.message);
                 }
             }
         }
