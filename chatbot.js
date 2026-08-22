@@ -1118,6 +1118,14 @@ async function salvarNaConversa(telefone, nome, direcao, texto, tipo = 'text', t
     const num = telefone.replace('@c.us', '').replace('@lid', '');
     const ts = tsReal ? new Date(tsReal * 1000).toISOString() : new Date().toISOString();
     const lida = direcao === 'out' ? 1 : 0;
+    // Toda mensagem 'out' só chega aqui DEPOIS de um envio que não lançou
+    // erro — ou seja, o WhatsApp já aceitou pra envio de verdade, mesmo que
+    // o msg_id não tenha vindo (whatsapp-web.js às vezes devolve undefined
+    // mesmo em envio bem-sucedido). Nasce com ack=1 (✓ Enviado) em vez de
+    // NULL ("sem confirmação"), pra não aparecer como se não tivesse sido
+    // entregue quando na real já foi. Upgrade pra 2/3 (✓✓/✓✓✓) continua
+    // vindo depois via message_ack, quando o msg_id é conhecido.
+    const ackInicial = direcao === 'out' ? 1 : null;
 
     // Guarda primária: mesmo msg_id (id real do WhatsApp) já salvo antes.
     // Sessão instável faz o WhatsApp Web reconectar várias vezes seguidas e,
@@ -1168,12 +1176,12 @@ async function salvarNaConversa(telefone, nome, direcao, texto, tipo = 'text', t
         }
     }
     const resultado = await db.run(
-        'INSERT INTO conversas (telefone, nome, direcao, texto, tipo, ts, lida, manual, media_path, canal, msg_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-        [num, nome || num, direcao, texto, tipo, ts, lida, manual ? 1 : 0, mediaPath, canal, msgId]
+        'INSERT INTO conversas (telefone, nome, direcao, texto, tipo, ts, lida, manual, media_path, canal, msg_id, ack) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        [num, nome || num, direcao, texto, tipo, ts, lida, manual ? 1 : 0, mediaPath, canal, msgId, ackInicial]
     );
     // Conta não lidas deste telefone
     const naoLidas = await db.get('SELECT COUNT(*) as c FROM conversas WHERE telefone=? AND lida=0 AND direcao="in"', num);
-    io.emit('nova_mensagem', { id: resultado.lastID, telefone: num, nome: nome || num, texto, direcao, tipo, ts, nao_lidas: naoLidas.c, manual, media_path: mediaPath, canal });
+    io.emit('nova_mensagem', { id: resultado.lastID, telefone: num, nome: nome || num, texto, direcao, tipo, ts, nao_lidas: naoLidas.c, manual, media_path: mediaPath, canal, ack: ackInicial });
 
     // Qualquer mensagem nova (do cliente OU pro cliente — bot, automação,
     // envio manual) reabre a conversa se ela tinha sido finalizada. "Finalizada"
@@ -6846,65 +6854,6 @@ async function limparMidiaAntigaConversas() {
 }
 setInterval(limparMidiaAntigaConversas, 6 * 60 * 60 * 1000); // a cada 6h
 setTimeout(limparMidiaAntigaConversas, 3 * 60 * 1000);
-
-// Corrige mensagens enviadas que ficaram sem msg_id (sendMessage()/
-// sendMessageComRetryLid devolveu vazio mesmo com a mensagem tendo saído de
-// verdade — bug conhecido do whatsapp-web.js, ver comentário em
-// message_create). O backfill de message_create é passivo (só funciona se o
-// evento chegar a tempo); esse aqui é ATIVO — depois de alguns minutos sem
-// confirmação, busca a mensagem de verdade no histórico do próprio WhatsApp
-// (fetchMessages) e completa msg_id + ack a partir do que o WhatsApp
-// realmente registrou, em vez de deixar "pendente" pra sempre na tela mesmo
-// quando o contato recebeu normalmente (caso real: automação "Vence Hoje").
-async function corrigirMensagensSemMsgId() {
-    if (!isConnected || !db) return;
-    try {
-        const pendentes = await db.all(`
-            SELECT id, telefone, ts FROM conversas
-            WHERE direcao = 'out' AND msg_id IS NULL
-              AND strftime('%s', ts) <= strftime('%s', 'now', '-2 minutes')
-              AND strftime('%s', ts) >= strftime('%s', 'now', '-24 hours')
-            ORDER BY ts ASC
-            LIMIT 30
-        `);
-        console.log(`🔍 corrigirMensagensSemMsgId: ${pendentes.length} pendente(s) encontrada(s).`);
-        for (const p of pendentes) {
-            let etapa = 'inicio';
-            try {
-                // Casa por PROXIMIDADE DE HORÁRIO (janela de 2min), não por texto
-                // exato — mesmo motivo já documentado no backfill de
-                // message_create: \r\n virando \n, emoji renderizado diferente,
-                // encoding, tudo isso quebra comparação de string mesmo sendo a
-                // mesma mensagem de verdade.
-                const tsAlvo = Math.floor(new Date(p.ts).getTime() / 1000);
-                etapa = 'resolverChatId';
-                const chatId = await resolverChatId(client, p.telefone);
-                etapa = 'getChatById';
-                const chat = await client.getChatById(chatId);
-                etapa = 'fetchMessages';
-                const mensagens = await chat.fetchMessages({ limit: 30 });
-                etapa = 'filtrar';
-                const candidatas = mensagens.filter(m => m.fromMe && Math.abs(m.timestamp - tsAlvo) <= 120);
-                // 2+ candidatas na mesma janela (ex: duas mensagens seguidas da
-                // mesma automação) — pega a mais próxima em vez da primeira.
-                candidatas.sort((a, b) => Math.abs(a.timestamp - tsAlvo) - Math.abs(b.timestamp - tsAlvo));
-                const encontrada = candidatas[0];
-                const idReal = encontrada && idSerializado(encontrada);
-                if (idReal) {
-                    etapa = 'update';
-                    await db.run('UPDATE conversas SET msg_id = ?, ack = ? WHERE id = ?', [idReal, encontrada.ack ?? null, p.id]);
-                    console.log(`✅ msg_id recuperado pra conversa #${p.id} (${p.telefone}), ack=${encontrada.ack}.`);
-                }
-            } catch (e) {
-                console.log(`⚠️ corrigirMensagensSemMsgId: falhou pra conversa #${p.id} (${p.telefone}) na etapa=${etapa} — raw=${JSON.stringify(e)} str=${String(e)}`);
-            }
-        }
-    } catch (e) {
-        console.error('Erro ao corrigir mensagens sem msg_id:', e.message);
-    }
-}
-setInterval(corrigirMensagensSemMsgId, 10 * 60 * 1000); // a cada 10min
-setTimeout(corrigirMensagensSemMsgId, 4 * 60 * 1000);
 
 // Limpeza dos logs novos de estatísticas (custo de IA, eventos de conexão,
 // disparo) — mesmo padrão acima, só pra não crescer sem limite no volume.
