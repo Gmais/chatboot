@@ -5831,23 +5831,38 @@ async function aplicarEtiquetasAtivosExAluno() {
     const ativoId = await garantirEtiquetaAtivo();
     const exAlunoId = await garantirEtiquetaExAluno();
 
-    const ativos = await db.all('SELECT telefone FROM pacto_alunos_ativos');
+    const ativos = await db.all('SELECT telefone, matricula FROM pacto_alunos_ativos');
     for (const { telefone } of ativos) {
         await aplicarEtiquetaContato(telefone, ativoId);
         await removerEtiquetaContato(telefone, exAlunoId);
     }
 
-    const exAlunos = await db.all(`
-        SELECT telefone FROM leads
-        WHERE matricula IS NOT NULL AND TRIM(matricula) != ''
-          AND telefone NOT IN (SELECT telefone FROM pacto_alunos_ativos)
-    `);
-    for (const { telefone } of exAlunos) {
-        await aplicarEtiquetaContato(telefone, exAlunoId);
-        await removerEtiquetaContato(telefone, ativoId);
+    // Decide Ativo x Ex-Aluno por MATRÍCULA, não pelo telefone bruto — o
+    // telefone em `leads` pode divergir do telefone que veio na varredura de
+    // pacto_alunos_ativos pro MESMO aluno (trocou de número, cadastro
+    // desatualizado de um lado só) sem que isso signifique que ele não é mais
+    // aluno. Comparar telefone==telefone marcava gente ativa como Ex-Aluno
+    // nesse caso (ex real: Angelo Miguel Welter, matrícula 7034, ativo no
+    // Pacto com telefone diferente do que está salvo aqui em leads — entrou
+    // errado até no sorteio de Resgate Ex-Alunos). Leading-zero-safe (matrícula
+    // é TEXT e pode vir com ou sem zeros à esquerda dos dois lados) — mesmo
+    // padrão usado no Relatório de Erros de WhatsApp.
+    const matriculasAtivas = new Set(ativos.map(r => parseInt(r.matricula, 10)).filter(n => !isNaN(n)));
+    const leadsComMatricula = await db.all("SELECT telefone, matricula FROM leads WHERE matricula IS NOT NULL AND TRIM(matricula) != ''");
+    let exAlunosCount = 0;
+    for (const { telefone, matricula } of leadsComMatricula) {
+        const num = parseInt(matricula, 10);
+        if (!isNaN(num) && matriculasAtivas.has(num)) {
+            await aplicarEtiquetaContato(telefone, ativoId);
+            await removerEtiquetaContato(telefone, exAlunoId);
+        } else {
+            await aplicarEtiquetaContato(telefone, exAlunoId);
+            await removerEtiquetaContato(telefone, ativoId);
+            exAlunosCount++;
+        }
     }
 
-    return { ativos: ativos.length, exAlunos: exAlunos.length };
+    return { ativos: ativos.length, exAlunos: exAlunosCount };
 }
 
 app.post('/api/pacto/ativos/atualizar-contatos', async (req, res) => {
