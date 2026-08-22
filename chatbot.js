@@ -6869,6 +6869,7 @@ async function corrigirMensagensSemMsgId() {
         `);
         console.log(`🔍 corrigirMensagensSemMsgId: ${pendentes.length} pendente(s) encontrada(s).`);
         for (const p of pendentes) {
+            let etapa = 'inicio';
             try {
                 // Casa por PROXIMIDADE DE HORÁRIO (janela de 2min), não por texto
                 // exato — mesmo motivo já documentado no backfill de
@@ -6876,9 +6877,13 @@ async function corrigirMensagensSemMsgId() {
                 // encoding, tudo isso quebra comparação de string mesmo sendo a
                 // mesma mensagem de verdade.
                 const tsAlvo = Math.floor(new Date(p.ts).getTime() / 1000);
+                etapa = 'resolverChatId';
                 const chatId = await resolverChatId(client, p.telefone);
+                etapa = 'getChatById';
                 const chat = await client.getChatById(chatId);
+                etapa = 'fetchMessages';
                 const mensagens = await chat.fetchMessages({ limit: 30 });
+                etapa = 'filtrar';
                 const candidatas = mensagens.filter(m => m.fromMe && Math.abs(m.timestamp - tsAlvo) <= 120);
                 // 2+ candidatas na mesma janela (ex: duas mensagens seguidas da
                 // mesma automação) — pega a mais próxima em vez da primeira.
@@ -6886,15 +6891,12 @@ async function corrigirMensagensSemMsgId() {
                 const encontrada = candidatas[0];
                 const idReal = encontrada && idSerializado(encontrada);
                 if (idReal) {
+                    etapa = 'update';
                     await db.run('UPDATE conversas SET msg_id = ?, ack = ? WHERE id = ?', [idReal, encontrada.ack ?? null, p.id]);
                     console.log(`✅ msg_id recuperado pra conversa #${p.id} (${p.telefone}), ack=${encontrada.ack}.`);
                 }
             } catch (e) {
-                const tipo = typeof e;
-                const ctor = e?.constructor?.name;
-                const chaves = (e && tipo === 'object') ? Object.keys(e).join(',') : '';
-                const stackLinha = e?.stack ? String(e.stack).split('\n')[0] : '';
-                console.log(`⚠️ corrigirMensagensSemMsgId: falhou pra conversa #${p.id} (${p.telefone}) — tipo=${tipo} ctor=${ctor} raw=${JSON.stringify(e)} chaves=[${chaves}] stack0=${JSON.stringify(stackLinha)}`);
+                console.log(`⚠️ corrigirMensagensSemMsgId: falhou pra conversa #${p.id} (${p.telefone}) na etapa=${etapa} — raw=${JSON.stringify(e)} str=${String(e)}`);
             }
         }
     } catch (e) {
