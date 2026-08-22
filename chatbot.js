@@ -6889,7 +6889,13 @@ async function corrigirMensagensSemMsgId() {
                     await db.run('UPDATE conversas SET msg_id = ?, ack = ? WHERE id = ?', [idReal, encontrada.ack ?? null, p.id]);
                     console.log(`✅ msg_id recuperado pra conversa #${p.id} (${p.telefone}), ack=${encontrada.ack}.`);
                 }
-            } catch (e) { console.log(`⚠️ corrigirMensagensSemMsgId: falhou pra conversa #${p.id} (${p.telefone}) — nome=${e?.name} msg=${JSON.stringify(e?.message)}`); }
+            } catch (e) {
+                const tipo = typeof e;
+                const ctor = e?.constructor?.name;
+                const chaves = (e && tipo === 'object') ? Object.keys(e).join(',') : '';
+                const stackLinha = e?.stack ? String(e.stack).split('\n')[0] : '';
+                console.log(`⚠️ corrigirMensagensSemMsgId: falhou pra conversa #${p.id} (${p.telefone}) — tipo=${tipo} ctor=${ctor} raw=${JSON.stringify(e)} chaves=[${chaves}] stack0=${JSON.stringify(stackLinha)}`);
+            }
         }
     } catch (e) {
         console.error('Erro ao corrigir mensagens sem msg_id:', e.message);
