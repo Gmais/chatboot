@@ -6835,6 +6835,7 @@ async function corrigirMensagensSemMsgId() {
             ORDER BY ts ASC
             LIMIT 30
         `);
+        console.log(`🔍 corrigirMensagensSemMsgId: ${pendentes.length} pendente(s) encontrada(s).`);
         for (const p of pendentes) {
             try {
                 // Casa por PROXIMIDADE DE HORÁRIO (janela de 2min), não por texto
@@ -6856,7 +6857,7 @@ async function corrigirMensagensSemMsgId() {
                     await db.run('UPDATE conversas SET msg_id = ?, ack = ? WHERE id = ?', [idReal, encontrada.ack ?? null, p.id]);
                     console.log(`✅ msg_id recuperado pra conversa #${p.id} (${p.telefone}), ack=${encontrada.ack}.`);
                 }
-            } catch (e) { /* contato sem chat acessível agora — tenta de novo no próximo ciclo */ }
+            } catch (e) { console.log(`⚠️ corrigirMensagensSemMsgId: falhou pra conversa #${p.id} (${p.telefone}) — ${e.message}`); }
         }
     } catch (e) {
         console.error('Erro ao corrigir mensagens sem msg_id:', e.message);
