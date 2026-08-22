@@ -5958,6 +5958,7 @@ const CAMPANHAS_INFO = {
     'ex-alunos':                { label: 'Ex-Alunos',                 icon: '👋' },
     'pos-venda-1':              { label: 'Pós Venda 1',               icon: '🎯' },
     'pos-venda-2':              { label: 'Pós Venda 2',               icon: '🔁' },
+    'resgate-ex-alunos':        { label: 'Resgate Ex-Aluno',          icon: '🎁' },
 };
 
 async function loadMensagensPersonalizadas() {
