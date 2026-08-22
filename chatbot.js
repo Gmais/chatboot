@@ -6828,7 +6828,7 @@ async function corrigirMensagensSemMsgId() {
     if (!isConnected || !db) return;
     try {
         const pendentes = await db.all(`
-            SELECT id, telefone, texto FROM conversas
+            SELECT id, telefone, ts FROM conversas
             WHERE direcao = 'out' AND msg_id IS NULL
               AND strftime('%s', ts) <= strftime('%s', 'now', '-2 minutes')
               AND strftime('%s', ts) >= strftime('%s', 'now', '-24 hours')
@@ -6837,10 +6837,20 @@ async function corrigirMensagensSemMsgId() {
         `);
         for (const p of pendentes) {
             try {
+                // Casa por PROXIMIDADE DE HORÁRIO (janela de 2min), não por texto
+                // exato — mesmo motivo já documentado no backfill de
+                // message_create: \r\n virando \n, emoji renderizado diferente,
+                // encoding, tudo isso quebra comparação de string mesmo sendo a
+                // mesma mensagem de verdade.
+                const tsAlvo = Math.floor(new Date(p.ts).getTime() / 1000);
                 const chatId = await resolverChatId(client, p.telefone);
                 const chat = await client.getChatById(chatId);
                 const mensagens = await chat.fetchMessages({ limit: 30 });
-                const encontrada = [...mensagens].reverse().find(m => m.fromMe && m.body === p.texto);
+                const candidatas = mensagens.filter(m => m.fromMe && Math.abs(m.timestamp - tsAlvo) <= 120);
+                // 2+ candidatas na mesma janela (ex: duas mensagens seguidas da
+                // mesma automação) — pega a mais próxima em vez da primeira.
+                candidatas.sort((a, b) => Math.abs(a.timestamp - tsAlvo) - Math.abs(b.timestamp - tsAlvo));
+                const encontrada = candidatas[0];
                 const idReal = encontrada && idSerializado(encontrada);
                 if (idReal) {
                     await db.run('UPDATE conversas SET msg_id = ?, ack = ? WHERE id = ?', [idReal, encontrada.ack ?? null, p.id]);
