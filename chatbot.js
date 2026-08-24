@@ -741,6 +741,15 @@ async function initDB() {
             processado_em DATETIME DEFAULT CURRENT_TIMESTAMP
         )`);
     } catch (e) { console.error('Erro ao criar tabela de dedup do WhatsApp Business API:', e.message); }
+    // Idempotência do fallback pro Principal quando a API Oficial confirma
+    // falha de entrega REAL (ver processarStatusWhatsappCloud) — a Meta pode
+    // reentregar o mesmo evento de status, sem isso reenviaria de novo.
+    try {
+        await db.exec(`CREATE TABLE IF NOT EXISTS whatsapp_cloud_fallback_tentado (
+            wamid TEXT PRIMARY KEY,
+            tentado_em DATETIME DEFAULT CURRENT_TIMESTAMP
+        )`);
+    } catch (e) { console.error('Erro ao criar tabela de dedup do fallback da API Oficial:', e.message); }
 
     // Semeia as programações automáticas que antes eram horários fixos no
     // código (Situação Financeira às 06:05, dias úteis) — agora editável em
@@ -1572,11 +1581,37 @@ async function processarStatusWhatsappCloud(status) {
     const ack = ACK_POR_STATUS_CLOUD[status?.status];
     if (!wamid || ack === undefined || !db) return;
     await db.run('UPDATE conversas SET ack = ? WHERE msg_id = ?', [ack, wamid]);
-    const linha = await db.get('SELECT id, telefone FROM conversas WHERE msg_id = ?', wamid);
+    const linha = await db.get('SELECT id, telefone, texto FROM conversas WHERE msg_id = ?', wamid);
     if (linha) io.emit('mensagem_ack', { id: linha.id, telefone: linha.telefone, ack });
     if (ack < 0) {
         const erroDetalhe = status.errors?.[0]?.title || 'motivo não informado pela Meta';
         console.error(`❌ [ACK_ERRO] WhatsApp Business API confirmou falha de entrega real pra ${status.recipient_id}: wamid=${wamid} — ${erroDetalhe}`);
+        await tentarFallbackPrincipalAposFalhaCloud(linha, wamid);
+    }
+}
+
+// A falha "de verdade" da API Oficial (ex: "Re-engagement message" — contato
+// fora da janela de 24h) só chega DEPOIS do envio, por esse status assíncrono
+// — o `enviarMensagemWhatsappCloud(...)` original não lança erro nenhum (a
+// Meta aceita e devolve wamid normalmente), então o fallback síncrono que já
+// existe em iniciarBroadcast/dispararMensagensDaAutomacao (catch logo após o
+// send) nunca chega a rodar pra esse tipo de falha. Esse aqui é o fallback de
+// verdade: manda a MESMA mensagem pelo número Principal (sem limite de 24h),
+// cumprindo a regra já combinada ("se falhar pela API Oficial, cai pro
+// Principal") pra qualquer origem — Disparo, Automação ou resposta manual.
+async function tentarFallbackPrincipalAposFalhaCloud(linha, wamid) {
+    if (!linha?.telefone || !linha?.texto || !isConnected || !client) return;
+    const jaTentado = await db.get('SELECT 1 FROM whatsapp_cloud_fallback_tentado WHERE wamid = ?', wamid);
+    if (jaTentado) return; // Meta pode reentregar o mesmo evento de status
+    await db.run('INSERT OR IGNORE INTO whatsapp_cloud_fallback_tentado (wamid) VALUES (?)', wamid);
+    try {
+        const chatId = await resolverChatId(client, linha.telefone);
+        const nomeContato = await resolverNomeContato(linha.telefone);
+        const sent = await sendMessageComRetryLid(client, chatId, linha.texto, { waitUntilMsgSent: true });
+        await registrarMensagemEnviada(linha.telefone, linha.texto, nomeContato, idSerializado(sent), false, 'text', null, 'whatsapp');
+        console.log(`↪️ Falha real da API Oficial pra ${linha.telefone} — reenviado com sucesso pelo número Principal.`);
+    } catch (e) {
+        console.error(`❌ Fallback pro número Principal também falhou pra ${linha.telefone}: ${e.message}`);
     }
 }
 
