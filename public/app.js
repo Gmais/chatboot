@@ -1956,6 +1956,7 @@ const CAMPANHA_MATCH_KEYWORDS = {
     'parcelas-atrasadas':      ['parcela', 'atrasad'],
     'vence-hoje':              ['vence', 'hoje'],
     'ex-alunos':               ['ex', 'aluno'],
+    'resgate-ex-alunos':       ['ex', 'aluno'],
     'pos-venda-1':             ['posvenda', '1'],
     'pos-venda-2':             ['posvenda', '2'],
 };
