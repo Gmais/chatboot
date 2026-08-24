@@ -318,6 +318,7 @@ async function seedTemplatesWhatsappCloud() {
         11: { nome: 'cobranca_4', variaveis: ['nome_completo', 'matricula', 'valor', 'dias_atrasados'] },
         12: { nome: 'cobranca_5', variaveis: ['nome_completo', 'matricula', 'valor', 'dias_atrasados'] },
         13: { nome: 'ex_aluno_1', variaveis: ['nome'] },
+        57: { nome: 'resgate_exalunos', variaveis: ['nome'] },
         19: { nome: 'confirmacao_agendamento_1', variaveis: ['nome', 'dia', 'horario', 'professor'] },
         20: { nome: 'parcela_atrasada_1', variaveis: ['nome', 'dias_atrasados', 'valor'] },
         21: { nome: 'parcela_atrasada_1', variaveis: ['nome', 'dias_atrasados', 'valor'] },
