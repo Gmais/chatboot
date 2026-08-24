@@ -761,6 +761,7 @@ navBtns.forEach(btn => {
             sincronizarEstadoDisparo();
             carregarDisparoHistorico();
             carregarDisparoExecucoesHoje();
+            loadDisparosAgendados();
         }
         if (targetId === 'relatorio-section') { loadRelatorioErrosWhatsapp(); loadRelatorioSemCadastro(); loadContratosSemAssinar('juliana'); loadContratosSemAssinar('isadora'); }
         if (targetId === 'api-oficial-section') loadApiOficialMensagens();
@@ -3678,11 +3679,14 @@ broadcastDelayModo?.addEventListener('change', () => {
     if (broadcastDelayAleatorioGroup) broadcastDelayAleatorioGroup.style.display = aleatorio ? 'block' : 'none';
 });
 
-btnDisparar?.addEventListener('click', async () => {
+// Monta o FormData a partir do formulário de Disparo atual — usado tanto
+// pelo envio imediato quanto pelo agendamento (mesma configuração, só muda
+// pra qual endpoint vai e se leva data/horario junto).
+function montarFormDataDisparo() {
     const numeros  = document.getElementById('broadcast-numeros')?.value;
     const mensagem = document.getElementById('broadcast-mensagem')?.value;
-    if (!numeros?.trim())  { alert('Cole os números!'); return; }
-    if (!mensagem?.trim()) { alert('Digite a mensagem!'); return; }
+    if (!numeros?.trim())  { alert('Cole os números!'); return null; }
+    if (!mensagem?.trim()) { alert('Digite a mensagem!'); return null; }
     const formData = new FormData();
     formData.append('numeros', numeros);
     formData.append('mensagem', mensagem);
@@ -3707,6 +3711,12 @@ btnDisparar?.addEventListener('click', async () => {
         formData.append('delay_ms', delay_ms);
     }
     if (broadcastFile?.files[0]) formData.append('media', broadcastFile.files[0]);
+    return formData;
+}
+
+btnDisparar?.addEventListener('click', async () => {
+    const formData = montarFormDataDisparo();
+    if (!formData) return;
     const res = await fetch('/api/broadcast/start', { method: 'POST', body: formData });
     const data = await res.json();
     if (!res.ok) { alert(data.error || 'Erro ao iniciar disparo.'); return; }
@@ -3735,6 +3745,79 @@ btnParar?.addEventListener('click', async () => {
     if (btnDisparar) btnDisparar.style.display = 'inline-flex';
     if (btnParar)    btnParar.style.display = 'none';
 });
+
+// =====================================
+// AGENDAR DISPARO
+// =====================================
+const btnAgendarDisparo        = document.getElementById('btn-agendar-disparo');
+const modalAgendarDisparo      = document.getElementById('modal-agendar-disparo-overlay');
+const modalAgendarDisparoFechar = document.getElementById('modal-agendar-disparo-fechar');
+const btnAgendarDisparoConfirmar = document.getElementById('btn-agendar-disparo-confirmar');
+const agendarDisparoData       = document.getElementById('agendar-disparo-data');
+const agendarDisparoHorario    = document.getElementById('agendar-disparo-horario');
+const disparosAgendadosWrap    = document.getElementById('disparos-agendados-wrap');
+const disparosAgendadosLista   = document.getElementById('disparos-agendados-lista');
+
+btnAgendarDisparo?.addEventListener('click', () => {
+    const numeros  = document.getElementById('broadcast-numeros')?.value;
+    const mensagem = document.getElementById('broadcast-mensagem')?.value;
+    if (!numeros?.trim())  { alert('Cole os números!'); return; }
+    if (!mensagem?.trim()) { alert('Digite a mensagem!'); return; }
+    const hoje = new Date();
+    if (agendarDisparoData) agendarDisparoData.value = hoje.toISOString().slice(0, 10);
+    if (agendarDisparoHorario) agendarDisparoHorario.value = '';
+    modalAgendarDisparo?.classList.add('open');
+});
+modalAgendarDisparoFechar?.addEventListener('click', () => modalAgendarDisparo?.classList.remove('open'));
+
+btnAgendarDisparoConfirmar?.addEventListener('click', async () => {
+    if (!agendarDisparoData?.value || !agendarDisparoHorario?.value) {
+        alert('Escolha data e horário.');
+        return;
+    }
+    const formData = montarFormDataDisparo();
+    if (!formData) return;
+    formData.append('data', agendarDisparoData.value);
+    formData.append('horario', agendarDisparoHorario.value);
+    const res = await fetch('/api/broadcast/agendar', { method: 'POST', body: formData });
+    const data = await res.json();
+    if (!res.ok) { alert(data.error || 'Erro ao agendar disparo.'); return; }
+    modalAgendarDisparo?.classList.remove('open');
+    limparCamposFormularioDisparo();
+    showToast('Disparo agendado!', `Vai começar sozinho em ${agendarDisparoData.value.split('-').reverse().join('/')} às ${agendarDisparoHorario.value}.`, 'success', 6000);
+    loadDisparosAgendados();
+});
+
+function renderDisparosAgendados(lista) {
+    if (!disparosAgendadosWrap || !disparosAgendadosLista) return;
+    disparosAgendadosWrap.style.display = lista.length ? 'block' : 'none';
+    disparosAgendadosLista.innerHTML = lista.map(d => `
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:.6rem;background:var(--input-bg);border-radius:var(--radius-sm);padding:.6rem .8rem">
+            <div style="font-size:.82rem">
+                <strong style="color:var(--text-1)">${d.descricao ? d.descricao.replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c])) : 'Disparo sem nome'}</strong>
+                <span style="color:var(--text-3)"> · ${d.total} número${d.total === 1 ? '' : 's'} · ${d.data.split('-').reverse().join('/')} às ${d.horario}</span>
+            </div>
+            <button type="button" class="btn-danger btn-cancelar-disparo-agendado" data-id="${d.id}" style="padding:.3rem .6rem;font-size:.75rem;white-space:nowrap">🗑️ Cancelar</button>
+        </div>
+    `).join('');
+}
+
+async function loadDisparosAgendados() {
+    try {
+        const res = await fetch('/api/broadcast/agendados');
+        renderDisparosAgendados(await res.json());
+    } catch (e) { console.error('Erro ao carregar disparos agendados:', e); }
+}
+
+disparosAgendadosLista?.addEventListener('click', async (e) => {
+    const btn = e.target.closest('.btn-cancelar-disparo-agendado');
+    if (!btn) return;
+    if (!confirm('Cancelar esse disparo agendado?')) return;
+    await fetch(`/api/broadcast/agendados/${btn.dataset.id}`, { method: 'DELETE' });
+    loadDisparosAgendados();
+});
+
+socket.on('disparos_agendados_atualizados', loadDisparosAgendados);
 
 // =====================================
 // CONVERSATION MANAGER

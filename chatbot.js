@@ -649,6 +649,16 @@ async function initDB() {
             ordem INTEGER DEFAULT 0
         );
         CREATE INDEX IF NOT EXISTS idx_programacao_acoes_prog ON programacao_acoes(programacao_id);
+        CREATE TABLE IF NOT EXISTS disparos_agendados (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            descricao TEXT,
+            total INTEGER,
+            data TEXT NOT NULL,
+            horario TEXT NOT NULL,
+            job_json TEXT NOT NULL,
+            executado INTEGER DEFAULT 0,
+            criado_em DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
         CREATE TABLE IF NOT EXISTS integracao_programacoes (
             chave TEXT PRIMARY KEY,
             dias TEXT NOT NULL,
@@ -5600,6 +5610,45 @@ function iniciarBroadcast(job) {
     })();
 }
 
+// Monta o job de Disparo a partir do corpo da requisição — usado tanto pelo
+// envio imediato (/api/broadcast/start) quanto pelo agendamento
+// (/api/broadcast/agendar), pra não duplicar a lógica de roteamento/template.
+function montarJobDisparo(req) {
+    const { numeros, mensagem, delay_ms, delay_modo, delay_velocidade, categoria, descricao, mensagemId } = req.body;
+    const listaNumeros = (numeros || '').split('\n').map(n => n.trim().replace(/\D/g, '')).filter(n => n.length >= 10);
+    if (listaNumeros.length === 0) throw new Error('Nenhum número válido encontrado.');
+    if (!mensagem) throw new Error('Mensagem obrigatória.');
+
+    // Guarda no histórico QUAL era o assunto do disparo, já que
+    // disparo_envios_log nunca guardou o texto/mídia enviado de verdade. Usa o
+    // nome da Mensagem Personalizada quando veio de lá (o front manda em
+    // "descricao"); sem isso, cai pra um resumo do texto digitado na hora.
+    const descricaoFinal = (descricao && descricao.trim())
+        ? descricao.trim().slice(0, 120)
+        : mensagem.trim().slice(0, 60) + (mensagem.trim().length > 60 ? '…' : '');
+
+    return { listaNumeros, mensagem, delay_ms, delay_modo, delay_velocidade, categoria, mensagemId, descricaoFinal };
+}
+
+// Roteamento por campanha (disparo_roteamento) + template aprovado
+// (mensagens_personalizadas.template_whatsapp), calculados a partir da
+// categoria/mensagemId já resolvidos por montarJobDisparo.
+async function resolverRoteamentoETemplate(categoria, mensagemId) {
+    let numerosPermitidosIds = null;
+    if (categoria) {
+        const regra = await db.get('SELECT numeros_ids FROM disparo_roteamento WHERE campanha_chave = ?', categoria);
+        if (regra?.numeros_ids) numerosPermitidosIds = regra.numeros_ids.split(',').filter(Boolean).map(Number);
+    }
+    let templateWhatsapp = null;
+    if (mensagemId) {
+        const msgRow = await db.get('SELECT template_whatsapp FROM mensagens_personalizadas WHERE id = ?', Number(mensagemId));
+        if (msgRow?.template_whatsapp) {
+            try { templateWhatsapp = JSON.parse(msgRow.template_whatsapp); } catch (_) { }
+        }
+    }
+    return { numerosPermitidosIds, templateWhatsapp };
+}
+
 app.post('/api/broadcast/start', upload.single('media'), async (req, res) => {
     // Disparo é feito pelo pool de Números de Envio, dedicados a isso (ver
     // POOL DE NÚMEROS PARA DISPARO). TEMPORÁRIO (pedido do usuário): nesse
@@ -5612,42 +5661,10 @@ app.post('/api/broadcast/start', upload.single('media'), async (req, res) => {
         return res.status(400).json({ error: 'Nenhum número de disparo conectado. Conecte pelo menos um em "Números de Envio" antes de disparar.' });
     }
 
-    const { numeros, mensagem, delay_ms, delay_modo, delay_velocidade, categoria, descricao, mensagemId } = req.body;
-    const listaNumeros = numeros.split('\n').map(n => n.trim().replace(/\D/g, '')).filter(n => n.length >= 10);
-
-    if (listaNumeros.length === 0) return res.status(400).json({ error: 'Nenhum número válido encontrado.' });
-    if (!mensagem) return res.status(400).json({ error: 'Mensagem obrigatória.' });
-
-    // Guarda no histórico QUAL era o assunto do disparo, já que
-    // disparo_envios_log nunca guardou o texto/mídia enviado de verdade. Usa o
-    // nome da Mensagem Personalizada quando veio de lá (o front manda em
-    // "descricao"); sem isso, cai pra um resumo do texto digitado na hora.
-    const descricaoFinal = (descricao && descricao.trim())
-        ? descricao.trim().slice(0, 120)
-        : mensagem.trim().slice(0, 60) + (mensagem.trim().length > 60 ? '…' : '');
-
-    // Roteamento por campanha: se a mensagem usada tem uma categoria (ver
-    // Mensagens Personalizadas) e existe uma regra configurada em
-    // disparo_roteamento pra ela, restringe o rodízio a só os números
-    // atribuídos (1 = exclusivo daquele número; 2+ = revezam só entre eles).
-    let numerosPermitidosIds = null;
-    if (categoria) {
-        const regra = await db.get('SELECT numeros_ids FROM disparo_roteamento WHERE campanha_chave = ?', categoria);
-        if (regra?.numeros_ids) numerosPermitidosIds = regra.numeros_ids.split(',').filter(Boolean).map(Number);
-    }
-
-    // Mensagem tem Template aprovado vinculado (ver seedTemplatesWhatsappCloud)
-    // — pra público frio (ex: Resgate Ex-Aluno), texto livre pela API Oficial
-    // sempre falha ("Re-engagement message", fora da janela de 24h da Meta).
-    // Indo direto pelo template desde o início, sem tentar texto livre antes,
-    // resolve isso sem precisar reenviar por outro canal (ver iniciarBroadcast).
-    let templateWhatsapp = null;
-    if (mensagemId) {
-        const msgRow = await db.get('SELECT template_whatsapp FROM mensagens_personalizadas WHERE id = ?', Number(mensagemId));
-        if (msgRow?.template_whatsapp) {
-            try { templateWhatsapp = JSON.parse(msgRow.template_whatsapp); } catch (_) { }
-        }
-    }
+    let dadosJob;
+    try { dadosJob = montarJobDisparo(req); } catch (e) { return res.status(400).json({ error: e.message }); }
+    const { listaNumeros, mensagem, delay_ms, delay_modo, delay_velocidade, categoria, mensagemId, descricaoFinal } = dadosJob;
+    const { numerosPermitidosIds, templateWhatsapp } = await resolverRoteamentoETemplate(categoria, mensagemId);
 
     const mediaFile = req.file ? { path: req.file.path, mimetype: req.file.mimetype, filename: req.file.originalname } : null;
     const job = { listaNumeros, mensagem, mediaFile, delay_ms, delay_modo, delay_velocidade, numerosPermitidosIds, descricao: descricaoFinal, templateWhatsapp };
@@ -5661,6 +5678,90 @@ app.post('/api/broadcast/start', upload.single('media'), async (req, res) => {
     res.json({ success: true, queued: false, total: listaNumeros.length });
     iniciarBroadcast(job);
 });
+
+// Agenda um Disparo pra rodar sozinho numa data/horário futuros — mesma
+// configuração da tela (números, mensagem, mídia, intervalo), só que fica
+// guardada até chegar a hora (ver checarDisparosAgendados). Roteamento e
+// template são resolvidos de novo NA HORA do disparo de verdade (não agora),
+// já que a regra pode mudar entre o agendamento e a execução.
+app.post('/api/broadcast/agendar', upload.single('media'), async (req, res) => {
+    let dadosJob;
+    try { dadosJob = montarJobDisparo(req); } catch (e) { return res.status(400).json({ error: e.message }); }
+    const { data, horario } = req.body;
+    if (!data || !horario) return res.status(400).json({ error: 'Data e horário são obrigatórios.' });
+    const agora = moment.tz('America/Sao_Paulo');
+    const alvo = moment.tz(`${data} ${horario}`, 'YYYY-MM-DD HH:mm', 'America/Sao_Paulo');
+    if (!alvo.isValid() || alvo.isBefore(agora)) {
+        return res.status(400).json({ error: 'Escolha uma data/horário no futuro.' });
+    }
+
+    const { listaNumeros, mensagem, delay_ms, delay_modo, delay_velocidade, categoria, mensagemId, descricaoFinal } = dadosJob;
+    const mediaFile = req.file ? { path: req.file.path, mimetype: req.file.mimetype, filename: req.file.originalname } : null;
+    const jobJson = JSON.stringify({ listaNumeros, mensagem, mediaFile, delay_ms, delay_modo, delay_velocidade, categoria, mensagemId, descricao: descricaoFinal });
+
+    const resultado = await db.run(
+        'INSERT INTO disparos_agendados (descricao, total, data, horario, job_json) VALUES (?, ?, ?, ?, ?)',
+        [descricaoFinal, listaNumeros.length, data, horario, jobJson]
+    );
+    io.emit('disparos_agendados_atualizados');
+    res.json({ success: true, id: resultado.lastID });
+});
+
+app.get('/api/broadcast/agendados', async (req, res) => {
+    const lista = await db.all("SELECT id, descricao, total, data, horario, criado_em FROM disparos_agendados WHERE executado = 0 ORDER BY data ASC, horario ASC");
+    res.json(lista);
+});
+
+app.delete('/api/broadcast/agendados/:id', async (req, res) => {
+    const row = await db.get('SELECT job_json FROM disparos_agendados WHERE id = ? AND executado = 0', req.params.id);
+    if (!row) return res.status(404).json({ error: 'Agendamento não encontrado (ou já foi disparado).' });
+    try {
+        const job = JSON.parse(row.job_json);
+        if (job.mediaFile?.path && fs.existsSync(job.mediaFile.path)) fs.unlinkSync(job.mediaFile.path);
+    } catch (_) { }
+    await db.run('DELETE FROM disparos_agendados WHERE id = ?', req.params.id);
+    io.emit('disparos_agendados_atualizados');
+    res.json({ success: true });
+});
+
+// A cada minuto, dispara sozinho quem já bateu a data/horário agendados —
+// mesma granularidade/estilo do checarProgramacoes. Marca executado ANTES de
+// chamar iniciarBroadcast pra nunca disparar a mesma linha duas vezes (ex:
+// dois ticks do interval competindo).
+async function checarDisparosAgendados() {
+    if (!db) return;
+    const algumPoolConectado = [...poolClients.values()].some(e => e.status === 'connected');
+    if (!algumPoolConectado && !isConnected) return; // tenta de novo no próximo minuto
+    try {
+        const agora = moment.tz('America/Sao_Paulo');
+        const hojeYMD = agora.format('YYYY-MM-DD');
+        const minutoAtual = agora.hours() * 60 + agora.minutes();
+        const pendentes = await db.all('SELECT * FROM disparos_agendados WHERE executado = 0');
+        for (const d of pendentes) {
+            if (d.data > hojeYMD) continue;
+            if (d.data === hojeYMD) {
+                const [h, m] = d.horario.split(':').map(Number);
+                if (minutoAtual < h * 60 + m) continue;
+            }
+            await db.run('UPDATE disparos_agendados SET executado = 1 WHERE id = ?', d.id);
+            io.emit('disparos_agendados_atualizados');
+            console.log(`🗓️ Disparo agendado #${d.id} (${d.descricao || 'sem descrição'}): disparando...`);
+            let jobSalvo;
+            try { jobSalvo = JSON.parse(d.job_json); } catch (e) { console.error(`Erro ao ler disparo agendado #${d.id}:`, e.message); continue; }
+            const { numerosPermitidosIds, templateWhatsapp } = await resolverRoteamentoETemplate(jobSalvo.categoria, jobSalvo.mensagemId);
+            const job = { ...jobSalvo, numerosPermitidosIds, templateWhatsapp };
+            if (broadcastRunning) {
+                filaDisparos.push(job);
+                io.emit('broadcast_fila_atualizada', { tamanho: filaDisparos.length });
+            } else {
+                iniciarBroadcast(job);
+            }
+        }
+    } catch (e) {
+        console.error('Erro ao checar disparos agendados:', e.message);
+    }
+}
+setInterval(checarDisparosAgendados, 60 * 1000);
 
 app.post('/api/broadcast/stop', (req, res) => {
     broadcastRunning = false;

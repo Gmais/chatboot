@@ -725,9 +725,15 @@
                     </div>
                     <div style="display:flex;gap:.8rem;margin-top:.5rem">
                         <button class="btn-primary" id="btn-disparar" style="flex:1">🚀 Iniciar Disparo</button>
+                        <button class="btn-secondary" id="btn-agendar-disparo" style="flex:1">🗓️ Agendar Disparo</button>
                         <button class="btn-danger" id="btn-parar" style="display:none">⏹ Parar</button>
                     </div>
                     <p id="disparo-fila-status" class="hidden" style="text-align:center;color:var(--amber);font-size:.78rem;margin-top:.6rem"></p>
+
+                    <div id="disparos-agendados-wrap" style="display:none;margin-top:1.2rem;padding-top:1rem;border-top:1px solid rgba(255,255,255,0.08)">
+                        <h4 style="font-size:.85rem;color:var(--text-2);margin:0 0 .6rem">🗓️ Disparos Agendados</h4>
+                        <div id="disparos-agendados-lista" style="display:flex;flex-direction:column;gap:.5rem"></div>
+                    </div>
                 </div>
 
                 <div class="card glass">
@@ -1682,6 +1688,25 @@ Sempre tente agendar uma aula experimental."></textarea>
             <div id="nova-conversa-lista" style="max-height:220px;overflow-y:auto;display:flex;flex-direction:column;gap:.3rem;margin-bottom:1rem"></div>
             <div class="modal-footer">
                 <button class="btn-cancel" id="modal-nova-conversa-fechar">Fechar</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- MODAL: AGENDAR DISPARO -->
+    <div class="modal-overlay" id="modal-agendar-disparo-overlay">
+        <div class="modal">
+            <h3>🗓️ Agendar Disparo</h3>
+            <p style="color:var(--text-3);font-size:.82rem;margin:.3rem 0 1rem">Usa a mesma configuração já preenchida na tela (números, mensagem, mídia e intervalo) — só escolha quando disparar.</p>
+
+            <label style="display:block;font-size:.78rem;color:var(--text-3);margin-bottom:.3rem">Data</label>
+            <input type="date" id="agendar-disparo-data" style="width:100%;background:var(--input-bg);border:1px solid rgba(255,255,255,0.1);border-radius:var(--radius-sm);padding:.6rem .8rem;color:var(--text-1);font-size:.9rem;margin-bottom:1rem">
+
+            <label style="display:block;font-size:.78rem;color:var(--text-3);margin-bottom:.3rem">Horário</label>
+            <input type="time" id="agendar-disparo-horario" style="width:100%;background:var(--input-bg);border:1px solid rgba(255,255,255,0.1);border-radius:var(--radius-sm);padding:.6rem .8rem;color:var(--text-1);font-size:.9rem;margin-bottom:1.2rem">
+
+            <div class="modal-footer">
+                <button class="btn-cancel" id="modal-agendar-disparo-fechar">Cancelar</button>
+                <button class="btn-primary" id="btn-agendar-disparo-confirmar">🗓️ Agendar</button>
             </div>
         </div>
     </div>
