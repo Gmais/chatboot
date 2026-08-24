@@ -1894,6 +1894,38 @@ app.put('/api/whatsapp-cloud/config', async (req, res) => {
     res.json({ success: true });
 });
 
+// Monitor exclusivo da API Oficial (tela "Monitor API Oficial") — mesma
+// tabela conversas de sempre, só filtrando canal='whatsapp_cloud' (cobre
+// mensagem enviada pelo BotPro/automação E eco do WhatsApp Business App via
+// Coexistência, que também grava com esse canal). resumoHoje agrega por
+// direção/ack em SQL em vez de reprocessar no JS — mais barato e não
+// depende do LIMIT da lista de mensagens.
+app.get('/api/whatsapp-cloud/mensagens', async (req, res) => {
+    try {
+        const mensagens = await db.all(
+            `SELECT id, telefone, nome, direcao, texto, tipo, ts, ack, manual
+             FROM conversas WHERE canal = 'whatsapp_cloud'
+             ORDER BY ts DESC LIMIT 300`
+        );
+        const linhasResumo = await db.all(
+            `SELECT direcao, ack, COUNT(*) as c FROM conversas
+             WHERE canal = 'whatsapp_cloud' AND date(ts) = date('now')
+             GROUP BY direcao, ack`
+        );
+        const resumoHoje = { enviadas: 0, recebidas: 0, entregues: 0, lidas: 0, falhas: 0 };
+        for (const linha of linhasResumo) {
+            if (linha.direcao === 'in') { resumoHoje.recebidas += linha.c; continue; }
+            resumoHoje.enviadas += linha.c;
+            if (linha.ack === 2 || linha.ack === 3) resumoHoje.entregues += linha.c;
+            if (linha.ack === 3) resumoHoje.lidas += linha.c;
+            if (linha.ack === -1) resumoHoje.falhas += linha.c;
+        }
+        res.json({ resumoHoje, mensagens });
+    } catch (e) {
+        res.status(500).json({ erro: e.message });
+    }
+});
+
 // =====================================
 // INTEGRAÇÃO COM GYMPULSE (resumo diário de treino → WhatsApp do aluno)
 // =====================================

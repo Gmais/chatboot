@@ -763,6 +763,7 @@ navBtns.forEach(btn => {
             carregarDisparoExecucoesHoje();
         }
         if (targetId === 'relatorio-section') { loadRelatorioErrosWhatsapp(); loadRelatorioSemCadastro(); loadContratosSemAssinar('juliana'); loadContratosSemAssinar('isadora'); }
+        if (targetId === 'api-oficial-section') loadApiOficialMensagens();
     });
 });
 
@@ -2411,6 +2412,94 @@ relatorioErrosLista?.addEventListener('change', async (e) => {
         linha.remove();
         showToast('Marcado como corrigido', '', 'success', 2000);
     }
+});
+
+// =====================================
+// MONITOR API OFICIAL (WhatsApp Business Cloud API)
+// =====================================
+let apiOficialMensagens = [];
+let apiOficialFiltroDirecao = 'todas';
+
+function apiOficialEscapeHtml(str) {
+    return String(str ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+function apiOficialStatusHtml(m) {
+    if (m.direcao !== 'out') return '<span style="color:var(--text-3)">—</span>';
+    const rotulo = m.manual ? ' (celular)' : '';
+    const ack = m.ack === undefined || m.ack === null ? null : Number(m.ack);
+    if (ack === null) return `🕓 Sem confirmação${rotulo}`;
+    if (ack === -1) return `<span style="color:var(--red)">⚠️ Falha${rotulo}</span>`;
+    if (ack === 1) return `✓ Enviado${rotulo}`;
+    if (ack === 2) return `✓✓ Entregue${rotulo}`;
+    return `<span style="color:#53bdeb">✓✓ Lida${rotulo}</span>`;
+}
+
+function renderApiOficialMensagens() {
+    const tbody = document.getElementById('api-oficial-mensagens-tbody');
+    if (!tbody) return;
+    const lista = apiOficialFiltroDirecao === 'todas'
+        ? apiOficialMensagens
+        : apiOficialMensagens.filter(m => m.direcao === apiOficialFiltroDirecao);
+    if (!lista.length) {
+        tbody.innerHTML = '<tr><td colspan="5" style="padding:2rem;text-align:center;color:var(--text-3)">Nenhuma mensagem por aqui ainda.</td></tr>';
+        return;
+    }
+    tbody.innerHTML = lista.map(m => `
+        <tr>
+            <td style="white-space:nowrap;color:var(--text-3);font-size:.78rem">${new Date(m.ts).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}</td>
+            <td>${apiOficialEscapeHtml(m.nome || m.telefone)}<br><span style="color:var(--text-3);font-size:.75rem">${apiOficialEscapeHtml(m.telefone)}</span></td>
+            <td style="white-space:nowrap">${m.direcao === 'out' ? '📤 Enviada' : '📥 Recebida'}</td>
+            <td style="max-width:340px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${apiOficialEscapeHtml(m.texto)}">${apiOficialEscapeHtml(m.texto)}</td>
+            <td style="white-space:nowrap;font-size:.8rem">${apiOficialStatusHtml(m)}</td>
+        </tr>
+    `).join('');
+}
+
+async function loadApiOficialMensagens() {
+    try {
+        const res = await fetch('/api/whatsapp-cloud/mensagens');
+        const dados = await res.json();
+        apiOficialMensagens = dados.mensagens || [];
+        const r = dados.resumoHoje || {};
+        document.getElementById('api-oficial-enviadas-hoje').textContent = r.enviadas ?? 0;
+        document.getElementById('api-oficial-recebidas-hoje').textContent = r.recebidas ?? 0;
+        document.getElementById('api-oficial-entregues-hoje').textContent = r.entregues ?? 0;
+        document.getElementById('api-oficial-lidas-hoje').textContent = r.lidas ?? 0;
+        document.getElementById('api-oficial-falhas-hoje').textContent = r.falhas ?? 0;
+        renderApiOficialMensagens();
+    } catch (e) {
+        const tbody = document.getElementById('api-oficial-mensagens-tbody');
+        if (tbody) tbody.innerHTML = '<tr><td colspan="5" style="padding:2rem;text-align:center;color:var(--text-3)">Erro ao carregar.</td></tr>';
+    }
+}
+
+document.querySelectorAll('#api-oficial-section [data-filtro-direcao]').forEach(btn => {
+    btn.addEventListener('click', () => {
+        apiOficialFiltroDirecao = btn.getAttribute('data-filtro-direcao');
+        document.querySelectorAll('#api-oficial-section [data-filtro-direcao]').forEach(b => {
+            const ativo = b === btn;
+            b.classList.toggle('active', ativo);
+            b.style.background = ativo ? 'var(--blue)' : '';
+        });
+        renderApiOficialMensagens();
+    });
+});
+
+// Chegada ao vivo (socket já emite isso pra QUALQUER canal — Bate Papo
+// também escuta o mesmo evento) — só entra na lista se for da API Oficial e
+// a tela já tiver carregado antes (pool inicializado).
+socket.on('nova_mensagem', (data) => {
+    if (data.canal !== 'whatsapp_cloud' || !document.getElementById('api-oficial-mensagens-tbody')) return;
+    apiOficialMensagens.unshift({ id: data.id, telefone: data.telefone, nome: data.nome, direcao: data.direcao, texto: data.texto, tipo: data.tipo, ts: data.ts, ack: data.ack, manual: data.manual });
+    if (!document.getElementById('api-oficial-section')?.classList.contains('hidden')) renderApiOficialMensagens();
+});
+
+socket.on('mensagem_ack', (data) => {
+    const alvo = apiOficialMensagens.find(m => m.id === data.id);
+    if (!alvo) return;
+    alvo.ack = data.ack;
+    if (!document.getElementById('api-oficial-section')?.classList.contains('hidden')) renderApiOficialMensagens();
 });
 
 // Sem Matrícula/Nascimento: os dois checkboxes são alternativos — marcar

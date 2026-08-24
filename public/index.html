@@ -55,6 +55,10 @@
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 17H7A2 2 0 0 1 5 15V5A2 2 0 0 1 7 3H17A2 2 0 0 1 19 5V15A2 2 0 0 1 17 17H15"/><path d="M9 12l2 2 4-4"/><path d="M9 21H15"/></svg>
                 <span class="nav-label">Relatório</span>
             </a>
+            <a href="#" class="nav-btn" data-target="api-oficial-section" title="Monitor API Oficial">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/></svg>
+                <span class="nav-label">Monitor API Oficial</span>
+            </a>
             <a href="#" class="nav-btn" data-target="automacoes-section" title="Automação">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M3 12h3m12 0h3M12 3v3m0 12v3M5.6 5.6l2.1 2.1m8.6 8.6 2.1 2.1M5.6 18.4l2.1-2.1m8.6-8.6 2.1-2.1"/></svg>
                 <span class="nav-label">Automação</span>
@@ -901,6 +905,75 @@
                 <p style="color:var(--text-3);font-size:.8rem;margin:-.6rem 0 1rem">Contatos sem matrícula ou sem data de nascimento cadastrada. Clique no nome pra editar o contato.</p>
                 <div id="relatorio-sem-cadastro-lista" style="display:flex;flex-direction:column;gap:.4rem">
                     <div style="padding:1.5rem;text-align:center;color:var(--text-3)">Carregando...</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ===================== MONITOR API OFICIAL ===================== -->
+        <div id="api-oficial-section" class="page-section hidden">
+            <div class="metric-grid" style="margin-bottom:1.5rem">
+                <div class="metric-card">
+                    <div class="metric-icon blue">📤</div>
+                    <div class="metric-info">
+                        <span class="metric-label">Enviadas Hoje</span>
+                        <span class="metric-value" id="api-oficial-enviadas-hoje">0</span>
+                    </div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-icon green">📥</div>
+                    <div class="metric-info">
+                        <span class="metric-label">Recebidas Hoje</span>
+                        <span class="metric-value" id="api-oficial-recebidas-hoje">0</span>
+                    </div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-icon blue">✓✓</div>
+                    <div class="metric-info">
+                        <span class="metric-label">Entregues Hoje</span>
+                        <span class="metric-value" id="api-oficial-entregues-hoje">0</span>
+                    </div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-icon amber">👁️</div>
+                    <div class="metric-info">
+                        <span class="metric-label">Lidas Hoje</span>
+                        <span class="metric-value" id="api-oficial-lidas-hoje">0</span>
+                    </div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-icon" style="background:rgba(239,68,68,0.12)">⚠️</div>
+                    <div class="metric-info">
+                        <span class="metric-label">Falhas Hoje</span>
+                        <span class="metric-value" id="api-oficial-falhas-hoje">0</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card glass">
+                <div class="section-header">
+                    <h3>📡 Mensagens via API Oficial</h3>
+                    <div style="display:flex;gap:.5rem;flex-wrap:wrap">
+                        <button type="button" class="etiqueta-filtro-chip active" data-filtro-direcao="todas">Todas</button>
+                        <button type="button" class="etiqueta-filtro-chip" data-filtro-direcao="out">📤 Enviadas</button>
+                        <button type="button" class="etiqueta-filtro-chip" data-filtro-direcao="in">📥 Recebidas</button>
+                    </div>
+                </div>
+                <p style="color:var(--text-3);font-size:.8rem;margin:-.6rem 0 1rem">Últimas 300 mensagens trocadas pelo número da API Oficial (WhatsApp Business API) — enviadas pelo BotPro/automação, ou pelo WhatsApp Business App no celular quando a Coexistência estiver ativa.</p>
+                <div style="overflow-x:auto">
+                    <table class="leads-table">
+                        <thead>
+                            <tr>
+                                <th>Horário</th>
+                                <th>Contato</th>
+                                <th>Direção</th>
+                                <th>Mensagem</th>
+                                <th>Status</th>
+                            </tr>
+                        </thead>
+                        <tbody id="api-oficial-mensagens-tbody">
+                            <tr><td colspan="5" style="padding:2rem;text-align:center;color:var(--text-3)">Carregando...</td></tr>
+                        </tbody>
+                    </table>
                 </div>
             </div>
         </div>
