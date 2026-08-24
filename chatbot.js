@@ -5457,7 +5457,7 @@ app.get('/api/broadcast/historico', async (req, res) => {
 let filaDisparos = [];
 
 function iniciarBroadcast(job) {
-    const { listaNumeros, mensagem, mediaFile, delay_ms, delay_modo, delay_velocidade, descricao } = job;
+    const { listaNumeros, mensagem, mediaFile, delay_ms, delay_modo, delay_velocidade, descricao, templateWhatsapp } = job;
 
     // Modo fixo: mesmo intervalo sempre. Modo aleatório: um valor novo dentro
     // da faixa escolhida a cada mensagem — menos previsível, reduz risco de bloqueio.
@@ -5514,7 +5514,22 @@ function iniciarBroadcast(job) {
                 if (entryEnvio.tipo === 'cloud_api') {
                     try {
                         if (mediaFile) throw new Error('Mídia não é suportada via WhatsApp Business API nessa 1ª versão.');
-                        const resultadoCloud = await enviarMensagemWhatsappCloud(numeroCompleto, textoPersonalizado, entryEnvio.config);
+                        let resultadoCloud;
+                        if (templateWhatsapp) {
+                            // Mensagem tem Template aprovado vinculado — manda direto por
+                            // ele, sem tentar texto livre antes. Público de campanha (ex:
+                            // Resgate Ex-Aluno) é frio por natureza — texto livre SEMPRE
+                            // falharia por "Re-engagement message" (fora da janela de 24h
+                            // da Meta), e essa falha só chega DEPOIS do envio (assíncrona,
+                            // via webhook de status), então nem dava pra confiar em cair
+                            // pro Principal só quando desse errado — reenviar em massa por
+                            // ali é justamente o padrão que arrisca bloqueio dele.
+                            const primeiroNome = (nomeContato || '').trim().split(' ')[0] || '';
+                            const parametros = (templateWhatsapp.variaveis || []).map(v => v === 'nome' ? primeiroNome : '');
+                            resultadoCloud = await enviarTemplateWhatsappCloud(numeroCompleto, templateWhatsapp.nome, parametros, entryEnvio.config);
+                        } else {
+                            resultadoCloud = await enviarMensagemWhatsappCloud(numeroCompleto, textoPersonalizado, entryEnvio.config);
+                        }
                         // Disparo pela API Oficial também precisa aparecer no Bate
                         // Papo igual qualquer outro canal (pedido do usuário: "todo
                         // disparo e conversa tem que entrar no Bate papo") — antes só
@@ -5597,7 +5612,7 @@ app.post('/api/broadcast/start', upload.single('media'), async (req, res) => {
         return res.status(400).json({ error: 'Nenhum número de disparo conectado. Conecte pelo menos um em "Números de Envio" antes de disparar.' });
     }
 
-    const { numeros, mensagem, delay_ms, delay_modo, delay_velocidade, categoria, descricao } = req.body;
+    const { numeros, mensagem, delay_ms, delay_modo, delay_velocidade, categoria, descricao, mensagemId } = req.body;
     const listaNumeros = numeros.split('\n').map(n => n.trim().replace(/\D/g, '')).filter(n => n.length >= 10);
 
     if (listaNumeros.length === 0) return res.status(400).json({ error: 'Nenhum número válido encontrado.' });
@@ -5621,8 +5636,21 @@ app.post('/api/broadcast/start', upload.single('media'), async (req, res) => {
         if (regra?.numeros_ids) numerosPermitidosIds = regra.numeros_ids.split(',').filter(Boolean).map(Number);
     }
 
+    // Mensagem tem Template aprovado vinculado (ver seedTemplatesWhatsappCloud)
+    // — pra público frio (ex: Resgate Ex-Aluno), texto livre pela API Oficial
+    // sempre falha ("Re-engagement message", fora da janela de 24h da Meta).
+    // Indo direto pelo template desde o início, sem tentar texto livre antes,
+    // resolve isso sem precisar reenviar por outro canal (ver iniciarBroadcast).
+    let templateWhatsapp = null;
+    if (mensagemId) {
+        const msgRow = await db.get('SELECT template_whatsapp FROM mensagens_personalizadas WHERE id = ?', Number(mensagemId));
+        if (msgRow?.template_whatsapp) {
+            try { templateWhatsapp = JSON.parse(msgRow.template_whatsapp); } catch (_) { }
+        }
+    }
+
     const mediaFile = req.file ? { path: req.file.path, mimetype: req.file.mimetype, filename: req.file.originalname } : null;
-    const job = { listaNumeros, mensagem, mediaFile, delay_ms, delay_modo, delay_velocidade, numerosPermitidosIds, descricao: descricaoFinal };
+    const job = { listaNumeros, mensagem, mediaFile, delay_ms, delay_modo, delay_velocidade, numerosPermitidosIds, descricao: descricaoFinal, templateWhatsapp };
 
     if (broadcastRunning) {
         filaDisparos.push(job);

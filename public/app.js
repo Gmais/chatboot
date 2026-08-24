@@ -3691,6 +3691,10 @@ btnDisparar?.addEventListener('click', async () => {
     const mensagemSelecionadaId = Number(broadcastMensagemSelect?.value);
     const mensagemSelecionada = mensagemSelecionadaId ? mensagensPersonalizadasParaDisparo.find(m => m.id === mensagemSelecionadaId) : null;
     if (mensagemSelecionada?.categoria) formData.append('categoria', mensagemSelecionada.categoria);
+    // Mensagem tem um Template aprovado vinculado (Configurações → WhatsApp
+    // Business API) — manda o id pro backend poder usar o template direto
+    // via API Oficial em vez de texto livre (ver iniciarBroadcast).
+    if (mensagemSelecionadaId) formData.append('mensagemId', mensagemSelecionadaId);
     // Nome da Mensagem Personalizada usada (se veio de lá) — vira a "descrição"
     // no Histórico de Disparos, já que o texto/mídia enviado não fica salvo lá.
     if (mensagemSelecionada?.nome) formData.append('descricao', mensagemSelecionada.nome);
