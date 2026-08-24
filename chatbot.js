@@ -1598,8 +1598,45 @@ async function processarWebhookWhatsappCloud(payload) {
                     console.error('Erro ao processar status de entrega do WhatsApp Business API:', e.message);
                 }
             }
+            // Modo Coexistência: mensagem mandada pela recepcionista direto no
+            // WhatsApp Business App do celular (não pelo BotPro) — Meta manda
+            // esse evento separado (campo "smb_message_echoes") só pra manter o
+            // histórico sincronizado. Sem isso, uma conversa respondida pelo
+            // celular ficava faltando no Bate Papo, como se ninguém tivesse
+            // respondido.
+            for (const echo of valor?.message_echoes || []) {
+                try {
+                    await processarEchoWhatsappCloud(echo);
+                } catch (e) {
+                    console.error('Erro ao processar eco do WhatsApp Business App (coexistência):', e.message);
+                }
+            }
         }
     }
+}
+
+async function processarEchoWhatsappCloud(echo) {
+    const numLimpo = echo?.to;
+    const wamid = echo?.id;
+    if (!numLimpo || !wamid) return;
+
+    const jaProcessado = await db.get('SELECT 1 FROM whatsapp_cloud_mensagens_processadas WHERE wamid = ?', wamid);
+    if (jaProcessado) return;
+    await db.run('INSERT OR IGNORE INTO whatsapp_cloud_mensagens_processadas (wamid) VALUES (?)', wamid);
+
+    // Só texto nessa 1ª versão — mesma limitação do resto da integração com a
+    // API Oficial. "revoke"/"edit" (mensagem apagada/editada no celular) fica
+    // pra uma próxima.
+    if (echo.type !== 'text') {
+        console.log(`ℹ️ Coexistência: eco tipo "${echo.type}" (${numLimpo}) — só texto é suportado nessa 1ª versão, ignorado.`);
+        return;
+    }
+    const texto = echo.text?.body;
+    if (!texto) return;
+
+    const nomeContato = await resolverNomeContato(numLimpo);
+    await registrarMensagemEnviada(numLimpo, texto, nomeContato, wamid, true, 'text', null, 'whatsapp_cloud');
+    console.log(`📱 Coexistência: mensagem enviada pelo WhatsApp Business App do celular pra ${numLimpo} — sincronizada no Bate Papo.`);
 }
 
 // Mesmo fluxo do processarMensagemInstagram (registerLead → salvarNaConversa
