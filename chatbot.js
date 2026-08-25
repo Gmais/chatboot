@@ -3986,38 +3986,38 @@ async function dispararMensagensDaAutomacao(automacaoId) {
                         if (texto && await campanhaUsaWhatsappCloud(msg.categoria)) {
                             const configWhatsappCloud = await obterConfigWhatsappCloud();
                             if (configWhatsappCloud.accessToken && configWhatsappCloud.phoneNumberId) {
-                                try {
-                                    const resultado = await enviarMensagemWhatsappCloud(numLimpo, texto, configWhatsappCloud);
-                                    await registrarMensagemEnviada(numLimpo, texto, nome, resultado?.messages?.[0]?.id || null, false, 'text', null, 'whatsapp_cloud');
-                                    sucesso = true;
-                                    enviadoPelaCloudApi = true;
-                                } catch (e) {
-                                    // Falha mais comum: contato fora da janela de 24h desde a
-                                    // última mensagem dele — texto livre é rejeitado nesse caso,
-                                    // regra da própria Meta. 2ª tentativa: mesma mensagem como
-                                    // TEMPLATE aprovado, se essa Mensagem Personalizada tiver um
-                                    // vinculado (ver seedTemplatesWhatsappCloud/template_whatsapp).
-                                    // Só cai pro número principal se isso também falhar.
-                                    console.log(`ℹ️ Automação #${automacaoId}: falha via texto livre pra ${numLimpo} (${e.message}).`);
-                                    if (msg.template_whatsapp) {
-                                        try {
-                                            const template = JSON.parse(msg.template_whatsapp);
-                                            const valorPorPlaceholder = {
-                                                nome: primeiroNome, nome_completo: nomeCompleto, matricula,
-                                                parcelas: parcelasStr, valor: valorStr, dias_atrasados: diasAtrasadosStr,
-                                                horario: horarioStr, professor: professorStr, dia: diaStr,
-                                            };
-                                            const parametros = template.variaveis.map(v => valorPorPlaceholder[v] ?? '');
-                                            const resultadoTemplate = await enviarTemplateWhatsappCloud(numLimpo, template.nome, parametros, configWhatsappCloud);
-                                            await registrarMensagemEnviada(numLimpo, texto, nome, resultadoTemplate?.messages?.[0]?.id || null, false, 'text', null, 'whatsapp_cloud');
-                                            sucesso = true;
-                                            enviadoPelaCloudApi = true;
-                                            console.log(`✅ Automação #${automacaoId}: entregue via template "${template.nome}" pra ${numLimpo}.`);
-                                        } catch (e2) {
-                                            console.log(`ℹ️ Automação #${automacaoId}: falha via template também pra ${numLimpo} (${e2.message}) — tentando pelo número principal.`);
-                                        }
-                                    } else {
-                                        console.log(`ℹ️ Automação #${automacaoId}: essa mensagem não tem template vinculado — tentando pelo número principal.`);
+                                if (msg.template_whatsapp) {
+                                    // Mensagem tem Template aprovado vinculado — manda direto por
+                                    // ele, sem tentar texto livre antes. Público frio (ex: Resgate
+                                    // Ex-Aluno) sempre faria texto livre falhar ("Re-engagement
+                                    // message", fora da janela de 24h da Meta) — e essa falha só
+                                    // chega DEPOIS do envio (assíncrona, via webhook de status),
+                                    // então nem dava pra confiar em cair pro template só quando
+                                    // desse errado (mesmo motivo do fix já aplicado no Disparo
+                                    // manual, ver iniciarBroadcast).
+                                    try {
+                                        const template = JSON.parse(msg.template_whatsapp);
+                                        const valorPorPlaceholder = {
+                                            nome: primeiroNome, nome_completo: nomeCompleto, matricula,
+                                            parcelas: parcelasStr, valor: valorStr, dias_atrasados: diasAtrasadosStr,
+                                            horario: horarioStr, professor: professorStr, dia: diaStr,
+                                        };
+                                        const parametros = template.variaveis.map(v => valorPorPlaceholder[v] ?? '');
+                                        const resultadoTemplate = await enviarTemplateWhatsappCloud(numLimpo, template.nome, parametros, configWhatsappCloud);
+                                        await registrarMensagemEnviada(numLimpo, texto, nome, resultadoTemplate?.messages?.[0]?.id || null, false, 'text', null, 'whatsapp_cloud');
+                                        sucesso = true;
+                                        enviadoPelaCloudApi = true;
+                                    } catch (e) {
+                                        console.log(`ℹ️ Automação #${automacaoId}: falha via template pra ${numLimpo} (${e.message}) — tentando pelo número principal.`);
+                                    }
+                                } else {
+                                    try {
+                                        const resultado = await enviarMensagemWhatsappCloud(numLimpo, texto, configWhatsappCloud);
+                                        await registrarMensagemEnviada(numLimpo, texto, nome, resultado?.messages?.[0]?.id || null, false, 'text', null, 'whatsapp_cloud');
+                                        sucesso = true;
+                                        enviadoPelaCloudApi = true;
+                                    } catch (e) {
+                                        console.log(`ℹ️ Automação #${automacaoId}: essa mensagem não tem template vinculado e o texto livre falhou pra ${numLimpo} (${e.message}) — tentando pelo número principal.`);
                                     }
                                 }
                             }
