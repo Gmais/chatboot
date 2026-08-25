@@ -3001,6 +3001,9 @@ const btnParar          = document.getElementById('btn-parar');
 const progTotal         = document.getElementById('prog-total');
 const progSent          = document.getElementById('prog-sent');
 const progFailed        = document.getElementById('prog-failed');
+const progRemaining     = document.getElementById('prog-remaining');
+const disparoPausarWrap = document.getElementById('disparo-pausar-wrap');
+const btnPausarDisparo  = document.getElementById('btn-pausar-disparo');
 const progPercent       = document.getElementById('prog-percent');
 const progBar           = document.getElementById('prog-bar');
 const progDescricao     = document.getElementById('prog-descricao');
@@ -3382,6 +3385,7 @@ function updateProgressUI(p) {
     progTotal.textContent = p.total;
     progSent.textContent  = p.sent;
     progFailed.textContent = p.failed;
+    if (progRemaining) progRemaining.textContent = Math.max(0, p.total - p.sent - p.failed);
     const pct = p.total > 0 ? Math.round(((p.sent + p.failed) / p.total) * 100) : 0;
     progPercent.textContent = `${pct}%`;
     progBar.style.width = `${pct}%`;
@@ -3394,13 +3398,19 @@ function updateProgressUI(p) {
         }
     }
     if (p.running) {
-        broadcastStatusMsg.textContent = `🚀 Disparando... ${p.sent + p.failed}/${p.total}`;
-        broadcastStatusMsg.style.color = 'var(--green)';
+        broadcastStatusMsg.textContent = p.paused
+            ? `⏸ Pausado — ${p.sent + p.failed}/${p.total}`
+            : `🚀 Disparando... ${p.sent + p.failed}/${p.total}`;
+        broadcastStatusMsg.style.color = p.paused ? 'var(--amber)' : 'var(--green)';
         // "Iniciar Disparo" continua visível (e vira "Enfileirar") mesmo com
         // um disparo rodando — clicar nele agora entra na fila em vez de
         // travar/recusar, e começa sozinho quando este terminar.
         if (btnDisparar) btnDisparar.textContent = '➕ Enfileirar Novo Disparo';
         if (btnParar)    btnParar.style.display = 'inline-flex';
+        disparoPausarWrap?.classList.remove('hidden');
+        if (btnPausarDisparo) btnPausarDisparo.textContent = p.paused ? '▶️ Retomar' : '⏸ Pausar';
+    } else {
+        disparoPausarWrap?.classList.add('hidden');
     }
     // Se o painel de detalhe já está aberto, atualiza a lista junto — assim
     // dá pra acompanhar quem foi entrando em Enviados/Falhas em tempo real,
@@ -3462,6 +3472,7 @@ socket.on('broadcast_done', (p) => {
     broadcastStatusMsg.style.color = 'var(--green)';
     if (btnDisparar) { btnDisparar.style.display = 'inline-flex'; btnDisparar.textContent = '🚀 Iniciar Disparo'; }
     if (btnParar)    btnParar.style.display = 'none';
+    disparoPausarWrap?.classList.add('hidden');
     showToast('Disparo Finalizado!', `${p.sent} enviados com sucesso.`, 'success', 6000);
     addActivity('🚀', `Disparo concluído: ${p.sent} msgs`, new Date().toLocaleString('pt-BR'));
     if (filtroDisparoDetalheAtivo) renderDisparoDetalhe(filtroDisparoDetalheAtivo);
@@ -3745,6 +3756,13 @@ btnParar?.addEventListener('click', async () => {
     broadcastStatusMsg.style.color = 'var(--amber)';
     if (btnDisparar) btnDisparar.style.display = 'inline-flex';
     if (btnParar)    btnParar.style.display = 'none';
+    disparoPausarWrap?.classList.add('hidden');
+});
+
+btnPausarDisparo?.addEventListener('click', async () => {
+    const pausando = btnPausarDisparo.textContent.includes('Pausar');
+    const res = await fetch(`/api/broadcast/${pausando ? 'pause' : 'resume'}`, { method: 'POST' });
+    if (!res.ok) { const d = await res.json(); alert(d.error || 'Erro ao pausar/retomar disparo.'); }
 });
 
 // =====================================

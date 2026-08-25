@@ -751,7 +751,14 @@
                         <span style="color:var(--text-2)">Falhas</span>
                         <span id="prog-failed" class="prog-val" style="color:var(--red)">0</span>
                     </div>
+                    <div class="progress-stat">
+                        <span style="color:var(--text-2)">Faltam enviar</span>
+                        <span id="prog-remaining" class="prog-val" style="color:var(--amber)">0</span>
+                    </div>
                     <p style="color:var(--text-3);font-size:.72rem;margin-top:.3rem">Clique em um número acima pra ver a lista detalhada com nome.</p>
+                    <div id="disparo-pausar-wrap" class="hidden" style="display:flex;gap:.6rem;margin-top:.8rem">
+                        <button type="button" class="btn-secondary" id="btn-pausar-disparo" style="flex:1">⏸ Pausar</button>
+                    </div>
                     <div id="disparo-detalhe-lista" class="hidden" style="max-height:220px;overflow-y:auto;margin-top:.6rem;display:flex;flex-direction:column;gap:.3rem"></div>
                     <div style="margin-top:1.5rem">
                         <div style="display:flex;justify-content:space-between;margin-bottom:.4rem">

@@ -5255,7 +5255,8 @@ app.post('/api/conversas/:telefone/enviar-arquivo', upload.single('arquivo'), as
 // API REST — BROADCAST (DISPAROS EM MASSA)
 // =====================================
 let broadcastRunning = false;
-let broadcastProgress = { total: 0, sent: 0, failed: 0, running: false };
+let broadcastPaused = false;
+let broadcastProgress = { total: 0, sent: 0, failed: 0, running: false, paused: false };
 let ultimoDisparoIniciadoEm = null; // 'YYYY-MM-DD HH:mm:ss' (mesmo formato do SQLite) — filtra /api/broadcast/falhas no disparo mais recente
 
 app.get('/api/broadcast/status', (req, res) => res.json({ ...broadcastProgress, filaTamanho: filaDisparos.length }));
@@ -5479,9 +5480,10 @@ function iniciarBroadcast(job) {
     }
 
     broadcastRunning = true;
+    broadcastPaused = false;
     // descricao entra aqui pra a tela mostrar O QUE está disparando agora
     // (não só total/enviados/falhas) — ver "Disparos de hoje" no painel.
-    broadcastProgress = { total: listaNumeros.length, sent: 0, failed: 0, running: true, descricao: descricao || null };
+    broadcastProgress = { total: listaNumeros.length, sent: 0, failed: 0, running: true, paused: false, descricao: descricao || null };
     ultimoDisparoIniciadoEm = moment.utc().format('YYYY-MM-DD HH:mm:ss');
     io.emit('broadcast_progress', broadcastProgress);
     io.emit('broadcast_started', broadcastProgress);
@@ -5491,6 +5493,11 @@ function iniciarBroadcast(job) {
     // DISPARO), pra tirar esse risco de banimento do número principal.
     (async () => {
         for (const numero of listaNumeros) {
+            if (!broadcastRunning) break;
+            // Pausa não avança pra próxima mensagem nem consome a lista — só
+            // espera. "Parar" (broadcastRunning=false) sempre tem prioridade,
+            // pra "Parar" funcionar mesmo com o disparo pausado no momento.
+            while (broadcastPaused && broadcastRunning) await delay(1000);
             if (!broadcastRunning) break;
 
             const entryEnvio = await proximoClienteDoPool(job.numerosPermitidosIds);
@@ -5765,12 +5772,33 @@ setInterval(checarDisparosAgendados, 60 * 1000);
 
 app.post('/api/broadcast/stop', (req, res) => {
     broadcastRunning = false;
+    broadcastPaused = false;
     // "Parar" cancela tudo, não só a lista atual — sem isso, um disparo
     // enfileirado começaria sozinho logo em seguida, surpreendendo quem
     // clicou Parar justamente pra não mandar mais nada.
     const tinhaFila = filaDisparos.length > 0;
     filaDisparos = [];
     if (tinhaFila) io.emit('broadcast_fila_atualizada', { tamanho: 0 });
+    res.json({ success: true });
+});
+
+// Pausar/Retomar: diferente de Parar, não cancela nada — só segura o envio
+// do próximo contato até alguém retomar (ver o while no laço de
+// iniciarBroadcast). Útil pra disparos grandes/demorados sem perder o lugar
+// na lista.
+app.post('/api/broadcast/pause', (req, res) => {
+    if (!broadcastRunning) return res.status(400).json({ error: 'Nenhum disparo em andamento.' });
+    broadcastPaused = true;
+    broadcastProgress.paused = true;
+    io.emit('broadcast_progress', broadcastProgress);
+    res.json({ success: true });
+});
+
+app.post('/api/broadcast/resume', (req, res) => {
+    if (!broadcastRunning) return res.status(400).json({ error: 'Nenhum disparo em andamento.' });
+    broadcastPaused = false;
+    broadcastProgress.paused = false;
+    io.emit('broadcast_progress', broadcastProgress);
     res.json({ success: true });
 });
 
