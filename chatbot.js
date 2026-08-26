@@ -891,6 +891,13 @@ async function initDB() {
     // nunca recebe a mensagem sem pedir pra checar o Railway.
     try { await db.exec(`ALTER TABLE contato_automacao_estado ADD COLUMN ultimo_erro TEXT DEFAULT NULL`); } catch (e) { }
     try { await db.exec(`ALTER TABLE contato_automacao_estado ADD COLUMN ultimo_erro_em DATETIME DEFAULT NULL`); } catch (e) { }
+    // Conta falhas SEGUIDAS desse contato nessa automação (zera implicitamente
+    // ao sair da fila, seja por sucesso ou por desistência — a linha some).
+    // Sem isso, um número permanentemente inválido ("sem WhatsApp", "Lid is
+    // missing") ficava sendo tentado todo santo dia pra sempre: foi o que
+    // acumulou 93 contatos travados desde dias atrás na automação Resgate
+    // Ex-Aluno até alguém limpar na mão.
+    try { await db.exec(`ALTER TABLE contato_automacao_estado ADD COLUMN falhas_consecutivas INTEGER DEFAULT 0`); } catch (e) { }
     // Janela de horário permitida pra automação mandar mensagem (HH:mm) — vazio = sem restrição
     try { await db.exec(`ALTER TABLE automacoes ADD COLUMN horario_inicio TEXT DEFAULT NULL`); } catch (e) { }
     try { await db.exec(`ALTER TABLE automacoes ADD COLUMN horario_fim TEXT DEFAULT NULL`); } catch (e) { }
@@ -3849,6 +3856,12 @@ function iniciarDisparoAutomacao(id, nome, origem) {
         });
 }
 
+// Depois de tentar mandar pra esse contato (nessa automação) e falhar por um
+// erro DELE (não da sessão do WhatsApp) esse tanto de vezes seguidas, desiste
+// e tira da fila — cada "vez" é um disparo em dia diferente, então 3 já é
+// tempo suficiente pra confirmar que não é uma falha passageira de rede.
+const LIMITE_FALHAS_CONSECUTIVAS_AUTOMACAO = 3;
+
 // Disparo de verdade da automação: cada contato "em andamento" recebe UMA
 // mensagem sorteada do pool (se ainda não tiver uma atribuída, sorteia agora
 // e grava — assim uma tentativa que falhar tenta de novo com a MESMA
@@ -4086,13 +4099,10 @@ async function dispararMensagensDaAutomacao(automacaoId) {
             // contato. Sem isso, uma automação inteira passava por todos os
             // contatos falhando um a um até o watchdog passivo (até 90min)
             // notar sozinho — foi exatamente o padrão visto na automação #14.
-            if (!restartInProgress && (e.message.includes('Timeout de 45s') || e.message.includes('timed out') || e.message.includes('Protocol error'))) {
+            const erroDeSessao = e.message.includes('Timeout de 45s') || e.message.includes('timed out') || e.message.includes('Protocol error');
+            if (!restartInProgress && erroDeSessao) {
                 reiniciarClienteAposFalha('travamento_disparo_automacao', e.message);
             }
-            await db.run(
-                'UPDATE contato_automacao_estado SET ultimo_erro = ?, ultimo_erro_em = CURRENT_TIMESTAMP WHERE telefone = ? AND automacao_id = ?',
-                [e.message, estado.telefone, automacaoId]
-            );
             // Log permanente, independente da fila — contato_automacao_estado.ultimo_erro
             // é apagado assim que o contato sai da fila (reenvio deu certo, automação
             // pausada, etiqueta removida), o que fazia o Relatório de Erros zerar sozinho
@@ -4101,6 +4111,34 @@ async function dispararMensagensDaAutomacao(automacaoId) {
                 'INSERT INTO automacao_envios_erros_log (automacao_id, telefone, erro) VALUES (?, ?, ?)',
                 [automacaoId, estado.telefone, e.message]
             );
+            if (erroDeSessao) {
+                // Travamento de sessão não é culpa desse contato específico — não
+                // conta pra desistência dele, só registra o erro (já feito acima).
+                await db.run(
+                    'UPDATE contato_automacao_estado SET ultimo_erro = ?, ultimo_erro_em = CURRENT_TIMESTAMP WHERE telefone = ? AND automacao_id = ?',
+                    [e.message, estado.telefone, automacaoId]
+                );
+            } else {
+                // Erro do PRÓPRIO contato (número sem WhatsApp, Lid sumido etc.) —
+                // esse sim é permanente na prática, então conta: depois de
+                // LIMITE_FALHAS_CONSECUTIVAS_AUTOMACAO tentativas em dias diferentes,
+                // desiste e tira da fila em vez de tentar pra sempre. O erro já foi
+                // logado acima, então continua visível/corrigível no Relatório de Erros.
+                const atual = await db.get(
+                    'SELECT falhas_consecutivas FROM contato_automacao_estado WHERE telefone = ? AND automacao_id = ?',
+                    [estado.telefone, automacaoId]
+                );
+                const falhas = (atual?.falhas_consecutivas || 0) + 1;
+                if (falhas >= LIMITE_FALHAS_CONSECUTIVAS_AUTOMACAO) {
+                    await db.run('DELETE FROM contato_automacao_estado WHERE telefone = ? AND automacao_id = ?', [estado.telefone, automacaoId]);
+                    console.log(`⛔ Automação #${automacaoId}: desistiu de ${estado.telefone} após ${falhas} falha(s) seguida(s) (${e.message}) — segue visível no Relatório de Erros.`);
+                } else {
+                    await db.run(
+                        'UPDATE contato_automacao_estado SET ultimo_erro = ?, ultimo_erro_em = CURRENT_TIMESTAMP, falhas_consecutivas = ? WHERE telefone = ? AND automacao_id = ?',
+                        [e.message, falhas, estado.telefone, automacaoId]
+                    );
+                }
+            }
         }
         io.emit('automacoes_atualizadas');
     }
