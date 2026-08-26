@@ -9358,7 +9358,16 @@ client.on('message_reaction', async (reaction) => {
     await initDB();
     removerLocksChromeStale();
     armarInitWatchdog();
-    client.initialize();
+    console.log('⏱️ Watchdog de inicialização armado (90s).');
+    // Único client.initialize() do arquivo sem .catch() até agora — uma
+    // rejeição aqui (ex: TimeoutError do Puppeteer em Client.inject) virava
+    // "unhandled rejection" sem acionar nenhuma recuperação, deixando o
+    // painel preso em "Iniciando..." até alguém reiniciar na mão. Confirmado
+    // ao vivo (2026-08-25): 3h+ travado sem NENHUMA tentativa de recuperação
+    // nos logs. O timer do watchdog por si só deveria ter reiniciado mesmo
+    // assim — mas registrar esse erro aqui garante visibilidade real do que
+    // aconteceu, em vez de só um "unhandled rejection" solto no log.
+    client.initialize().catch(err => console.error('Erro ao inicializar client no boot:', err.message));
     await garantirNumeroDisparoCloudApi();
     await reidratarPoolNaInicializacao();
     const PORT = process.env.PORT || 3000;
