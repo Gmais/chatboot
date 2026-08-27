@@ -7576,6 +7576,20 @@ client.on('disconnected', (reason) => {
     io.emit('disconnected', reason);
 });
 
+// INCIDENTE 26/08: o reinício "suave" abaixo (destroy + matarChromeDaSessao +
+// initialize) não é garantia de recuperação de verdade contra uma sessão
+// FANTASMA — visto ao vivo duas vezes no mesmo dia, o client "reconectava"
+// (evento 'ready' disparava de novo, painel mostrava "Conectado") mas voltava
+// a morrer em silêncio minutos depois, no mesmo estado comprometido. Só um
+// restart do PROCESSO inteiro (Railway sobe um container novo, mata todo
+// Chrome remanescente, LocalAuth relê a sessão do zero) resolveu de verdade
+// daquela vez. Por isso, se ESSA função for chamada de novo pouco tempo
+// depois de já ter rodado — não importa qual watchdog disparou dessa vez —
+// é sinal de que o reinício suave não está resolvendo: escala pro processo
+// inteiro reiniciar em vez de ficar tentando o suave em loop.
+const ESCALADA_RESTART_REPETIDO_MS = 40 * 60 * 1000;
+let ultimoRestartAutomatico = 0;
+
 // Reconecta o client depois de qualquer tipo de falha detectada (crash da
 // página, ou o watchdog de runtime abaixo pegando um Chrome morto em
 // silêncio) — extraído do handler de crash original pra ser reaproveitado
@@ -7586,6 +7600,13 @@ async function reiniciarClienteAposFalha(tipoEvento, motivo) {
         console.log('⚠️  Restart já em andamento — ignorando falha duplicada.');
         return;
     }
+    if (Date.now() - ultimoRestartAutomatico < ESCALADA_RESTART_REPETIDO_MS) {
+        console.error(`🔄 Segunda falha (${tipoEvento}) em menos de ${ESCALADA_RESTART_REPETIDO_MS / 60000}min — reinício suave não resolveu da última vez, reiniciando o processo inteiro.`);
+        registrarEventoConexao('escalada_restart_processo', `${tipoEvento}: ${motivo}`);
+        process.exit(1);
+        return;
+    }
+    ultimoRestartAutomatico = Date.now();
     restartInProgress = true;
     isConnected = false;
     registrarEventoConexao(tipoEvento, motivo);
@@ -7685,11 +7706,28 @@ setInterval(async () => {
 // que causou um incidente real de LOGOUT forçado (sessão apagada, precisando
 // de QR novo) na madrugada de 03→04/08. Subido pra 90min pra cobrir horário
 // comercial de sobra sem ficar reiniciando a noite inteira sem necessidade.
-const LIMITE_SILENCIO_MENSAGENS_MS = 90 * 60 * 1000;
+// INCIDENTE 26/08: limite fixo de 90min deixou uma sessão FANTASMA (Node
+// achava que estava tudo bem, mas o WhatsApp já tinha derrubado o vínculo de
+// verdade — descoberto só comparando com o WhatsApp Web real, quase 2h
+// depois) rodar em silêncio inteiro em horário comercial, com clientes
+// mandando mensagem sem ninguém perceber que não chegava. 90min continua
+// necessário de madrugada (motivo já documentado acima: silêncio real de
+// academia fechada e travamento de verdade são indistinguíveis), mas em
+// horário comercial 20min é generoso o bastante pra não confundir com um
+// intervalo normal e curto o bastante pra limitar o estrago — é o mesmo
+// valor que já rodou aqui antes (só foi trocado por ter disparado à toa
+// DE MADRUGADA, nunca por ter disparado à toa em horário comercial).
+const LIMITE_SILENCIO_MENSAGENS_MS_COMERCIAL = 20 * 60 * 1000;
+const LIMITE_SILENCIO_MENSAGENS_MS_MADRUGADA = 90 * 60 * 1000;
+function limiteSilencioAtual() {
+    const hora = moment.tz('America/Sao_Paulo').hours();
+    return (hora >= 7 && hora < 22) ? LIMITE_SILENCIO_MENSAGENS_MS_COMERCIAL : LIMITE_SILENCIO_MENSAGENS_MS_MADRUGADA;
+}
+
 setInterval(() => {
     if (!isConnected || restartInProgress) return;
     const silencioMs = Date.now() - ultimaAtividadeMensagem;
-    if (silencioMs > LIMITE_SILENCIO_MENSAGENS_MS) {
+    if (silencioMs > limiteSilencioAtual()) {
         const minutos = Math.round(silencioMs / 60000);
         io.emit('alerta_travamento', { minutos });
         reiniciarClienteAposFalha('possivel_travamento', `${minutos}min sem nenhuma mensagem passar pelo WhatsApp, mesmo conectado — reiniciando automaticamente.`);
