@@ -88,7 +88,53 @@ async function enviarTemplateWhatsappCloud(telefoneE164, templateNome, parametro
     });
 }
 
+// Submete um template NOVO pra aprovação da Meta (fica em PENDING até alguém
+// do lado da Meta revisar — pode levar de minutos a dias; quem chama precisa
+// checar o status depois, isso aqui só cria a submissão). `variaveis` é a
+// lista ordenada dos nomes de placeholder (ex: ['nome','matricula']) — vira
+// {{1}}, {{2}}... no corpo, na mesma ordem, e cada uma ganha um valor de
+// exemplo genérico só pra passar na validação da Meta (exigido pra aprovar,
+// não aparece pro contato real). category precisa bater com o TIPO de
+// conteúdo (MARKETING pra promocional/reengajamento, UTILITY pra
+// transacional/administrativo) — categoria errada é motivo comum de rejeição.
+const EXEMPLOS_POR_VARIAVEL = {
+    nome: 'Maria', nome_completo: 'Maria Silva', matricula: '12345',
+    parcelas: '2', valor: 'R$ 150,00', dias_atrasados: '5',
+    horario: '14:00', professor: 'João', dia: 'hoje', saudacao: 'Bom dia',
+};
+async function criarTemplateWhatsappCloud(nomeTemplate, category, corpoComVariaveisPosicionais, variaveis, { accessToken, wabaId } = {}) {
+    if (!accessToken || !wabaId) throw new Error('WhatsApp Business API não configurado: falta o Token de Acesso ou o WABA ID (ver Configurações).');
+    const exemplos = (variaveis || []).map(v => EXEMPLOS_POR_VARIAVEL[v] || 'Exemplo');
+    return graphRequest('POST', `${wabaId}/message_templates`, {
+        accessToken,
+        body: {
+            name: nomeTemplate,
+            language: 'pt_BR',
+            category,
+            components: [{
+                type: 'BODY',
+                text: corpoComVariaveisPosicionais,
+                ...(exemplos.length > 0 ? { example: { body_text: [exemplos] } } : {}),
+            }],
+        },
+    });
+}
+
+// Lista os templates da conta com nome/status/categoria — usado pra checar se
+// um template submetido já foi aprovado (a Meta não avisa por conta própria
+// nesse fluxo, só dá pra saber perguntando).
+async function listarTemplatesWhatsappCloud({ accessToken, wabaId } = {}) {
+    if (!accessToken || !wabaId) throw new Error('WhatsApp Business API não configurado: falta o Token de Acesso ou o WABA ID (ver Configurações).');
+    const resultado = await graphRequest('GET', `${wabaId}/message_templates`, {
+        accessToken,
+        params: { fields: 'name,status,category', limit: 250 },
+    });
+    return resultado?.data || [];
+}
+
 module.exports = {
     enviarMensagemWhatsappCloud,
     enviarTemplateWhatsappCloud,
+    criarTemplateWhatsappCloud,
+    listarTemplatesWhatsappCloud,
 };

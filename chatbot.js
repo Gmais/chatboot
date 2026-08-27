@@ -92,7 +92,7 @@ const OpenAI = require('openai');
 const moment = require('moment-timezone');
 const { buscarAlunoPorMatricula, buscarAlunoPorCodigo, obterParcelasEmAberto, criarCliente, matricularAluno, gerarLinkPagamentoPixSantander } = require('./pacto');
 const { enviarMensagemInstagram, obterNomeUsuarioInstagram, verificarAssinaturaWebhook } = require('./instagram');
-const { enviarMensagemWhatsappCloud, enviarTemplateWhatsappCloud } = require('./whatsappCloudApi');
+const { enviarMensagemWhatsappCloud, enviarTemplateWhatsappCloud, criarTemplateWhatsappCloud, listarTemplatesWhatsappCloud } = require('./whatsappCloudApi');
 const { buscarAgendaDoDia } = require('./agenda');
 
 // Matrículas da carteira da consultora Juliana, extraídas de um relatório
@@ -345,6 +345,144 @@ async function seedTemplatesWhatsappCloud() {
         }
     } catch (e) {
         console.error('Erro ao vincular templates do WhatsApp Business API:', e.message);
+    }
+}
+
+// =====================================
+// CRIAÇÃO AUTOMÁTICA DE TEMPLATE NA META
+// =====================================
+// Pedido do usuário (27/08): TODA Mensagem Personalizada deve ter template
+// aprovado pela Meta, não só as 9 campanhas de cima (vinculadas manualmente a
+// templates já existentes). Motivo: texto livre pelo WhatsApp Web sozinho
+// falha cronicamente pra contato "frio" (sem conversa anterior — ver "Lid is
+// missing in chat table", bug ainda sem correção da própria whatsapp-web.js,
+// incidente de 26/08) e não tem NENHUM fallback fora da janela de 24h na
+// Cloud API. Template aprovado tira a dependência dessas duas fragilidades.
+
+// Mesmo conjunto de placeholders de substituirPlaceholdersPessoais — a ORDEM
+// de primeira ocorrência no texto vira a ordem de {{1}}, {{2}}... do
+// template, e fica guardada em mensagens_personalizadas.template_whatsapp
+// (campo "variaveis") pra dispararMensagensDaAutomacao/webhook do Gympulse
+// montarem os parâmetros do envio depois — mesmo formato dos 9 já existentes.
+function extrairVariaveisDoTexto(texto) {
+    const variaveis = [];
+    const regex = /[{[](saudacao|nome_completo|nome|matricula|dias_atrasados|parcelas|valor|horario|professor|dia)[\]}]/gi;
+    let m;
+    while ((m = regex.exec(texto || ''))) {
+        const chave = m[1].toLowerCase();
+        if (!variaveis.includes(chave)) variaveis.push(chave);
+    }
+    return variaveis;
+}
+function montarCorpoTemplate(texto, variaveis) {
+    let corpo = texto || '';
+    variaveis.forEach((chave, i) => {
+        corpo = corpo
+            .replace(new RegExp(`\\{${chave}\\}`, 'gi'), `{{${i + 1}}}`)
+            .replace(new RegExp(`\\[${chave}\\]`, 'gi'), `{{${i + 1}}}`);
+    });
+    return corpo;
+}
+// Nome do template precisa ser único por WABA+idioma e só aceita minúsculas/
+// números/underscore — deriva do nome da Mensagem Personalizada + id (nunca
+// muda, evita colisão entre duas mensagens com nome igual como as duas
+// "Orientação" que já existem) sem precisar guardar em coluna nova: dá pra
+// recalcular o nome esperado a qualquer momento a partir de nome+id.
+function slugifyNomeTemplate(nome, id) {
+    const base = (nome || '')
+        .normalize('NFD').replace(/[̀-ͯ]/g, '')
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '_')
+        .replace(/^_+|_+$/g, '')
+        .slice(0, 40);
+    return `${base || 'mensagem'}_${id}`;
+}
+// Categorias que já eram tratadas como transacional/UTILITY nos 9 templates
+// vinculados manualmente (cobrança/parcela atrasada/vence hoje/confirmação de
+// agendamento — ver mapa em seedTemplatesWhatsappCloud) — o resto vira
+// MARKETING por padrão, mais seguro pro tipo de conteúdo comum aqui
+// (reengajamento, promoção, indicação, feedback). Categoria errada é motivo
+// comum de rejeição na Meta.
+const CATEGORIAS_META_UTILITY = new Set(['inadimplentes', 'parcelas-atrasadas', 'vence-hoje', 'confirmacao-agendamento']);
+function categoriaMetaParaMensagem(categoriaLocal) {
+    return CATEGORIAS_META_UTILITY.has(categoriaLocal) ? 'UTILITY' : 'MARKETING';
+}
+
+// Submete UMA Mensagem Personalizada pra aprovação — usado tanto no backfill
+// de quem já existia sem template quanto (daqui pra frente) na criação de
+// mensagem nova, ver POST /api/mensagens-personalizadas. Mídia fica de fora
+// por enquanto: template com cabeçalho de mídia precisa de um upload
+// separado (resumable upload API) pra virar um "header_handle" — mesmo
+// motivo que já deixava as Boas Vindas de fora do vínculo manual (ver
+// comentário em seedTemplatesWhatsappCloud). Nunca lança erro pra quem chama
+// — submissão é best-effort, a mensagem continua funcionando por texto
+// livre/fallback normalmente enquanto não aprova.
+async function submeterMensagemParaAprovacaoMeta(msgRow) {
+    if (msgRow.media_path) return { pulou: 'mídia ainda não suportada na submissão automática' };
+    if (msgRow.template_whatsapp) return { pulou: 'já tem template' };
+    try {
+        const configWhatsappCloud = await obterConfigWhatsappCloud();
+        if (!configWhatsappCloud.accessToken || !configWhatsappCloud.wabaId) return { pulou: 'WhatsApp Business API não configurado' };
+        const variaveis = extrairVariaveisDoTexto(msgRow.texto);
+        const corpo = montarCorpoTemplate(msgRow.texto, variaveis);
+        const nomeTemplate = slugifyNomeTemplate(msgRow.nome, msgRow.id);
+        const categoryMeta = categoriaMetaParaMensagem(msgRow.categoria);
+        await criarTemplateWhatsappCloud(nomeTemplate, categoryMeta, corpo, variaveis, configWhatsappCloud);
+        console.log(`📨 Template "${nomeTemplate}" (${categoryMeta}) submetido pra aprovação da Meta — mensagem "${msgRow.nome}" (#${msgRow.id}).`);
+        return { submetido: nomeTemplate };
+    } catch (e) {
+        console.error(`Erro ao submeter template pra mensagem #${msgRow.id} (${msgRow.nome}):`, e.message);
+        return { erro: e.message };
+    }
+}
+
+// Roda 1x só (flag em `configuracoes` — resubmeter a MESMA mensagem toda
+// hora só empilharia erro "já existe" nos logs à toa) pra colocar as
+// mensagens que já existiam ANTES desse recurso existir na fila de
+// aprovação. Mensagens criadas DEPOIS já submetem sozinhas na hora da
+// criação (ver POST /api/mensagens-personalizadas).
+async function submeterBacklogTemplatesFaltantes() {
+    if (!db) return;
+    try {
+        const jaRodou = await db.get(`SELECT valor FROM configuracoes WHERE chave = 'templates_backfill_27_08_executado'`);
+        if (jaRodou) return;
+        const pendentes = await db.all(`SELECT * FROM mensagens_personalizadas WHERE template_whatsapp IS NULL AND (media_path IS NULL OR media_path = '')`);
+        for (const msg of pendentes) {
+            await submeterMensagemParaAprovacaoMeta(msg);
+            await delay(1000); // não estoura rate limit da Graph API submetendo tudo de uma vez só
+        }
+        await db.run(`INSERT OR REPLACE INTO configuracoes (chave, valor) VALUES ('templates_backfill_27_08_executado', '1')`);
+        console.log(`📨 Backfill de templates concluído: ${pendentes.length} mensagem(ns) submetida(s) pra aprovação da Meta.`);
+    } catch (e) {
+        console.error('Erro no backfill de templates pra Meta:', e.message);
+    }
+}
+
+// Confere quais templates SUBMETIDOS (pelo backfill ou por uma mensagem
+// nova) já foram aprovados e vincula (template_whatsapp) só quando aprovar —
+// a Meta não avisa sozinha nesse fluxo (sem webhook de status configurado),
+// só dá pra saber perguntando. Roda 1x/hora; nome esperado é recalculado
+// (não precisa ficar guardado em lugar nenhum) a partir de nome+id.
+async function sincronizarTemplatesAprovados() {
+    if (!db) return;
+    try {
+        const configWhatsappCloud = await obterConfigWhatsappCloud();
+        if (!configWhatsappCloud.accessToken || !configWhatsappCloud.wabaId) return;
+        const templates = await listarTemplatesWhatsappCloud(configWhatsappCloud);
+        const statusPorNome = new Map(templates.map(t => [t.name, t.status]));
+        const pendentes = await db.all(`SELECT * FROM mensagens_personalizadas WHERE template_whatsapp IS NULL AND (media_path IS NULL OR media_path = '')`);
+        let aprovados = 0;
+        for (const msg of pendentes) {
+            const nomeEsperado = slugifyNomeTemplate(msg.nome, msg.id);
+            if (statusPorNome.get(nomeEsperado) === 'APPROVED') {
+                const variaveis = extrairVariaveisDoTexto(msg.texto);
+                await db.run('UPDATE mensagens_personalizadas SET template_whatsapp = ? WHERE id = ?', [JSON.stringify({ nome: nomeEsperado, variaveis }), msg.id]);
+                aprovados++;
+            }
+        }
+        if (aprovados > 0) console.log(`✅ ${aprovados} template(s) aprovado(s) pela Meta e vinculado(s) automaticamente.`);
+    } catch (e) {
+        console.error('Erro ao sincronizar status de templates da Meta:', e.message);
     }
 }
 
@@ -937,6 +1075,9 @@ async function initDB() {
         await db.run(`UPDATE mensagens_personalizadas SET categoria = 'ex-alunos' WHERE categoria IS NULL AND (nome LIKE 'Ex Aluno%' OR nome LIKE 'Ex-Aluno%')`);
     } catch (e) { }
     await seedTemplatesWhatsappCloud();
+    await submeterBacklogTemplatesFaltantes();
+    setInterval(sincronizarTemplatesAprovados, 60 * 60 * 1000); // checa aprovação da Meta 1x/hora
+    sincronizarTemplatesAprovados();
     // Agenda de Avaliação Física virou uma janela rolante de 24h (ver
     // processarAgendaAvaliacao) em vez de "hoje" fixo — precisa saber a DATA
     // de cada agendamento (não só o horário) pra combinar as duas e filtrar
@@ -4255,6 +4396,13 @@ app.post('/api/mensagens-personalizadas', async (req, res) => {
             'INSERT INTO mensagens_personalizadas (nome, texto, media_path, media_tipo, categoria) VALUES (?, ?, ?, ?, ?)',
             [nome.trim(), texto.trim(), media_path || null, media_tipo || null, categoria || null]
         );
+        // Padrão adotado em 27/08: toda Mensagem Personalizada nova já entra
+        // na fila de aprovação da Meta sozinha (sem mídia — ver comentário em
+        // submeterMensagemParaAprovacaoMeta). Best-effort: se falhar (API não
+        // configurada, rate limit, etc.) a mensagem continua criada normal,
+        // só sem template ainda — sincronizarTemplatesAprovados tenta nunca
+        // mais até aprovar, e dá pra reenviar depois se precisar.
+        submeterMensagemParaAprovacaoMeta({ id: result.lastID, nome: nome.trim(), texto: texto.trim(), categoria: categoria || null, media_path: media_path || null });
         res.json({ success: true, id: result.lastID });
     } catch (err) {
         res.status(500).json({ error: err.message });
