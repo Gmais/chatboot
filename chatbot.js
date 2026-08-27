@@ -4289,6 +4289,158 @@ async function dispararMensagensDaAutomacao(automacaoId) {
     }
 }
 
+// Resolve o VALOR de um único placeholder reaproveitando
+// substituirPlaceholdersPessoais (todos os lookups de inadimplente/vence
+// hoje/agendamento já vivem lá) — pede só "{chave}" sozinho e usa o
+// resultado, em vez de duplicar cada SELECT aqui de novo.
+async function resolverValorPlaceholder(chave, telefone) {
+    return substituirPlaceholdersPessoais(`{${chave}}`, telefone);
+}
+
+// Reenvia UMA mensagem pra UM telefone — mesma decisão de canal (API Oficial
+// com template/texto livre, ou WhatsApp Web) que dispararMensagensDaAutomacao
+// e o Disparo manual já usam, só que fora da fila com estado (usado pelo
+// reenvio de falhas em massa, ver reenviarTodasAsFalhas). Lança erro pra
+// quem chama decidir o que fazer (contar como falha de novo, não reinserir
+// na fila, etc.) — nunca decide isso sozinha.
+async function reenviarMensagemParaTelefone(telefone, msgRow) {
+    const textoFinal = await substituirPlaceholdersPessoais(msgRow.texto, telefone);
+    const nome = await resolverNomeContato(telefone);
+    const usaApi = await campanhaUsaWhatsappCloud(msgRow.categoria);
+    if (usaApi) {
+        const configWhatsappCloud = await obterConfigWhatsappCloud();
+        if (!configWhatsappCloud.accessToken || !configWhatsappCloud.phoneNumberId) throw new Error('WhatsApp Business API não configurado.');
+        if (msgRow.template_whatsapp) {
+            const template = JSON.parse(msgRow.template_whatsapp);
+            const parametros = [];
+            for (const chave of template.variaveis || []) parametros.push(await resolverValorPlaceholder(chave, telefone));
+            // ver comentário em enviarTemplateWhatsappCloud — template com imagem
+            // no cabeçalho (ex: resgate_exalunos) precisa dela em todo envio.
+            const headerImageUrl = msgRow.media_path ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}${msgRow.media_path}` : null;
+            const resultado = await enviarTemplateWhatsappCloud(telefone, template.nome, parametros, configWhatsappCloud, headerImageUrl);
+            await registrarMensagemEnviada(telefone, textoFinal, nome, resultado?.messages?.[0]?.id || null, false, 'text', null, 'whatsapp_cloud');
+        } else {
+            const resultado = await enviarMensagemWhatsappCloud(telefone, textoFinal, configWhatsappCloud);
+            await registrarMensagemEnviada(telefone, textoFinal, nome, resultado?.messages?.[0]?.id || null, false, 'text', null, 'whatsapp_cloud');
+        }
+    } else {
+        if (!isConnected) throw new Error('WhatsApp Web não está conectado.');
+        const chatId = await resolverChatId(client, telefone);
+        marcarMensagemComoDoSistema(null, telefone, textoFinal);
+        if (msgRow.media_path) {
+            const mediaFullPath = path.join(__dirname, 'public', msgRow.media_path.replace(/^\//, ''));
+            if (fs.existsSync(mediaFullPath)) {
+                const media = MessageMedia.fromFilePath(mediaFullPath);
+                const sent = await sendMessageComRetryLid(client, chatId, media, { ...(textoFinal ? { caption: textoFinal } : {}), waitUntilMsgSent: true });
+                const tipoMedia = msgRow.media_tipo === 'file' ? 'document' : (msgRow.media_tipo || 'document');
+                await registrarMensagemEnviada(telefone, textoFinal || '[mídia]', nome, idSerializado(sent), false, tipoMedia, msgRow.media_path);
+                return;
+            }
+        }
+        const sent = await sendMessageComRetryLid(client, chatId, textoFinal, { waitUntilMsgSent: true });
+        await registrarMensagemEnviada(telefone, textoFinal, nome, idSerializado(sent));
+    }
+}
+
+// Reenvia SÓ quem ainda está de fato pendente — pedido do usuário (27/08)
+// depois de descobrir que o header de imagem do resgate_exalunos vinha
+// derrubando a campanha inteira pra WhatsApp Web sem ninguém perceber.
+// Canal decide a estratégia: API Oficial aguenta concorrência numa boa (é a
+// API oficial da Meta, sem risco de banimento por rajada) — manda tudo em
+// PARALELO. WhatsApp Web já se provou frágil a rajada hoje (LOGOUT em
+// cascata, sessão fantasma) — manda um de cada vez, 30s de intervalo.
+//
+// Automação: só entra quem AINDA está em contato_automacao_estado pra
+// aquela automação — automacao_envios_erros_log é log permanente e nunca
+// limpa sozinho, cheio de gente que já foi resolvida por uma tentativa
+// automática POSTERIOR à falha registrada. Reenviar geral duplicaria
+// mensagem real pra quem já recebeu. Sucesso aqui replica o mesmo efeito de
+// dispararMensagensDaAutomacao (sai da fila, conta como concluído).
+//
+// Disparo manual: não tem fila/estado (é um envio único, sem retry
+// automático) — a mensagem original não fica salva na tabela de log, só a
+// "descricao" (nome da Mensagem Personalizada usada, quando uma foi
+// selecionada). Só dá pra reenviar quem bate com um nome reconhecível; quem
+// usou texto livre digitado na hora fica de fora (não tem como recuperar o
+// texto exato) — entra em "pulados".
+async function reenviarTodasAsFalhas() {
+    const resultado = { api: { total: 0, sucesso: 0, falha: 0 }, web: { total: 0, sucesso: 0, falha: 0 }, pulados: 0 };
+    const itensApi = [];
+    const itensWeb = [];
+
+    // --- falhas de AUTOMAÇÃO ainda pendentes de verdade ---
+    const falhasAuto = await db.all(`
+        SELECT DISTINCT l.automacao_id, l.telefone
+        FROM automacao_envios_erros_log l
+        INNER JOIN contato_automacao_estado c ON c.automacao_id = l.automacao_id AND c.telefone = l.telefone
+    `);
+    const poolCache = new Map();
+    for (const f of falhasAuto) {
+        if (!poolCache.has(f.automacao_id)) poolCache.set(f.automacao_id, await poolMensagensDaAutomacao(f.automacao_id));
+        const pool = poolCache.get(f.automacao_id);
+        if (pool.length === 0) { resultado.pulados++; continue; }
+        const msgRow = pool[0]; // mesma categoria/template pra qualquer mensagem do pool dessa automação
+        const usaApi = await campanhaUsaWhatsappCloud(msgRow.categoria);
+        const item = {
+            telefone: f.telefone, msgRow,
+            aoSucesso: async () => {
+                await db.run('DELETE FROM contato_automacao_estado WHERE telefone = ? AND automacao_id = ?', [f.telefone, f.automacao_id]);
+                await db.run('UPDATE automacoes SET total_concluidos = total_concluidos + 1 WHERE id = ?', f.automacao_id);
+            },
+        };
+        (usaApi ? itensApi : itensWeb).push(item);
+    }
+
+    // --- falhas de DISPARO manual recuperáveis pelo nome da mensagem ---
+    const falhasDisparo = await db.all(`SELECT DISTINCT telefone, descricao FROM disparo_envios_log WHERE sucesso = 0`);
+    const msgPorNomeCache = new Map();
+    for (const f of falhasDisparo) {
+        if (!f.descricao) { resultado.pulados++; continue; }
+        if (!msgPorNomeCache.has(f.descricao)) msgPorNomeCache.set(f.descricao, await db.get('SELECT * FROM mensagens_personalizadas WHERE nome = ?', f.descricao));
+        const msgRow = msgPorNomeCache.get(f.descricao);
+        if (!msgRow) { resultado.pulados++; continue; }
+        const usaApi = await campanhaUsaWhatsappCloud(msgRow.categoria);
+        const item = { telefone: f.telefone, msgRow, aoSucesso: null };
+        (usaApi ? itensApi : itensWeb).push(item);
+    }
+
+    resultado.api.total = itensApi.length;
+    resultado.web.total = itensWeb.length;
+    console.log(`📤 Reenvio de falhas iniciado: ${itensApi.length} via API Oficial (em paralelo), ${itensWeb.length} via WhatsApp Web (30s de intervalo entre cada), ${resultado.pulados} pulados (sem mensagem original recuperável).`);
+    io.emit('reenvio_falhas_iniciado', resultado);
+
+    async function processarItem(item) {
+        await reenviarMensagemParaTelefone(item.telefone, item.msgRow);
+        if (item.aoSucesso) await item.aoSucesso();
+    }
+
+    await Promise.allSettled(itensApi.map(item =>
+        processarItem(item)
+            .then(() => { resultado.api.sucesso++; })
+            .catch(e => { resultado.api.falha++; console.error(`Erro ao reenviar (API) pra ${item.telefone}:`, e.message); })
+    ));
+
+    for (const item of itensWeb) {
+        try {
+            await processarItem(item);
+            resultado.web.sucesso++;
+        } catch (e) {
+            resultado.web.falha++;
+            console.error(`Erro ao reenviar (WhatsApp Web) pra ${item.telefone}:`, e.message);
+        }
+        await delay(30000);
+    }
+
+    console.log(`✅ Reenvio de falhas concluído: API ${resultado.api.sucesso}/${resultado.api.total} ok, WhatsApp Web ${resultado.web.sucesso}/${resultado.web.total} ok, ${resultado.pulados} pulados.`);
+    io.emit('reenvio_falhas_concluido', resultado);
+    return resultado;
+}
+
+app.post('/api/reenviar-falhas', async (req, res) => {
+    res.json({ success: true, iniciado: true });
+    reenviarTodasAsFalhas().catch(e => console.error('Erro no reenvio de falhas:', e.message));
+});
+
 // Roda periodicamente: busca contatos cuja etapa atual já venceu (dias
 // passaram) e avança pra próxima etapa da automação.
 async function processarAutomacoesPendentes() {
