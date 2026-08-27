@@ -70,9 +70,22 @@ async function enviarMensagemWhatsappCloud(telefoneE164, texto, { accessToken, p
 // aprovado (ver mensagens_personalizadas.template_whatsapp, que guarda essa
 // ordem). Idioma sempre 'pt_BR' — mesmo usado na criação de todos os
 // templates deste sistema.
-async function enviarTemplateWhatsappCloud(telefoneE164, templateNome, parametrosTexto, { accessToken, phoneNumberId } = {}) {
+// `headerImageUrl` (opcional): INCIDENTE 27/08 — templates com imagem no
+// cabeçalho (ex: resgate_exalunos) sempre voltavam erro da Meta quando essa
+// função só mandava o BODY, porque o cabeçalho HEADER/IMAGE do template é
+// obrigatório em toda mensagem enviada por ele, não só na hora de aprovar. A
+// falha derrubava a mensagem inteira pro fallback do WhatsApp Web sem
+// ninguém perceber — a própria proteção da API Oficial não estava
+// protegendo essa campanha. Precisa de uma URL pública (a Meta busca ela
+// direto, não aceita path local) — quem chama monta a partir do
+// RAILWAY_PUBLIC_DOMAIN + media_path da mensagem.
+async function enviarTemplateWhatsappCloud(telefoneE164, templateNome, parametrosTexto, { accessToken, phoneNumberId } = {}, headerImageUrl = null) {
     if (!accessToken || !phoneNumberId) throw new Error('WhatsApp Business API não configurado: falta o Token de Acesso ou o Phone Number ID (ver Configurações).');
     const parametros = (parametrosTexto || []).map(valor => ({ type: 'text', text: String(valor ?? '').trim() || '-' }));
+    const components = [
+        ...(headerImageUrl ? [{ type: 'header', parameters: [{ type: 'image', image: { link: headerImageUrl } }] }] : []),
+        ...(parametros.length > 0 ? [{ type: 'body', parameters: parametros }] : []),
+    ];
     return graphRequest('POST', `${phoneNumberId}/messages`, {
         accessToken,
         body: {
@@ -82,7 +95,7 @@ async function enviarTemplateWhatsappCloud(telefoneE164, templateNome, parametro
             template: {
                 name: templateNome,
                 language: { code: 'pt_BR' },
-                ...(parametros.length > 0 ? { components: [{ type: 'body', parameters: parametros }] } : {}),
+                ...(components.length > 0 ? { components } : {}),
             },
         },
     });

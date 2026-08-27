@@ -4157,7 +4157,11 @@ async function dispararMensagensDaAutomacao(automacaoId) {
                                             horario: horarioStr, professor: professorStr, dia: diaStr,
                                         };
                                         const parametros = template.variaveis.map(v => valorPorPlaceholder[v] ?? '');
-                                        const resultadoTemplate = await enviarTemplateWhatsappCloud(numLimpo, template.nome, parametros, configWhatsappCloud);
+                                        // ver comentário em enviarTemplateWhatsappCloud (whatsappCloudApi.js) —
+                                        // sem isso, template com imagem no cabeçalho (ex: resgate_exalunos)
+                                        // falhava sempre e caía pro WhatsApp Web sem ninguém perceber.
+                                        const headerImageUrl = msg.media_path ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}${msg.media_path}` : null;
+                                        const resultadoTemplate = await enviarTemplateWhatsappCloud(numLimpo, template.nome, parametros, configWhatsappCloud, headerImageUrl);
                                         await registrarMensagemEnviada(numLimpo, texto, nome, resultadoTemplate?.messages?.[0]?.id || null, false, 'text', null, 'whatsapp_cloud');
                                         sucesso = true;
                                         enviadoPelaCloudApi = true;
@@ -5654,7 +5658,7 @@ app.get('/api/broadcast/historico', async (req, res) => {
 let filaDisparos = [];
 
 function iniciarBroadcast(job) {
-    const { listaNumeros, mensagem, mediaFile, delay_ms, delay_modo, delay_velocidade, descricao, templateWhatsapp } = job;
+    const { listaNumeros, mensagem, mediaFile, delay_ms, delay_modo, delay_velocidade, descricao, templateWhatsapp, templateMediaPath } = job;
 
     // Modo fixo: mesmo intervalo sempre. Modo aleatório: um valor novo dentro
     // da faixa escolhida a cada mensagem — menos previsível, reduz risco de bloqueio.
@@ -5729,7 +5733,11 @@ function iniciarBroadcast(job) {
                             // ali é justamente o padrão que arrisca bloqueio dele.
                             const primeiroNome = (nomeContato || '').trim().split(' ')[0] || '';
                             const parametros = (templateWhatsapp.variaveis || []).map(v => v === 'nome' ? primeiroNome : '');
-                            resultadoCloud = await enviarTemplateWhatsappCloud(numeroCompleto, templateWhatsapp.nome, parametros, entryEnvio.config);
+                            // ver comentário em enviarTemplateWhatsappCloud (whatsappCloudApi.js) —
+                            // sem isso, template com imagem no cabeçalho (ex: resgate_exalunos)
+                            // falhava sempre e caía pro número Principal sem ninguém perceber.
+                            const headerImageUrl = templateMediaPath ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}${templateMediaPath}` : null;
+                            resultadoCloud = await enviarTemplateWhatsappCloud(numeroCompleto, templateWhatsapp.nome, parametros, entryEnvio.config, headerImageUrl);
                         } else {
                             resultadoCloud = await enviarMensagemWhatsappCloud(numeroCompleto, textoPersonalizado, entryEnvio.config);
                         }
@@ -5833,13 +5841,20 @@ async function resolverRoteamentoETemplate(categoria, mensagemId) {
         if (regra?.numeros_ids) numerosPermitidosIds = regra.numeros_ids.split(',').filter(Boolean).map(Number);
     }
     let templateWhatsapp = null;
+    let templateMediaPath = null;
     if (mensagemId) {
-        const msgRow = await db.get('SELECT template_whatsapp FROM mensagens_personalizadas WHERE id = ?', Number(mensagemId));
+        const msgRow = await db.get('SELECT template_whatsapp, media_path FROM mensagens_personalizadas WHERE id = ?', Number(mensagemId));
         if (msgRow?.template_whatsapp) {
             try { templateWhatsapp = JSON.parse(msgRow.template_whatsapp); } catch (_) { }
         }
+        // Template com imagem no cabeçalho (ex: resgate_exalunos) precisa mandar
+        // essa imagem em TODO envio, não só na aprovação — ver comentário em
+        // enviarTemplateWhatsappCloud. media_path é da Mensagem Personalizada
+        // ORIGINAL vinculada ao template, não do mediaFile que o operador
+        // eventualmente sobe pro Disparo (esse aí segue sem suporte via API).
+        templateMediaPath = msgRow?.media_path || null;
     }
-    return { numerosPermitidosIds, templateWhatsapp };
+    return { numerosPermitidosIds, templateWhatsapp, templateMediaPath };
 }
 
 app.post('/api/broadcast/start', upload.single('media'), async (req, res) => {
@@ -5857,10 +5872,10 @@ app.post('/api/broadcast/start', upload.single('media'), async (req, res) => {
     let dadosJob;
     try { dadosJob = montarJobDisparo(req); } catch (e) { return res.status(400).json({ error: e.message }); }
     const { listaNumeros, mensagem, delay_ms, delay_modo, delay_velocidade, categoria, mensagemId, descricaoFinal } = dadosJob;
-    const { numerosPermitidosIds, templateWhatsapp } = await resolverRoteamentoETemplate(categoria, mensagemId);
+    const { numerosPermitidosIds, templateWhatsapp, templateMediaPath } = await resolverRoteamentoETemplate(categoria, mensagemId);
 
     const mediaFile = req.file ? { path: req.file.path, mimetype: req.file.mimetype, filename: req.file.originalname } : null;
-    const job = { listaNumeros, mensagem, mediaFile, delay_ms, delay_modo, delay_velocidade, numerosPermitidosIds, descricao: descricaoFinal, templateWhatsapp };
+    const job = { listaNumeros, mensagem, mediaFile, delay_ms, delay_modo, delay_velocidade, numerosPermitidosIds, descricao: descricaoFinal, templateWhatsapp, templateMediaPath };
 
     if (broadcastRunning) {
         filaDisparos.push(job);
@@ -5941,8 +5956,8 @@ async function checarDisparosAgendados() {
             console.log(`🗓️ Disparo agendado #${d.id} (${d.descricao || 'sem descrição'}): disparando...`);
             let jobSalvo;
             try { jobSalvo = JSON.parse(d.job_json); } catch (e) { console.error(`Erro ao ler disparo agendado #${d.id}:`, e.message); continue; }
-            const { numerosPermitidosIds, templateWhatsapp } = await resolverRoteamentoETemplate(jobSalvo.categoria, jobSalvo.mensagemId);
-            const job = { ...jobSalvo, numerosPermitidosIds, templateWhatsapp };
+            const { numerosPermitidosIds, templateWhatsapp, templateMediaPath } = await resolverRoteamentoETemplate(jobSalvo.categoria, jobSalvo.mensagemId);
+            const job = { ...jobSalvo, numerosPermitidosIds, templateWhatsapp, templateMediaPath };
             if (broadcastRunning) {
                 filaDisparos.push(job);
                 io.emit('broadcast_fila_atualizada', { tamanho: filaDisparos.length });
