@@ -88,32 +88,6 @@ const sqlite3 = require('sqlite3');
 const { open } = require('sqlite');
 const multer = require('multer');
 const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
-
-// INCIDENTE (26/08): sessão conectava e caía com LOGOUT poucos minutos depois,
-// repetidamente, sempre com "[storage] storage bucket persistence denied
-// (aquire-persistent-storage-denied)" no console da página logo antes. Sem
-// permissão de storage persistente, o Chrome trata o IndexedDB onde o
-// WhatsApp Web guarda as chaves da sessão multi-device como "best-effort" —
-// pode ser despejado a qualquer pressão de memória/disco, dessincronizando o
-// pareamento sem nenhum comando de logout de verdade vindo do servidor do
-// WhatsApp (consistente com client.lastLoggedOut sempre false nesses casos).
-// afterBrowserInitialized roda logo depois do browser/page serem criados,
-// ANTES do page.goto pro WhatsApp Web — concede a permissão via CDP nesse
-// ponto pra garantir que já esteja liberada antes da página tentar persistir
-// qualquer coisa. Patch no prototype (não por instância) pra cobrir também os
-// clients do pool de Disparo, que usam a mesma LocalAuth.
-const originalAfterBrowserInitialized = LocalAuth.prototype.afterBrowserInitialized;
-LocalAuth.prototype.afterBrowserInitialized = async function (...args) {
-    const result = await originalAfterBrowserInitialized.apply(this, args);
-    try {
-        await this.client.pupBrowser
-            .defaultBrowserContext()
-            .overridePermissions('https://web.whatsapp.com', ['persistent-storage']);
-    } catch (e) {
-        console.error('Erro ao conceder permissão de storage persistente:', e.message);
-    }
-    return result;
-};
 const OpenAI = require('openai');
 const moment = require('moment-timezone');
 const { buscarAlunoPorMatricula, buscarAlunoPorCodigo, obterParcelasEmAberto, criarCliente, matricularAluno, gerarLinkPagamentoPixSantander } = require('./pacto');
