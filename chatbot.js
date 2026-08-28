@@ -4232,6 +4232,16 @@ async function dispararMensagensDaAutomacao(automacaoId) {
                             'INSERT INTO automacao_envios_log (automacao_id, telefone, nome, mensagem_nome) VALUES (?, ?, ?, ?)',
                             [automacaoId, numLimpo, nome, msg.nome]
                         );
+                        // remove_etiqueta_ao_concluir (toggle "Ao enviar, remove a etiqueta do
+                        // contato" na tela de etapas) era gravado no banco mas nunca lido em
+                        // lugar nenhum — a etiqueta que disparou a automação nunca saía do
+                        // contato depois do envio. No dia seguinte a Programação reimportava
+                        // (importarContatosParaAutomacao) o mesmo contato pra fila só porque
+                        // ele ainda tinha a etiqueta, reenviando a mesma mensagem (bug
+                        // relatado: Resgate Ex-Alunos mandando pro mesmo contato dois dias seguidos).
+                        if (automacao.remove_etiqueta_ao_concluir && automacao.etiqueta_id) {
+                            await removerEtiquetaContato(numLimpo, automacao.etiqueta_id);
+                        }
                     }
                 })(),
                 new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout de 45s — provável travamento no WhatsApp Web/Puppeteer')), 45000))
