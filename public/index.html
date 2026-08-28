@@ -1182,6 +1182,83 @@ Sempre tente agendar uma aula experimental."></textarea>
                 <div class="card glass">
                     <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:.8rem;margin-bottom:1rem">
                         <div>
+                            <h3 style="margin-bottom:.3rem">📆 CRM Pacto — Contratos Anuais Vencendo</h3>
+                            <p style="color:var(--text-2);font-size:.85rem;max-width:560px">Varre os contatos com matrícula conhecida, busca o contrato vigente de cada um no Pacto e etiqueta quem tem plano <strong>anual</strong> vencendo em exatamente <strong>30</strong>, <strong>20</strong> ou <strong>10</strong> dias — um marco por vez (quem bate "30 dias" hoje sai da lista amanhã e só reaparece em "20 dias"). Use pra criar Automações de renovação. Esse endpoint da Pacto tem limite de 1 requisição por segundo, então pra toda a base a varredura leva mais de 1 hora — pensada pra rodar de madrugada (Programação padrão: 04:00, todos os dias).</p>
+                        </div>
+                    </div>
+
+                    <div style="display:flex;align-items:center;gap:.8rem;flex-wrap:wrap;margin-bottom:1rem">
+                        <button class="btn-primary" id="btn-contratos-anuais" style="padding:.6rem 1.1rem;font-size:.85rem">🔄 Atualizar Lista</button>
+                        <button class="btn-secondary" id="btn-contratos-anuais-toggle" style="padding:.6rem 1rem;font-size:.85rem">▼ Ver relatório detalhado</button>
+                        <button type="button" class="btn-secondary btn-integracao-programar" data-chave="contratos_anuais" style="padding:.6rem 1rem;font-size:.85rem">🗓️ Criar Programação</button>
+                        <span id="contratos-anuais-ultima-atualizacao" style="color:var(--text-3);font-size:.78rem"></span>
+                        <span class="integracao-programacao-status" data-chave="contratos_anuais" style="color:var(--text-3);font-size:.78rem"></span>
+                    </div>
+
+                    <div id="contratos-anuais-resultado" style="background:rgba(255,255,255,0.03);border-radius:var(--radius-sm);padding:1rem;font-size:.82rem;color:var(--text-2);line-height:1.6;margin-bottom:1rem">
+                        Clique em "Atualizar Lista" pra começar (pode levar mais de 1 hora pra base inteira).
+                    </div>
+
+                    <div id="contratos-anuais-detalhe" class="hidden">
+                        <h4 style="color:#3b82f6;font-size:.85rem;margin:1.2rem 0 .6rem">🔵 Faltam 30 dias</h4>
+                        <div style="overflow-x:auto">
+                            <table class="leads-table">
+                                <thead>
+                                    <tr>
+                                        <th>Contato</th>
+                                        <th>Matrícula</th>
+                                        <th>Plano</th>
+                                        <th style="text-align:right">Vence em</th>
+                                        <th></th>
+                                    </tr>
+                                </thead>
+                                <tbody id="contratos-anuais-lista-30">
+                                    <tr><td colspan="5" style="padding:1.5rem;text-align:center;color:var(--text-3)">Nenhum dado ainda.</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+
+                        <h4 style="color:#f59e0b;font-size:.85rem;margin:1.6rem 0 .6rem">🟡 Faltam 20 dias</h4>
+                        <div style="overflow-x:auto">
+                            <table class="leads-table">
+                                <thead>
+                                    <tr>
+                                        <th>Contato</th>
+                                        <th>Matrícula</th>
+                                        <th>Plano</th>
+                                        <th style="text-align:right">Vence em</th>
+                                        <th></th>
+                                    </tr>
+                                </thead>
+                                <tbody id="contratos-anuais-lista-20">
+                                    <tr><td colspan="5" style="padding:1.5rem;text-align:center;color:var(--text-3)">Nenhum dado ainda.</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+
+                        <h4 style="color:var(--red);font-size:.85rem;margin:1.6rem 0 .6rem">🔴 Faltam 10 dias</h4>
+                        <div style="overflow-x:auto">
+                            <table class="leads-table">
+                                <thead>
+                                    <tr>
+                                        <th>Contato</th>
+                                        <th>Matrícula</th>
+                                        <th>Plano</th>
+                                        <th style="text-align:right">Vence em</th>
+                                        <th></th>
+                                    </tr>
+                                </thead>
+                                <tbody id="contratos-anuais-lista-10">
+                                    <tr><td colspan="5" style="padding:1.5rem;text-align:center;color:var(--text-3)">Nenhum dado ainda.</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card glass">
+                    <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:.8rem;margin-bottom:1rem">
+                        <div>
                             <h3 style="margin-bottom:.3rem">🟢 CRM Pacto — Alunos Ativos x Ex-Aluno</h3>
                             <p style="color:var(--text-2);font-size:.85rem;max-width:560px">Duas etapas: "Importar Ativos" varre o Pacto e traz quem está ativo agora (leva alguns minutos, mesma varredura do Importar Contatos). Depois, "Atualizar Contatos" aplica as etiquetas: quem foi encontrado ativo vira <strong>Ativo</strong>; quem já teve matrícula mas não apareceu na varredura vira <strong>Ex-Aluno</strong>. Rode "Importar Ativos" primeiro sempre que quiser uma foto atualizada antes de etiquetar.</p>
                         </div>

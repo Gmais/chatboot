@@ -744,7 +744,7 @@ navBtns.forEach(btn => {
         if (targetId === 'configuracoes-section') { loadHorarioConfig(); loadDelayResposta(); loadProgramacoes(); loadInstagramConfig(); loadWhatsappCloudConfig(); }
         if (targetId === 'conversas-section') CM.onEnterSection();
         if (targetId === 'contatos-section' || targetId === 'disparos-section') loadContatos();
-        if (targetId === 'integracoes-section') { loadPactoInadimplentes(); loadPactoVencemHoje(); loadAgendaAvaliacao(); loadGympulseConfig(); }
+        if (targetId === 'integracoes-section') { loadPactoInadimplentes(); loadPactoVencemHoje(); loadContratosAnuais(); loadAgendaAvaliacao(); loadGympulseConfig(); }
         if (targetId === 'automacoes-section') { loadEtiquetas().then(() => loadAutomacoes()); }
         if (targetId === 'mensagens-personalizadas-section') loadMensagensPersonalizadas();
         if (targetId === 'disparos-section') {
@@ -5160,6 +5160,141 @@ pactoVencemHojeBody?.addEventListener('click', async (e) => {
     } catch (err) {
         showToast('Erro', 'Não foi possível remover', 'error');
     }
+});
+
+// =====================================
+// INTEGRAÇÃO — CRM PACTO (CONTRATOS ANUAIS VENCENDO EM 30/20/10 DIAS)
+// =====================================
+const btnContratosAnuais = document.getElementById('btn-contratos-anuais');
+const btnContratosAnuaisToggle = document.getElementById('btn-contratos-anuais-toggle');
+const contratosAnuaisDetalhe = document.getElementById('contratos-anuais-detalhe');
+const contratosAnuaisResultado = document.getElementById('contratos-anuais-resultado');
+const contratosAnuaisUltimaAtualizacaoEl = document.getElementById('contratos-anuais-ultima-atualizacao');
+
+btnContratosAnuaisToggle?.addEventListener('click', () => {
+    const aberto = contratosAnuaisDetalhe?.classList.toggle('hidden') === false;
+    btnContratosAnuaisToggle.textContent = aberto ? '▲ Esconder relatório detalhado' : '▼ Ver relatório detalhado';
+});
+
+function formatarUltimaAtualizacaoContratosAnuais(iso) {
+    if (!contratosAnuaisUltimaAtualizacaoEl) return;
+    if (!iso) { contratosAnuaisUltimaAtualizacaoEl.textContent = ''; return; }
+    const d = new Date(iso);
+    if (isNaN(d)) { contratosAnuaisUltimaAtualizacaoEl.textContent = ''; return; }
+    const data = d.toLocaleDateString('pt-BR');
+    const hora = d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+    contratosAnuaisUltimaAtualizacaoEl.textContent = `Última atualização: ${data} às ${hora}`;
+}
+
+const contratosAnuaisBodyPorMarco = {
+    30: document.getElementById('contratos-anuais-lista-30'),
+    20: document.getElementById('contratos-anuais-lista-20'),
+    10: document.getElementById('contratos-anuais-lista-10'),
+};
+
+function renderContratosAnuaisProgress(p) {
+    if (!contratosAnuaisResultado) return;
+    const pct = p.total ? Math.round((p.verificados / p.total) * 100) : 0;
+    contratosAnuaisResultado.innerHTML = `
+        <div style="margin-bottom:.5rem">⏳ Verificando contratos... ${p.verificados}/${p.total} (${pct}%) — pode levar mais de 1 hora</div>
+        <div style="background:rgba(255,255,255,0.08);border-radius:50px;height:8px;overflow:hidden;margin-bottom:.8rem">
+            <div style="background:#3b82f6;height:100%;width:${pct}%;transition:width .3s"></div>
+        </div>
+        <div>📆 Vencendo em 30/20/10 dias encontrados até agora: <strong style="color:var(--text-1)">${p.encontrados || 0}</strong></div>
+    `;
+}
+
+function linhaContratoAnual(i) {
+    const vence = i.vigencia_ate ? new Date(i.vigencia_ate).toLocaleDateString('pt-BR') : '-';
+    return `
+        <tr>
+            <td>
+                <div style="font-weight:500;color:var(--text-1)">${i.nome || '-'}</div>
+                <div style="font-size:.75rem;color:var(--text-3)">${i.telefone}</div>
+            </td>
+            <td style="color:var(--text-2);font-size:.85rem">${i.matricula || '-'}</td>
+            <td style="color:var(--text-2);font-size:.85rem">${i.descricao_plano || '-'}</td>
+            <td style="text-align:right;color:var(--text-2)">${vence}</td>
+            <td style="text-align:right">
+                <button type="button" class="btn-danger btn-excluir-contrato-anual" data-telefone="${i.telefone}" data-nome="${i.nome || i.telefone}" style="padding:.35rem .6rem;font-size:.75rem" title="Excluir da lista e remover a etiqueta">🗑️</button>
+            </td>
+        </tr>
+    `;
+}
+
+async function carregarUltimaAtualizacaoContratosAnuais() {
+    try {
+        const res = await fetch('/api/pacto/contratos-anuais/status');
+        const status = await res.json();
+        if (!status.running) formatarUltimaAtualizacaoContratosAnuais(status.ultima_atualizacao);
+    } catch (e) { /* silencioso — não é crítico, só o texto informativo */ }
+}
+
+async function loadContratosAnuais() {
+    if (!contratosAnuaisBodyPorMarco[30]) return;
+    carregarUltimaAtualizacaoContratosAnuais();
+    try {
+        const res = await fetch('/api/pacto/contratos-anuais');
+        const lista = await res.json();
+        for (const marco of [30, 20, 10]) {
+            const body = contratosAnuaisBodyPorMarco[marco];
+            if (!body) continue;
+            const doMarco = lista.filter(i => i.marco === marco);
+            body.innerHTML = doMarco.length
+                ? doMarco.map(linhaContratoAnual).join('')
+                : `<tr><td colspan="5" style="padding:1.5rem;text-align:center;color:var(--text-3)">Ninguém vencendo em ${marco} dias.</td></tr>`;
+        }
+    } catch (e) {
+        const erro = '<tr><td colspan="5" style="padding:1.5rem;text-align:center;color:var(--text-3)">Erro ao carregar.</td></tr>';
+        for (const marco of [30, 20, 10]) if (contratosAnuaisBodyPorMarco[marco]) contratosAnuaisBodyPorMarco[marco].innerHTML = erro;
+    }
+}
+
+async function excluirContratoAnual(telefone, nome) {
+    if (!confirm(`Excluir "${nome}" da lista de contratos vencendo e remover a etiqueta?`)) return;
+    try {
+        const res = await fetch(`/api/pacto/contratos-anuais/${encodeURIComponent(telefone)}`, { method: 'DELETE' });
+        if (!res.ok) throw new Error('Falha ao excluir');
+        showToast('Removido', '', 'success', 2000);
+        loadContratosAnuais();
+    } catch (err) {
+        showToast('Erro', 'Não foi possível remover', 'error');
+    }
+}
+
+Object.values(contratosAnuaisBodyPorMarco).forEach(tbody => {
+    tbody?.addEventListener('click', (e) => {
+        const btn = e.target.closest('.btn-excluir-contrato-anual');
+        if (!btn) return;
+        excluirContratoAnual(btn.dataset.telefone, btn.dataset.nome);
+    });
+});
+
+btnContratosAnuais?.addEventListener('click', async () => {
+    btnContratosAnuais.disabled = true;
+    btnContratosAnuais.textContent = '⏳ Atualizando...';
+    try {
+        const res = await fetch('/api/pacto/contratos-anuais/atualizar', { method: 'POST' });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Erro ao iniciar');
+        renderContratosAnuaisProgress({ total: 0, verificados: 0, encontrados: 0 });
+    } catch (e) {
+        showToast('Erro', e.message, 'error');
+        btnContratosAnuais.disabled = false;
+        btnContratosAnuais.textContent = '🔄 Atualizar Lista';
+    }
+});
+
+socket.on('pacto_contratos_anuais_progress', renderContratosAnuaisProgress);
+
+socket.on('pacto_contratos_anuais_done', (p) => {
+    if (btnContratosAnuais) {
+        btnContratosAnuais.disabled = false;
+        btnContratosAnuais.textContent = '🔄 Atualizar Lista';
+    }
+    showToast('Atualização concluída!', `${p.encontrados || 0} contrato(s) anual(is) vencendo em 30/20/10 dias.`, 'success', 6000);
+    formatarUltimaAtualizacaoContratosAnuais(p.ultima_atualizacao);
+    loadContratosAnuais();
 });
 
 // =====================================

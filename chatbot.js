@@ -90,7 +90,7 @@ const multer = require('multer');
 const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
 const OpenAI = require('openai');
 const moment = require('moment-timezone');
-const { buscarAlunoPorMatricula, buscarAlunoPorCodigo, obterParcelasEmAberto, criarCliente, matricularAluno, gerarLinkPagamentoPixSantander } = require('./pacto');
+const { buscarAlunoPorMatricula, buscarAlunoPorCodigo, obterParcelasEmAberto, obterContratosPorMatricula, criarCliente, matricularAluno, gerarLinkPagamentoPixSantander } = require('./pacto');
 const { enviarMensagemInstagram, obterNomeUsuarioInstagram, verificarAssinaturaWebhook } = require('./instagram');
 const { enviarMensagemWhatsappCloud, enviarTemplateWhatsappCloud, criarTemplateWhatsappCloud, listarTemplatesWhatsappCloud } = require('./whatsappCloudApi');
 const { buscarAgendaDoDia } = require('./agenda');
@@ -660,6 +660,15 @@ async function initDB() {
             valor_total REAL,
             atualizado_em DATETIME DEFAULT CURRENT_TIMESTAMP
         );
+        CREATE TABLE IF NOT EXISTS pacto_contratos_anuais (
+            telefone TEXT PRIMARY KEY,
+            nome TEXT,
+            matricula TEXT,
+            descricao_plano TEXT,
+            vigencia_ate DATETIME,
+            marco INTEGER,
+            atualizado_em DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
         CREATE TABLE IF NOT EXISTS pacto_alunos_ativos (
             telefone TEXT PRIMARY KEY,
             nome TEXT,
@@ -901,6 +910,12 @@ async function initDB() {
     // então uma programação diária fixa aqui só duplicaria esforço à toa.
     try {
         await db.run(`INSERT OR IGNORE INTO integracao_programacoes (chave, dias, horario, ativo) VALUES ('situacao_financeira', '1,2,3,4,5', '06:05', 1)`);
+        // Todos os dias da semana (não só úteis, diferente da Situação
+        // Financeira) — cada aluno só bate um marco (30/20/10 dias) por vez, e
+        // pular um sábado/domingo faria perder o marco de quem vence naquele
+        // dia. Horário de madrugada porque a varredura é sequencial (rate limit
+        // de 1 req/s da Pacto nesse endpoint) e leva mais de 1h pra base atual.
+        await db.run(`INSERT OR IGNORE INTO integracao_programacoes (chave, dias, horario, ativo) VALUES ('contratos_anuais', '0,1,2,3,4,5,6', '04:00', 1)`);
     } catch (e) { console.error('Erro ao semear programações de integração:', e.message); }
 
     // relatorio_dispensados ganhou uma coluna "motivo" (cada relatório passou
@@ -7072,6 +7087,158 @@ setInterval(() => processarAgendaAvaliacao().catch(e => console.error('Erro no c
 setTimeout(() => processarAgendaAvaliacao().catch(e => console.error('Erro no ciclo automático da Agenda de Avaliação:', e.message)), 3 * 60 * 1000);
 
 // =====================================
+// INTEGRAÇÃO — CONTRATOS ANUAIS VENCENDO (30/20/10 DIAS)
+// =====================================
+// Varre os contatos com matrícula conhecida (mesma fonte da Situação
+// Financeira), busca o contrato ATIVO de cada um via obterContratosPorMatricula
+// e etiqueta quem tem plano ANUAL vencendo em EXATAMENTE 30, 20 ou 10 dias — um
+// marco por vez (não uma janela): quem bateu "30 dias" hoje sai da lista amanhã
+// mesmo sem renovar, e só reaparece quando bater "20 dias" (pedido explícito do
+// usuário: marco exato, não "faltam até X dias").
+//
+// "Plano anual" não vem marcado em nenhum campo estruturado da Pacto (duracao e
+// plano.tipoPlano vêm sempre null, confirmado ao vivo em produção) — é inferido
+// calculando a duração real do contrato (vigenciaAteAjustada - vigenciaDe).
+// Contratos anuais reais testados deram 364-424 dias; o corte de 300 dias fica
+// bem acima de qualquer plano semestral (~180 dias), então não gera falso
+// positivo pra planos mais curtos.
+//
+// RATE LIMIT PRÓPRIO desse endpoint da Pacto: 1 requisição por segundo (ver
+// obterContratosPorMatricula em pacto.js) — bem mais restrito que Situação
+// Financeira/Ativos (que processam em lotes de 5 em paralelo). Por isso aqui é
+// SEQUENCIAL com delay entre cada chamada, e por isso a Programação padrão roda
+// de madrugada: pra base atual (~3800 matrículas) a varredura completa leva
+// mais de 1 hora.
+const CONTRATOS_ANUAIS_DURACAO_MINIMA_DIAS = 300;
+const CONTRATOS_ANUAIS_MARCOS = [30, 20, 10];
+const CONTRATOS_ANUAIS_DELAY_MS = 1100;
+
+async function garantirEtiquetaContratoVence(marco) {
+    const nome = `Contrato Vence em ${marco} Dias`;
+    const existente = await db.get('SELECT id FROM etiquetas WHERE LOWER(nome) = LOWER(?)', nome);
+    if (existente) return existente.id;
+    const cores = { 30: '#3b82f6', 20: '#f59e0b', 10: '#EF4444' };
+    const result = await db.run('INSERT INTO etiquetas (nome, cor) VALUES (?, ?)', [nome, cores[marco] || '#a855f7']);
+    return result.lastID;
+}
+
+let contratosAnuaisRunning = false;
+let contratosAnuaisProgress = { total: 0, verificados: 0, encontrados: 0, running: false };
+
+app.get('/api/pacto/contratos-anuais/status', async (req, res) => {
+    // Mesmo padrão de status/última-atualização usado em Situação Financeira —
+    // ver comentário em /api/pacto/inadimplentes/status.
+    const row = await db.get("SELECT valor FROM configuracoes WHERE chave = 'pacto_contratos_anuais_ultima_atualizacao'");
+    res.json({ ...contratosAnuaisProgress, ultima_atualizacao: row?.valor || null });
+});
+
+app.get('/api/pacto/contratos-anuais', async (req, res) => {
+    const lista = await db.all('SELECT * FROM pacto_contratos_anuais ORDER BY marco ASC, vigencia_ate ASC');
+    res.json(lista);
+});
+
+// Remoção manual: some da lista e desvincula as três etiquetas de marco na
+// hora (mesmo padrão de /api/pacto/inadimplentes/:telefone — remover uma
+// etiqueta que o contato não tem é um DELETE de 0 linhas, sem custo real). Se
+// ainda estiver no marco de verdade, volta a aparecer na próxima varredura.
+app.delete('/api/pacto/contratos-anuais/:telefone', async (req, res) => {
+    const { telefone } = req.params;
+    try {
+        for (const marco of CONTRATOS_ANUAIS_MARCOS) {
+            const etiquetaId = await garantirEtiquetaContratoVence(marco);
+            await removerEtiquetaContato(telefone, etiquetaId);
+        }
+        await db.run('DELETE FROM pacto_contratos_anuais WHERE telefone = ?', telefone);
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+async function processarContratosAnuaisVencendo() {
+    if (contratosAnuaisRunning) return;
+    contratosAnuaisRunning = true;
+    try {
+        const contatos = await db.all("SELECT telefone, matricula FROM leads WHERE matricula IS NOT NULL AND matricula != ''");
+        const etiquetaPorMarco = {};
+        for (const marco of CONTRATOS_ANUAIS_MARCOS) etiquetaPorMarco[marco] = await garantirEtiquetaContratoVence(marco);
+
+        contratosAnuaisProgress = { total: contatos.length, verificados: 0, encontrados: 0, running: true };
+        io.emit('pacto_contratos_anuais_progress', contratosAnuaisProgress);
+
+        let primeiro = true;
+        for (const contato of contatos) {
+            if (!contratosAnuaisRunning) break;
+            if (!primeiro) await delay(CONTRATOS_ANUAIS_DELAY_MS); // respeita o rate limit de 1 req/s da Pacto
+            primeiro = false;
+
+            // normalizarTelefoneBR pelo mesmo motivo de processarInadimplentesPacto
+            // (matrícula antiga pode ter telefone salvo sem o 9º dígito).
+            const numLimpo = normalizarTelefoneBR(contato.telefone.replace('@c.us', '').replace('@lid', ''));
+            try {
+                const contratos = await obterContratosPorMatricula(contato.matricula);
+                // Pode haver mais de um contrato "AT" em teoria — pega o de vigência
+                // mais recente (maior vigenciaDe) como o vigente de verdade.
+                const vigentes = contratos.filter(c => c.situacao === 'AT');
+                const vigente = vigentes.sort((a, b) => (b.vigenciaDe || 0) - (a.vigenciaDe || 0))[0];
+
+                const jaEstavaNoCache = await db.get('SELECT 1 FROM pacto_contratos_anuais WHERE telefone = ?', numLimpo);
+
+                let marcoAtual = null;
+                if (vigente && vigente.vigenciaDe && vigente.vigenciaAteAjustada) {
+                    const duracaoDias = Math.round((vigente.vigenciaAteAjustada - vigente.vigenciaDe) / 86400000);
+                    if (duracaoDias >= CONTRATOS_ANUAIS_DURACAO_MINIMA_DIAS) {
+                        const diasRestantes = Math.round((vigente.vigenciaAteAjustada - Date.now()) / 86400000);
+                        if (CONTRATOS_ANUAIS_MARCOS.includes(diasRestantes)) marcoAtual = diasRestantes;
+                    }
+                }
+
+                if (marcoAtual) {
+                    await db.run(
+                        `INSERT INTO pacto_contratos_anuais (telefone, nome, matricula, descricao_plano, vigencia_ate, marco, atualizado_em)
+                         VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                         ON CONFLICT(telefone) DO UPDATE SET nome = excluded.nome, matricula = excluded.matricula,
+                            descricao_plano = excluded.descricao_plano, vigencia_ate = excluded.vigencia_ate,
+                            marco = excluded.marco, atualizado_em = CURRENT_TIMESTAMP`,
+                        [numLimpo, vigente.pessoaDTO?.nome || null, contato.matricula, vigente.descricaoPlano || null, new Date(vigente.vigenciaAteAjustada).toISOString(), marcoAtual]
+                    );
+                    await aplicarEtiquetaContato(numLimpo, etiquetaPorMarco[marcoAtual]);
+                    // Remove as OUTRAS etiquetas de marco — caso o contato tenha ficado
+                    // "preso" numa etiqueta de uma varredura anterior (ex: reagendou a
+                    // Programação e pulou um dia).
+                    for (const marco of CONTRATOS_ANUAIS_MARCOS) {
+                        if (marco !== marcoAtual) await removerEtiquetaContato(numLimpo, etiquetaPorMarco[marco]);
+                    }
+                    contratosAnuaisProgress.encontrados++;
+                } else if (jaEstavaNoCache) {
+                    await db.run('DELETE FROM pacto_contratos_anuais WHERE telefone = ?', numLimpo);
+                    for (const marco of CONTRATOS_ANUAIS_MARCOS) await removerEtiquetaContato(numLimpo, etiquetaPorMarco[marco]);
+                }
+            } catch (err) {
+                console.error(`❌ Erro ao checar contrato da matrícula ${contato.matricula}:`, err.message);
+            }
+            contratosAnuaisProgress.verificados++;
+            if (contratosAnuaisProgress.verificados % 20 === 0) io.emit('pacto_contratos_anuais_progress', contratosAnuaisProgress);
+        }
+
+        const ultimaAtualizacao = new Date().toISOString();
+        await db.run('INSERT OR REPLACE INTO configuracoes (chave, valor) VALUES (?, ?)', ['pacto_contratos_anuais_ultima_atualizacao', ultimaAtualizacao]);
+        io.emit('pacto_contratos_anuais_progress', contratosAnuaisProgress);
+        io.emit('pacto_contratos_anuais_done', { ...contratosAnuaisProgress, ultima_atualizacao: ultimaAtualizacao });
+        console.log(`✅ Varredura de contratos anuais finalizada: ${contratosAnuaisProgress.encontrados} vencendo em 30/20/10 dias, de ${contratosAnuaisProgress.verificados} verificados.`);
+    } finally {
+        contratosAnuaisProgress.running = false;
+        contratosAnuaisRunning = false;
+    }
+}
+
+app.post('/api/pacto/contratos-anuais/atualizar', async (req, res) => {
+    if (contratosAnuaisRunning) return res.status(400).json({ error: 'Uma varredura de contratos anuais já está em andamento.' });
+    res.json({ success: true });
+    processarContratosAnuaisVencendo().catch(e => console.error('Erro ao processar contratos anuais:', e.message));
+});
+
+// =====================================
 // INTEGRAÇÃO — SORTEIO DE RESGATE EX-ALUNOS
 // =====================================
 // Sorteia diariamente uma amostra aleatória de contatos com a etiqueta
@@ -7232,6 +7399,7 @@ const INTEGRACAO_PROCESSADORES = {
     agenda_avaliacao: processarAgendaAvaliacao,
     pacto_ativos: processarVarreduraEAtualizarAtivos,
     resgate_exalunos: processarSorteioResgateExAlunos,
+    contratos_anuais: processarContratosAnuaisVencendo,
 };
 
 async function checarProgramacoesIntegracao() {

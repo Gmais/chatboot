@@ -97,6 +97,27 @@ async function obterParcelasEmAberto(codigoPessoa) {
     return Array.isArray(content) ? content : [];
 }
 
+// Consulta o histórico de contratos do aluno pela matrícula — cada item tem
+// vigenciaDe/vigenciaAteAjustada (início/vencimento, em epoch ms), descricaoPlano
+// e situacao ("AT" = contrato vigente; os demais são histórico). A API não marca
+// a duração do plano em nenhum campo estruturado (duracao/plano.tipoPlano vêm
+// sempre null, confirmado ao vivo) — quem chama precisa calcular a duração real
+// a partir de vigenciaDe/vigenciaAteAjustada pra saber se é um plano anual.
+// Endpoint confirmado pelo suporte da Pacto (não documentado de forma navegável
+// em api-docs.pactosolucoes.com.br, que é uma SPA sem conteúdo estático) — exige
+// o header "empresaId" além do Bearer normal (sem ele dá 500 sem detalhe no
+// corpo). RATE LIMIT PRÓPRIO desse endpoint, mais restrito que o resto da API:
+// 1 requisição por segundo (confirmado ao vivo, 429 "Rate limit excedido" acima
+// disso) — varredura em massa precisa espaçar as chamadas, não pode rodar em
+// lotes paralelos como obterParcelasEmAberto.
+async function obterContratosPorMatricula(matricula) {
+    const { content } = await pactoRequest('GET', `/contratos/by-matricula/${matricula}`, {
+        params: { page: 0, size: 10 },
+        headers: { empresaId: String(PACTO_EMPRESA_CODIGO) }
+    });
+    return Array.isArray(content) ? content : [];
+}
+
 // Cria um novo cliente (cadastro). Não informe "codigo" — a API usa a ausência
 // dele para diferenciar criação de atualização. Retorna o cliente já com
 // matrícula e código gerados pela Pacto.
@@ -165,7 +186,7 @@ async function gerarLinkPagamentoPixSantander({ movparcela, nrParcelas = 1, conv
 }
 
 module.exports = {
-    buscarAlunoPorMatricula, buscarAlunoPorCodigo, obterParcelasEmAberto,
+    buscarAlunoPorMatricula, buscarAlunoPorCodigo, obterParcelasEmAberto, obterContratosPorMatricula,
     criarCliente, matricularAluno,
     gerarLinkPagamentoPixSantander
 };
