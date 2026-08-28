@@ -7114,7 +7114,7 @@ const CONTRATOS_ANUAIS_MARCOS = [30, 20, 10];
 const CONTRATOS_ANUAIS_DELAY_MS = 1100;
 
 async function garantirEtiquetaContratoVence(marco) {
-    const nome = `Contrato Vence em ${marco} Dias`;
+    const nome = `Falta${marco}`;
     const existente = await db.get('SELECT id FROM etiquetas WHERE LOWER(nome) = LOWER(?)', nome);
     if (existente) return existente.id;
     const cores = { 30: '#3b82f6', 20: '#f59e0b', 10: '#EF4444' };
