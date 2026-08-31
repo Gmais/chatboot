@@ -1365,10 +1365,14 @@ programacaoDiasDiv?.addEventListener('change', (e) => {
 
 // Cada ação escolhe primeiro um TIPO — e o tipo decide qual AÇÃO roda de
 // verdade no horário agendado (ver checarProgramacoes no backend):
-// "Automação" (escolhe da lista completa) roda Importar Lista — sincroniza a
-// fila da automação com quem tem a etiqueta agora. "Disparo" (escolhe pela
-// Campanha Rápida, ver CAMPANHAS_INFO) roda Disparar Mensagens — manda pra
-// quem já está na fila. Por isso costuma fazer sentido encadear os dois na
+// "Automação" roda Importar Lista — sincroniza a fila da automação com quem
+// tem a etiqueta agora. "Disparo" roda Disparar Mensagens — manda pra quem
+// já está na fila. Os dois escolhem direto da lista de Automações de verdade
+// (antes "Disparo" só listava uma lista fixa de 10 "campanhas" no código —
+// CAMPANHAS_INFO — que ficava desatualizada toda vez que nascia uma
+// automação nova, tipo a "Renovação Antecipada": ficava só importando
+// (Automação) sem nunca ter como programar o Disparo dela, já que não
+// aparecia nessa lista). Por isso costuma fazer sentido encadear os dois na
 // mesma automação: 1ª ação "Automação" importa, 2ª ação "Disparo" dispara.
 function renderProgramacaoAcoesForm() {
     if (!programacaoAcoesListaDiv) return;
@@ -1379,20 +1383,13 @@ function renderProgramacaoAcoesForm() {
     programacaoAcoesListaDiv.innerHTML = programacaoAcoesForm.map((acao, idx) => `
         <div style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;background:rgba(255,255,255,0.03);border-radius:8px;padding:.6rem">
             <select class="programacao-acao-tipo" data-idx="${idx}" style="background:var(--input-bg);border:1px solid rgba(255,255,255,0.1);border-radius:var(--radius-sm);padding:.55rem .7rem;color:var(--text-1);font-family:'Inter',sans-serif;font-size:.85rem">
-                <option value="automacao" ${acao.tipo === 'automacao' ? 'selected' : ''}>Automação</option>
-                <option value="disparo" ${acao.tipo === 'disparo' ? 'selected' : ''}>Disparo</option>
+                <option value="automacao" ${acao.tipo === 'automacao' ? 'selected' : ''}>Automação (Importar Lista)</option>
+                <option value="disparo" ${acao.tipo === 'disparo' ? 'selected' : ''}>Disparo (Disparar Mensagens)</option>
             </select>
-            ${acao.tipo === 'disparo' ? `
-                <select class="programacao-acao-valor" data-idx="${idx}" style="flex:1;min-width:180px;background:var(--input-bg);border:1px solid rgba(255,255,255,0.1);border-radius:var(--radius-sm);padding:.55rem .7rem;color:var(--text-1);font-family:'Inter',sans-serif;font-size:.85rem">
-                    <option value="">Selecione um tipo de disparo...</option>
-                    ${Object.entries(CAMPANHAS_INFO).map(([chave, info]) => `<option value="${chave}" ${acao.valor === chave ? 'selected' : ''}>${info.icon} ${info.label}</option>`).join('')}
-                </select>
-            ` : `
-                <select class="programacao-acao-valor" data-idx="${idx}" style="flex:1;min-width:180px;background:var(--input-bg);border:1px solid rgba(255,255,255,0.1);border-radius:var(--radius-sm);padding:.55rem .7rem;color:var(--text-1);font-family:'Inter',sans-serif;font-size:.85rem">
-                    <option value="">Selecione uma automação...</option>
-                    ${automacoesGlobais.map(a => `<option value="${a.id}" ${String(acao.valor) === String(a.id) ? 'selected' : ''}>${a.nome}${!a.ativo ? ' (pausada)' : ''}</option>`).join('')}
-                </select>
-            `}
+            <select class="programacao-acao-valor" data-idx="${idx}" style="flex:1;min-width:180px;background:var(--input-bg);border:1px solid rgba(255,255,255,0.1);border-radius:var(--radius-sm);padding:.55rem .7rem;color:var(--text-1);font-family:'Inter',sans-serif;font-size:.85rem">
+                <option value="">Selecione uma automação...</option>
+                ${automacoesGlobais.map(a => `<option value="${a.id}" ${String(acao.valor) === String(a.id) ? 'selected' : ''}>${a.nome}${!a.ativo ? ' (pausada)' : ''}</option>`).join('')}
+            </select>
             <button type="button" class="btn-remove-programacao-acao" data-idx="${idx}" style="background:none;border:none;color:var(--red);font-size:1.1rem;cursor:pointer;padding:.2rem .5rem">✕</button>
         </div>
         ${idx < programacaoAcoesForm.length - 1 ? `
@@ -1439,14 +1436,12 @@ programacaoAcoesListaDiv?.addEventListener('click', (e) => {
     renderProgramacaoAcoesForm();
 });
 
-// Trocar o Tipo (Automação ↔ Disparo) troca as opções do segundo seletor —
-// reseta o valor escolhido antes, senão fica um automacao_id "vazando" pro
-// contexto de chave de campanha (ou vice-versa) até o usuário escolher de novo.
+// Trocar o Tipo (Automação ↔ Disparo) só muda o que roda no horário
+// agendado — a automação escolhida no segundo seletor continua a mesma
+// (ambos os tipos usam automacao_id), não precisa resetar o valor.
 programacaoAcoesListaDiv?.addEventListener('change', (e) => {
     if (!e.target.classList.contains('programacao-acao-tipo')) return;
     sincronizarProgramacaoAcoesDoDOM();
-    const idx = Number(e.target.dataset.idx);
-    if (programacaoAcoesForm[idx]) programacaoAcoesForm[idx].valor = '';
     renderProgramacaoAcoesForm();
 });
 
@@ -1458,12 +1453,12 @@ async function abrirModalProgramacao(prog = null) {
     if (programacaoHorarioInput) programacaoHorarioInput.value = prog?.horario || '08:00';
     programacaoDiasSelecionados = prog ? [...prog.dias] : [1, 2, 3, 4, 5];
     // "Automação" = roda Importar Lista (sincroniza fila); "Disparo" = roda
-    // Disparar Mensagens (manda pra fila). Ao editar, uma ação "Disparo" volta
-    // a mostrar a Campanha Rápida certa (campanha_chave) — se não tiver (ação
-    // criada antes dessa distinção existir), abre vazia pra escolher de novo.
+    // Disparar Mensagens (manda pra fila). Os dois guardam o automacao_id
+    // direto agora — campanha_chave é só resquício de exibição de uma versão
+    // antiga (ver renderProgramacaoAcoesForm), nunca mais precisa dele aqui.
     programacaoAcoesForm = prog ? prog.acoes.map(a => ({
         tipo: a.tipo === 'automacao' ? 'automacao' : 'disparo',
-        valor: a.tipo === 'automacao' ? a.automacao_id : (a.campanha_chave || ''),
+        valor: a.automacao_id,
         intervaloDepoisSegundos: a.intervalo_depois_segundos || 60,
     })) : [];
     renderProgramacaoDias();
@@ -1485,23 +1480,13 @@ btnProgramacaoSalvar?.addEventListener('click', async () => {
 
     // "Automação" roda Importar Lista (gera a fila a partir da etiqueta);
     // "Disparo" roda Disparar Mensagens (manda pra quem já está na fila) —
-    // resolve a campanha escolhida pra automação correspondente (mesma
-    // lógica de encontrarAutomacaoDaCampanha, usada pelas Campanhas Rápidas
-    // em Disparos).
+    // os dois apontam direto pro automacao_id escolhido, sem passar mais por
+    // nenhuma resolução de "campanha" (ver renderProgramacaoAcoesForm).
     if (automacoesGlobais.length === 0) await loadAutomacoes();
     const acoes = [];
     for (const acao of programacaoAcoesForm) {
         if (!acao.valor) { showToast('Erro', 'Preencha todas as ações antes de salvar.', 'error'); return; }
-        if (acao.tipo === 'disparo') {
-            const automacao = encontrarAutomacaoDaCampanha(acao.valor);
-            if (!automacao) {
-                showToast('Erro', `Nenhuma automação encontrada pra "${CAMPANHAS_INFO[acao.valor]?.label || acao.valor}". Crie ou renomeie uma automação com um nome parecido.`, 'error', 6000);
-                return;
-            }
-            acoes.push({ automacao_id: automacao.id, tipo: 'disparo', campanha_chave: acao.valor, intervalo_depois_segundos: acao.intervaloDepoisSegundos || 60 });
-        } else {
-            acoes.push({ automacao_id: Number(acao.valor), tipo: 'automacao', campanha_chave: null, intervalo_depois_segundos: acao.intervaloDepoisSegundos || 60 });
-        }
+        acoes.push({ automacao_id: Number(acao.valor), tipo: acao.tipo === 'automacao' ? 'automacao' : 'disparo', campanha_chave: null, intervalo_depois_segundos: acao.intervaloDepoisSegundos || 60 });
     }
 
     const payload = { nome, dias: programacaoDiasSelecionados, horario, acoes };
