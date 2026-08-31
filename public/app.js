@@ -6336,11 +6336,36 @@ function renderMensagensPersonalizadasLista() {
                     ${m.media_path ? '<span style="font-size:.75rem;color:var(--text-3)">📎 com mídia</span>' : ''}
                 </div>
             </div>
+            ${statusTemplateMetaHtml(m)}
             <button type="button" class="btn-secondary btn-editar-mensagem-personalizada" data-id="${m.id}" style="padding:.5rem .8rem;font-size:.82rem">✏️ Editar</button>
             <button type="button" class="btn-danger btn-excluir-mensagem-personalizada" data-id="${m.id}" style="padding:.5rem .7rem;font-size:.82rem">🗑️</button>
         </div>
     `;
     }).join('');
+}
+
+// Indicador visual (não é um checkbox de verdade, ninguém clica) do status do
+// template dessa Mensagem na Meta — mensagensPersonalizadas.template_whatsapp
+// só é preenchido quando sincronizarTemplatesAprovados confirma status
+// "APPROVED" (chatbot.js); antes disso já foi submetido sozinho na criação
+// (submeterMensagemParaAprovacaoMeta) e fica "aguardando" até a Meta aprovar,
+// checado de hora em hora.
+function statusTemplateMetaHtml(m) {
+    if (m.template_whatsapp) {
+        return `
+            <span title="Template aprovado pela Meta — pode ser enviado via WhatsApp Business API" style="display:inline-flex;align-items:center;gap:.45rem;padding:.35rem .7rem;border-radius:8px;background:rgba(57,255,20,0.08);border:1px solid #39ff14;font-size:.74rem;font-weight:600;color:#39ff14;text-shadow:0 0 6px rgba(57,255,20,0.55)">
+                <span style="display:inline-flex;align-items:center;justify-content:center;width:15px;height:15px;border-radius:3px;background:#39ff14;color:#0a1a08;font-size:.65rem;line-height:1;box-shadow:0 0 6px #39ff14,0 0 12px rgba(57,255,20,0.6)">✓</span>
+                Aprovado pela Meta
+            </span>`;
+    }
+    const motivo = m.media_path
+        ? 'Mensagens com mídia ainda não são submetidas automaticamente pra aprovação'
+        : 'Enviada pra aprovação da Meta assim que criada — confere sozinho a cada hora até aprovar';
+    return `
+        <span title="${motivo}" style="display:inline-flex;align-items:center;gap:.45rem;padding:.35rem .7rem;border-radius:8px;background:rgba(255,7,58,0.08);border:1px solid #ff073a;font-size:.74rem;font-weight:600;color:#ff073a;text-shadow:0 0 6px rgba(255,7,58,0.55)">
+            <span style="display:inline-block;width:15px;height:15px;border-radius:3px;border:1.5px solid #ff073a;box-shadow:0 0 6px rgba(255,7,58,0.55)"></span>
+            Aguardando a aprovação da Meta
+        </span>`;
 }
 
 document.getElementById('btn-limpar-filtro-mensagens')?.addEventListener('click', () => {
