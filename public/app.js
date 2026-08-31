@@ -6395,6 +6395,16 @@ function abrirModalMensagemPersonalizada(m = null) {
     modalMensagemPersonalizadaTitulo.textContent = m ? '✏️ Editar Mensagem' : '➕ Nova Mensagem';
     mensagemPersonalizadaNome.value = m ? m.nome : '';
     mensagemPersonalizadaTexto.value = m ? m.texto : '';
+    // Template já submetido mas ainda sem aprovação da Meta — nome fica
+    // travado (ver PUT /api/mensagens-personalizadas/:id) pra não perder a
+    // sincronização automática quando a Meta aprovar (mesmo motivo do badge
+    // "Aguardando a aprovação da Meta" na lista).
+    const nomeTravado = !!(m?.template_submetido_nome && !m?.template_whatsapp);
+    const avisoNomeEl = document.getElementById('mensagem-personalizada-nome-aviso');
+    mensagemPersonalizadaNome.disabled = nomeTravado;
+    mensagemPersonalizadaNome.style.opacity = nomeTravado ? '.6' : '1';
+    mensagemPersonalizadaNome.style.cursor = nomeTravado ? 'not-allowed' : '';
+    if (avisoNomeEl) avisoNomeEl.textContent = nomeTravado ? '🔒 Nome travado até o template ser aprovado pela Meta (o texto pode ser editado normalmente).' : '';
     mensagemPersonalizadaMediaPath.value = m?.media_path || '';
     mensagemPersonalizadaMediaTipo.value = m?.media_tipo || '';
     // Editando: mantém a campanha que a mensagem já tinha. Criando: já vem

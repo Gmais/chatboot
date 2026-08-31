@@ -428,6 +428,9 @@ async function submeterMensagemParaAprovacaoMeta(msgRow) {
         const nomeTemplate = slugifyNomeTemplate(msgRow.nome, msgRow.id);
         const categoryMeta = categoriaMetaParaMensagem(msgRow.categoria);
         await criarTemplateWhatsappCloud(nomeTemplate, categoryMeta, corpo, variaveis, configWhatsappCloud);
+        // Grava o nome REAL usado agora — sincronizarTemplatesAprovados lê esse
+        // valor depois, não recalcula do nome atual (ver comentário na coluna).
+        await db.run('UPDATE mensagens_personalizadas SET template_submetido_nome = ? WHERE id = ?', [nomeTemplate, msgRow.id]);
         console.log(`📨 Template "${nomeTemplate}" (${categoryMeta}) submetido pra aprovação da Meta — mensagem "${msgRow.nome}" (#${msgRow.id}).`);
         return { submetido: nomeTemplate };
     } catch (e) {
@@ -461,8 +464,13 @@ async function submeterBacklogTemplatesFaltantes() {
 // Confere quais templates SUBMETIDOS (pelo backfill ou por uma mensagem
 // nova) já foram aprovados e vincula (template_whatsapp) só quando aprovar —
 // a Meta não avisa sozinha nesse fluxo (sem webhook de status configurado),
-// só dá pra saber perguntando. Roda 1x/hora; nome esperado é recalculado
-// (não precisa ficar guardado em lugar nenhum) a partir de nome+id.
+// só dá pra saber perguntando. Roda 1x/hora; nome esperado vem de
+// template_submetido_nome (gravado no momento da submissão) — NÃO recalcula
+// de nome+id aqui, porque o nome da mensagem pode ter mudado desde então
+// (editar o nome não resubmete outro template, então recalcular aqui faria a
+// sincronização procurar por um nome que a Meta nunca recebeu e travar pra
+// sempre em "aguardando", mesmo com o template original já aprovado).
+// Fallback pro cálculo antigo só cobre submissões de antes dessa coluna existir.
 async function sincronizarTemplatesAprovados() {
     if (!db) return;
     try {
@@ -473,7 +481,7 @@ async function sincronizarTemplatesAprovados() {
         const pendentes = await db.all(`SELECT * FROM mensagens_personalizadas WHERE template_whatsapp IS NULL AND (media_path IS NULL OR media_path = '')`);
         let aprovados = 0;
         for (const msg of pendentes) {
-            const nomeEsperado = slugifyNomeTemplate(msg.nome, msg.id);
+            const nomeEsperado = msg.template_submetido_nome || slugifyNomeTemplate(msg.nome, msg.id);
             if (statusPorNome.get(nomeEsperado) === 'APPROVED') {
                 const variaveis = extrairVariaveisDoTexto(msg.texto);
                 await db.run('UPDATE mensagens_personalizadas SET template_whatsapp = ? WHERE id = ?', [JSON.stringify({ nome: nomeEsperado, variaveis }), msg.id]);
@@ -1019,6 +1027,16 @@ async function initDB() {
     // fora da janela de 24h). NULL = mensagem sem template (cai direto pro
     // número principal se o texto livre falhar). Ver seedTemplatesWhatsappCloud.
     try { await db.exec(`ALTER TABLE mensagens_personalizadas ADD COLUMN template_whatsapp TEXT DEFAULT NULL`); } catch (e) { }
+    // Nome REAL do template como foi submetido pra Meta (slugifyNomeTemplate
+    // calculado uma única vez, na hora da submissão) — sincronizarTemplatesAprovados
+    // usa esse valor gravado em vez de recalcular a partir do nome ATUAL da
+    // mensagem toda vez. Sem isso, editar o nome de uma mensagem ainda
+    // "aguardando aprovação" mudava o nome esperado do template e a
+    // sincronização nunca mais achava o template certo (travava pra sempre em
+    // "aguardando", mesmo com o template original já aprovado na Meta pelo
+    // nome antigo). Também usado pra travar a edição do nome nesse meio-tempo
+    // (ver PUT /api/mensagens-personalizadas/:id).
+    try { await db.exec(`ALTER TABLE mensagens_personalizadas ADD COLUMN template_submetido_nome TEXT DEFAULT NULL`); } catch (e) { }
     try { await db.exec(`ALTER TABLE respostas ADD COLUMN media_path TEXT DEFAULT NULL`); } catch (e) { }
     try { await db.exec(`ALTER TABLE respostas ADD COLUMN media_tipo TEXT DEFAULT NULL`); } catch (e) { }
     try { await db.exec(`ALTER TABLE respostas ADD COLUMN etiqueta_id INTEGER DEFAULT NULL`); } catch (e) { }
@@ -4618,6 +4636,17 @@ app.put('/api/mensagens-personalizadas/:id', async (req, res) => {
     if (!nome || !nome.trim()) return res.status(400).json({ error: 'Nome é obrigatório.' });
     if (!texto || !texto.trim()) return res.status(400).json({ error: 'Mensagem é obrigatória.' });
     try {
+        // Nome já foi usado pra submeter um template (template_submetido_nome)
+        // e a Meta ainda não aprovou (template_whatsapp ainda NULL) — trocar o
+        // nome agora quebraria sincronizarTemplatesAprovados (ela ia procurar
+        // pelo nome novo, que a Meta nunca recebeu). Texto/mídia/categoria
+        // continuam editáveis à vontade, só o nome fica travado até aprovar.
+        const atual = await db.get('SELECT nome, template_whatsapp, template_submetido_nome FROM mensagens_personalizadas WHERE id = ?', id);
+        if (!atual) return res.status(404).json({ error: 'Mensagem não encontrada.' });
+        const pendente = !!atual.template_submetido_nome && !atual.template_whatsapp;
+        if (pendente && nome.trim() !== atual.nome) {
+            return res.status(400).json({ error: 'O nome não pode ser alterado enquanto o template dessa mensagem ainda está aguardando aprovação da Meta — o texto pode ser editado normalmente.' });
+        }
         const result = await db.run(
             'UPDATE mensagens_personalizadas SET nome = ?, texto = ?, media_path = ?, media_tipo = ?, categoria = ? WHERE id = ?',
             [nome.trim(), texto.trim(), media_path || null, media_tipo || null, categoria || null, id]
