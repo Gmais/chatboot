@@ -6065,13 +6065,6 @@ btnAdicionarQuemFalta?.addEventListener('click', async () => {
     }
 });
 
-function etapaMediaPreviewHtml(etapa) {
-    if (!etapa.media_path) return '<span style="color:var(--text-3);font-size:.78rem">Nenhum arquivo anexado</span>';
-    const icones = { image: '🖼️', video: '🎥', audio: '🎤', file: '📄' };
-    const nomeArquivo = etapa.media_path.split('/').pop();
-    return `<span style="color:var(--text-2);font-size:.78rem">${icones[etapa.media_tipo] || '📎'} ${nomeArquivo}</span>`;
-}
-
 function renderEtapasLista() {
     if (!etapasAutomacaoLista) return;
     etapasAutomacaoLista.innerHTML = etapasEditando.map((etapa, i) => {
@@ -6082,12 +6075,6 @@ function renderEtapasLista() {
                     <strong style="color:var(--green);font-size:.85rem">Etapa ${i + 1}${ehUltima ? ' (final)' : ''}</strong>
                     <button type="button" class="btn-danger btn-remover-etapa" data-index="${i}" style="padding:.3rem .6rem;font-size:.75rem">🗑️</button>
                 </div>
-                <textarea class="etapa-texto" data-index="${i}" placeholder="Mensagem ou legenda do arquivo..." rows="2" style="width:100%;background:var(--input-bg);border:1px solid rgba(255,255,255,0.1);border-radius:var(--radius-sm);padding:.6rem .8rem;color:var(--text-1);font-size:.85rem;font-family:'Inter',sans-serif;resize:vertical;margin-bottom:.4rem">${etapa.texto || ''}</textarea>
-                <div style="display:flex;align-items:center;gap:.5rem;margin-bottom:.6rem">
-                    <button type="button" class="btn-secondary btn-inserir-nome" data-index="${i}" style="padding:.25rem .6rem;font-size:.72rem">➕ Nome do aluno</button>
-                    <span style="font-size:.72rem;color:var(--text-3)">insere {nome} — vira o primeiro nome dele na hora de enviar. Também dá pra usar {nome_completo}, {matricula} e, pra quem está na lista de inadimplentes, {parcelas}, {valor} e {dias_atrasados}.</span>
-                </div>
-
                 <div style="margin-bottom:.6rem;background:rgba(255,255,255,0.02);border-radius:var(--radius-sm);padding:.7rem .8rem">
                     <label style="display:block;font-size:.72rem;color:var(--text-3);margin-bottom:.4rem">🎯 Grupo de Alunos (opcional) — além da etiqueta da automação, só quem também tem uma dessas etiquetas recebe esta etapa</label>
                     <div style="display:flex;gap:.4rem;flex-wrap:wrap;align-items:center;margin-bottom:.4rem">
@@ -6125,12 +6112,6 @@ function renderEtapasLista() {
                 </div>
 
                 <div style="display:flex;align-items:center;gap:.8rem;flex-wrap:wrap">
-                    <label class="btn-secondary etapa-anexar-label" style="padding:.4rem .7rem;font-size:.78rem;cursor:pointer">
-                        📎 Anexar arquivo
-                        <input type="file" class="etapa-anexo-input" data-index="${i}" accept="image/*,video/*,audio/*,.pdf,.doc,.docx" style="display:none">
-                    </label>
-                    <span class="etapa-media-preview" data-index="${i}">${etapaMediaPreviewHtml(etapa)}</span>
-                    ${etapa.media_path ? `<button type="button" class="btn-cancel btn-remover-anexo" data-index="${i}" style="padding:.3rem .6rem;font-size:.72rem">Remover anexo</button>` : ''}
                     ${!ehUltima ? `
                         <span style="margin-left:auto;display:flex;align-items:center;gap:.4rem;font-size:.78rem;color:var(--text-3)">
                             Aguardar
@@ -6152,8 +6133,6 @@ function renderEtapasLista() {
 }
 
 etapasAutomacaoLista?.addEventListener('input', (e) => {
-    const textoEl = e.target.closest('.etapa-texto');
-    if (textoEl) { etapasEditando[Number(textoEl.dataset.index)].texto = textoEl.value; return; }
     const diasEl = e.target.closest('.etapa-dias');
     if (diasEl) { etapasEditando[Number(diasEl.dataset.index)].dias_proxima_etapa = parseInt(diasEl.value) || 0; }
 });
@@ -6185,25 +6164,6 @@ etapasAutomacaoLista?.addEventListener('change', async (e) => {
 
     const aleatorioEl = e.target.closest('.etapa-envio-aleatorio');
     if (aleatorioEl) { etapasEditando[Number(aleatorioEl.dataset.index)].envio_aleatorio = aleatorioEl.checked; return; }
-
-    const fileInput = e.target.closest('.etapa-anexo-input');
-    if (!fileInput || !fileInput.files?.[0]) return;
-    const index = Number(fileInput.dataset.index);
-    const preview = etapasAutomacaoLista.querySelector(`.etapa-media-preview[data-index="${index}"]`);
-    if (preview) preview.innerHTML = '<span style="color:var(--text-3);font-size:.78rem">Enviando...</span>';
-    try {
-        const formData = new FormData();
-        formData.append('media', fileInput.files[0]);
-        const res = await fetch('/api/upload', { method: 'POST', body: formData });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error || 'Erro ao enviar arquivo');
-        etapasEditando[index].media_path = data.path;
-        etapasEditando[index].media_tipo = data.tipo;
-        renderEtapasLista();
-    } catch (err) {
-        showToast('Erro ao anexar', err.message, 'error');
-        renderEtapasLista();
-    }
 });
 
 etapasAutomacaoLista?.addEventListener('click', (e) => {
@@ -6230,26 +6190,6 @@ etapasAutomacaoLista?.addEventListener('click', (e) => {
         renderEtapasLista();
         return;
     }
-    const btnRemoverAnexo = e.target.closest('.btn-remover-anexo');
-    if (btnRemoverAnexo) {
-        const index = Number(btnRemoverAnexo.dataset.index);
-        etapasEditando[index].media_path = null;
-        etapasEditando[index].media_tipo = null;
-        renderEtapasLista();
-        return;
-    }
-    const btnNome = e.target.closest('.btn-inserir-nome');
-    if (btnNome) {
-        const index = Number(btnNome.dataset.index);
-        const textarea = etapasAutomacaoLista.querySelector(`.etapa-texto[data-index="${index}"]`);
-        if (!textarea) return;
-        const start = textarea.selectionStart ?? textarea.value.length;
-        const end = textarea.selectionEnd ?? textarea.value.length;
-        textarea.value = textarea.value.slice(0, start) + '{nome}' + textarea.value.slice(end);
-        etapasEditando[index].texto = textarea.value;
-        textarea.focus();
-        textarea.selectionStart = textarea.selectionEnd = start + '{nome}'.length;
-    }
 });
 
 btnAddEtapa?.addEventListener('click', () => {
@@ -6259,8 +6199,8 @@ btnAddEtapa?.addEventListener('click', () => {
 
 btnSalvarEtapas?.addEventListener('click', async () => {
     if (!automacaoEditandoId) return;
-    const semConteudo = etapasEditando.some(e => !e.texto?.trim() && !e.media_path && (!e.mensagens || e.mensagens.length === 0));
-    if (semConteudo) { showToast('Etapa vazia', 'Toda etapa precisa de uma mensagem, um arquivo anexado ou mensagens personalizadas selecionadas.', 'error'); return; }
+    const semConteudo = etapasEditando.some(e => !e.mensagens || e.mensagens.length === 0);
+    if (semConteudo) { showToast('Etapa vazia', 'Toda etapa precisa de pelo menos uma mensagem selecionada em "Adicionar Mensagem".', 'error'); return; }
     btnSalvarEtapas.disabled = true;
     try {
         const res = await fetch(`/api/automacoes/${automacaoEditandoId}/etapas`, {
