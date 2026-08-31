@@ -3069,6 +3069,7 @@ const disparoNumeroPairingResultado = document.getElementById('disparo-numero-pa
 
 let disparoNumerosCache = [];
 let disparoRoteamentoCache = {};
+let disparoRoteamentoAutomacoesCache = [];
 
 const DISPARO_NUMERO_STATUS_LABEL = {
     dormant: { texto: 'Não conectado', cor: 'var(--text-3)' },
@@ -3138,8 +3139,15 @@ async function loadDisparoNumeros() {
 async function loadDisparoRoteamento() {
     if (!disparoRoteamentoLista) return;
     try {
-        const res = await fetch('/api/disparo-roteamento');
-        disparoRoteamentoCache = await res.json();
+        // Roteamento agora é por Automação (id), não por categoria fixa —
+        // busca a lista de Automações de verdade toda vez, pra refletir
+        // automações novas sem precisar mexer em código (pedido do usuário).
+        const [resRot, resAuto] = await Promise.all([
+            fetch('/api/disparo-roteamento'),
+            fetch('/api/automacoes'),
+        ]);
+        disparoRoteamentoCache = await resRot.json();
+        disparoRoteamentoAutomacoesCache = await resAuto.json();
         renderDisparoRoteamentoLista();
     } catch (e) {
         console.error('Erro ao carregar roteamento de disparo', e);
@@ -3152,11 +3160,19 @@ function renderDisparoRoteamentoLista() {
         disparoRoteamentoLista.innerHTML = '<p style="color:var(--text-3);font-size:.82rem;text-align:center;padding:1rem">Cadastre pelo menos um número de envio pra configurar o roteamento.</p>';
         return;
     }
-    disparoRoteamentoLista.innerHTML = Object.entries(CAMPANHAS_INFO).map(([chave, info]) => {
+    if (disparoRoteamentoAutomacoesCache.length === 0) {
+        disparoRoteamentoLista.innerHTML = '<p style="color:var(--text-3);font-size:.82rem;text-align:center;padding:1rem">Nenhuma automação criada ainda — crie uma em "Automação" pra configurar o roteamento dela aqui.</p>';
+        return;
+    }
+    disparoRoteamentoLista.innerHTML = disparoRoteamentoAutomacoesCache.map(a => {
+        const chave = String(a.id);
         const selecionados = disparoRoteamentoCache[chave] || [];
         return `
             <div class="disparo-roteamento-row" data-campanha="${chave}" style="display:flex;align-items:center;gap:.8rem;flex-wrap:wrap;padding:.5rem 0;border-bottom:1px solid rgba(255,255,255,0.05)">
-                <span style="min-width:180px;font-size:.85rem;color:var(--text-1)">${info.icon} ${info.label}</span>
+                <span style="min-width:220px;font-size:.85rem;color:var(--text-1)">
+                    <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${a.etiqueta_cor || 'var(--text-3)'};margin-right:.4rem"></span>
+                    ${a.nome}${!a.ativo ? ' <span style="color:var(--text-3);font-size:.72rem">(pausada)</span>' : ''}
+                </span>
                 <div style="display:flex;gap:.8rem;flex-wrap:wrap">
                     ${disparoNumerosCache.map(n => `
                         <label style="display:flex;align-items:center;gap:.3rem;cursor:pointer;font-size:.8rem;color:var(--text-2)">

@@ -1685,6 +1685,25 @@ async function campanhaUsaWhatsappCloud(categoria) {
     return ids.includes(rowCloudApi.id);
 }
 
+// Mesma tabela (disparo_roteamento), mesma lógica — só a chave muda: id da
+// Automação (como string) em vez de categoria de Mensagem Personalizada. A
+// tela "Roteamento por Campanha" agora lista as Automações de verdade
+// (dinâmico, puxado de /api/automacoes) em vez de uma lista fixa de
+// "categorias" no código que ficava desatualizada toda vez que nascia uma
+// automação nova (pedido do usuário 31/08: "essa lista é somente das
+// mensagens automatizadas... sempre que uma nova mensagem automatizada for
+// criada ela vá para essa lista"). campanhaUsaWhatsappCloud continua existindo
+// só pro Disparo manual, que não está necessariamente ligado a nenhuma automação.
+async function automacaoUsaWhatsappCloud(automacaoId) {
+    if (!automacaoId) return false;
+    const regra = await db.get('SELECT numeros_ids FROM disparo_roteamento WHERE campanha_chave = ?', String(automacaoId));
+    if (!regra?.numeros_ids) return false;
+    const rowCloudApi = await db.get("SELECT id FROM disparo_numeros WHERE tipo = 'cloud_api' LIMIT 1");
+    if (!rowCloudApi) return false;
+    const ids = regra.numeros_ids.split(',').filter(Boolean).map(Number);
+    return ids.includes(rowCloudApi.id);
+}
+
 // Handshake de verificação do webhook — mesmo mecanismo GET que todo
 // produto da Meta usa (Instagram, WhatsApp, Messenger).
 app.get('/webhook/whatsapp-cloud', async (req, res) => {
@@ -4145,14 +4164,15 @@ async function dispararMensagensDaAutomacao(automacaoId) {
                         }
                     } else {
                         // WhatsApp (contato veio por número normal ou pela própria API
-                        // Oficial): tenta a API Oficial primeiro SE a campanha dessa
-                        // mensagem estiver marcada pra usá-la em "Roteamento por
-                        // Campanha" — sem isso, ficava tentando sempre, mesmo com o
-                        // usuário desmarcando tudo ali (essa tela nunca tinha efeito
-                        // aqui antes, só no Disparo manual). Mídia nunca passa pela API
-                        // Oficial (não suportada nessa 1ª versão), só o texto puro.
+                        // Oficial): tenta a API Oficial primeiro SE essa AUTOMAÇÃO
+                        // estiver marcada pra usá-la em "Roteamento por Campanha" — por
+                        // automação, não por categoria da mensagem sorteada (uma
+                        // automação pode ter mensagens sem categoria no pool, ex:
+                        // "Falta 30/20/10", e ainda assim precisa rotear certo). Mídia
+                        // nunca passa pela API Oficial (não suportada nessa 1ª versão),
+                        // só o texto puro.
                         let enviadoPelaCloudApi = false;
-                        if (texto && await campanhaUsaWhatsappCloud(msg.categoria)) {
+                        if (texto && await automacaoUsaWhatsappCloud(automacaoId)) {
                             const configWhatsappCloud = await obterConfigWhatsappCloud();
                             if (configWhatsappCloud.accessToken && configWhatsappCloud.phoneNumberId) {
                                 if (msg.template_whatsapp) {
@@ -4327,11 +4347,13 @@ async function resolverValorPlaceholder(chave, telefone) {
 // e o Disparo manual já usam, só que fora da fila com estado (usado pelo
 // reenvio de falhas em massa, ver reenviarTodasAsFalhas). Lança erro pra
 // quem chama decidir o que fazer (contar como falha de novo, não reinserir
-// na fila, etc.) — nunca decide isso sozinha.
-async function reenviarMensagemParaTelefone(telefone, msgRow) {
+// na fila, etc.) — nunca decide isso sozinha. `usaApi` já vem resolvido de
+// quem chama (automacaoUsaWhatsappCloud pra falha de automação,
+// campanhaUsaWhatsappCloud pra falha de disparo manual) — não recalcula aqui
+// pra não divergir da decisão que já classificou o item em itensApi/itensWeb.
+async function reenviarMensagemParaTelefone(telefone, msgRow, usaApi) {
     const textoFinal = await substituirPlaceholdersPessoais(msgRow.texto, telefone);
     const nome = await resolverNomeContato(telefone);
-    const usaApi = await campanhaUsaWhatsappCloud(msgRow.categoria);
     if (usaApi) {
         const configWhatsappCloud = await obterConfigWhatsappCloud();
         if (!configWhatsappCloud.accessToken || !configWhatsappCloud.phoneNumberId) throw new Error('WhatsApp Business API não configurado.');
@@ -4404,10 +4426,10 @@ async function reenviarTodasAsFalhas() {
         if (!poolCache.has(f.automacao_id)) poolCache.set(f.automacao_id, await poolMensagensDaAutomacao(f.automacao_id));
         const pool = poolCache.get(f.automacao_id);
         if (pool.length === 0) { resultado.pulados++; continue; }
-        const msgRow = pool[0]; // mesma categoria/template pra qualquer mensagem do pool dessa automação
-        const usaApi = await campanhaUsaWhatsappCloud(msgRow.categoria);
+        const msgRow = pool[0]; // mesmo template pra qualquer mensagem do pool dessa automação
+        const usaApi = await automacaoUsaWhatsappCloud(f.automacao_id);
         const item = {
-            telefone: f.telefone, msgRow,
+            telefone: f.telefone, msgRow, usaApi,
             aoSucesso: async () => {
                 await db.run('DELETE FROM contato_automacao_estado WHERE telefone = ? AND automacao_id = ?', [f.telefone, f.automacao_id]);
                 await db.run('UPDATE automacoes SET total_concluidos = total_concluidos + 1 WHERE id = ?', f.automacao_id);
@@ -4425,7 +4447,7 @@ async function reenviarTodasAsFalhas() {
         const msgRow = msgPorNomeCache.get(f.descricao);
         if (!msgRow) { resultado.pulados++; continue; }
         const usaApi = await campanhaUsaWhatsappCloud(msgRow.categoria);
-        const item = { telefone: f.telefone, msgRow, aoSucesso: null };
+        const item = { telefone: f.telefone, msgRow, usaApi, aoSucesso: null };
         (usaApi ? itensApi : itensWeb).push(item);
     }
 
@@ -4435,7 +4457,7 @@ async function reenviarTodasAsFalhas() {
     io.emit('reenvio_falhas_iniciado', resultado);
 
     async function processarItem(item) {
-        await reenviarMensagemParaTelefone(item.telefone, item.msgRow);
+        await reenviarMensagemParaTelefone(item.telefone, item.msgRow, item.usaApi);
         if (item.aoSucesso) await item.aoSucesso();
     }
 
