@@ -5799,6 +5799,7 @@ function renderAutomacoesLista() {
                     <input type="checkbox" class="automacao-toggle-ativo" data-id="${a.id}" ${a.ativo ? 'checked' : ''} style="accent-color:var(--green);width:16px;height:16px">
                     Ativa
                 </label>
+                <button type="button" class="btn-secondary btn-editar-automacao" data-id="${a.id}" style="padding:.5rem .7rem;font-size:.82rem" title="Editar nome, etiqueta e horário">✏️ Editar</button>
                 <button type="button" class="btn-secondary btn-config-etapas" data-id="${a.id}" data-nome="${a.nome}" style="padding:.5rem .8rem;font-size:.82rem">⚙️ Configurar Etapas</button>
                 <button type="button" class="btn-secondary btn-ver-contatos-automacao" data-id="${a.id}" data-nome="${a.nome}" style="padding:.5rem .7rem;font-size:.82rem" title="Ver quem tem a etiqueta e o status de cada um (já importado ou aguardando)">👥 Ver Contatos</button>
                 <button type="button" class="btn-secondary btn-importar-lista-automacao" data-id="${a.id}" data-nome="${a.nome}" style="padding:.5rem .7rem;font-size:.82rem" title="Sincroniza a fila com quem tem a etiqueta agora — quem perdeu a etiqueta sai, quem ganhou entra">📥 Importar Lista</button>
@@ -5848,6 +5849,13 @@ async function sincronizarListaAutomacao(btn) {
 }
 
 automacoesLista?.addEventListener('click', async (e) => {
+    const btnEditar = e.target.closest('.btn-editar-automacao');
+    if (btnEditar) {
+        const automacao = automacoesGlobais.find(a => String(a.id) === btnEditar.dataset.id);
+        if (automacao) abrirEditarAutomacao(automacao);
+        return;
+    }
+
     const btnConfig = e.target.closest('.btn-config-etapas');
     if (btnConfig) { abrirConfigurarEtapas(btnConfig.dataset.id, btnConfig.dataset.nome); return; }
 
@@ -5870,8 +5878,20 @@ automacoesLista?.addEventListener('click', async (e) => {
     }
 });
 
-// ---- Modal: Criar Automação ----
+// ---- Modal: Criar/Editar Automação ----
+// Mesmo modal serve pros dois modos — automacaoModalEditandoId null = criando
+// (POST), preenchido = editando (PUT). Nome e etiqueta que dispara só dava
+// pra definir na criação antes; horário já era editável dentro de
+// "Configurar Etapas" (etapasHorarioInicio/Fim), mas não tinha como corrigir
+// nome/etiqueta depois sem excluir e recriar a automação inteira.
+const modalNovaAutomacaoTitulo = document.getElementById('modal-nova-automacao-titulo');
+const btnNovaAutomacaoCriar = document.getElementById('btn-nova-automacao-criar');
+let automacaoModalEditandoId = null;
+
 function abrirNovaAutomacao() {
+    automacaoModalEditandoId = null;
+    if (modalNovaAutomacaoTitulo) modalNovaAutomacaoTitulo.textContent = '➕ Criar Automação';
+    if (btnNovaAutomacaoCriar) btnNovaAutomacaoCriar.textContent = 'Criar';
     if (novaAutomacaoNome) novaAutomacaoNome.value = '';
     if (novaAutomacaoHorarioInicio) novaAutomacaoHorarioInicio.value = '';
     if (novaAutomacaoHorarioFim) novaAutomacaoHorarioFim.value = '';
@@ -5882,31 +5902,60 @@ function abrirNovaAutomacao() {
     modalNovaAutomacao?.classList.add('open');
 }
 btnNovaAutomacao?.addEventListener('click', abrirNovaAutomacao);
+
+function abrirEditarAutomacao(automacao) {
+    automacaoModalEditandoId = automacao.id;
+    if (modalNovaAutomacaoTitulo) modalNovaAutomacaoTitulo.textContent = `✏️ Editar — ${automacao.nome}`;
+    if (btnNovaAutomacaoCriar) btnNovaAutomacaoCriar.textContent = 'Salvar';
+    if (novaAutomacaoNome) novaAutomacaoNome.value = automacao.nome || '';
+    if (novaAutomacaoHorarioInicio) novaAutomacaoHorarioInicio.value = automacao.horario_inicio || '';
+    if (novaAutomacaoHorarioFim) novaAutomacaoHorarioFim.value = automacao.horario_fim || '';
+    if (novaAutomacaoEtiqueta) {
+        novaAutomacaoEtiqueta.innerHTML = '<option value="">Selecione uma etiqueta...</option>' +
+            todasEtiquetas.map(e => `<option value="${e.id}" ${Number(e.id) === Number(automacao.etiqueta_id) ? 'selected' : ''}>${e.nome}</option>`).join('');
+    }
+    modalNovaAutomacao?.classList.add('open');
+}
+
 document.getElementById('modal-nova-automacao-fechar')?.addEventListener('click', () => modalNovaAutomacao?.classList.remove('open'));
 
-document.getElementById('btn-nova-automacao-criar')?.addEventListener('click', async () => {
+btnNovaAutomacaoCriar?.addEventListener('click', async () => {
     const nome = (novaAutomacaoNome?.value || '').trim();
     const etiqueta_id = novaAutomacaoEtiqueta?.value;
     if (!nome) { showToast('Nome obrigatório', 'Dê um nome para a automação.', 'error'); return; }
     if (!etiqueta_id) { showToast('Etiqueta obrigatória', 'Selecione qual etiqueta dispara essa automação.', 'error'); return; }
+    const payload = {
+        nome, etiqueta_id: Number(etiqueta_id),
+        horario_inicio: novaAutomacaoHorarioInicio?.value || null,
+        horario_fim: novaAutomacaoHorarioFim?.value || null
+    };
     try {
-        const res = await fetch('/api/automacoes', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                nome, etiqueta_id: Number(etiqueta_id),
-                horario_inicio: novaAutomacaoHorarioInicio?.value || null,
-                horario_fim: novaAutomacaoHorarioFim?.value || null
-            })
-        });
-        const nova = await res.json();
-        if (!res.ok) throw new Error(nova.error || 'Erro ao criar automação');
-        modalNovaAutomacao?.classList.remove('open');
-        showToast('Automação criada!', 'Agora configure as etapas dela.', 'success', 3000);
-        await loadAutomacoes();
-        abrirConfigurarEtapas(nova.id, nova.nome);
+        if (automacaoModalEditandoId) {
+            const res = await fetch(`/api/automacoes/${automacaoModalEditandoId}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || 'Erro ao salvar automação');
+            modalNovaAutomacao?.classList.remove('open');
+            showToast('Automação atualizada!', '', 'success', 3000);
+            await loadAutomacoes();
+        } else {
+            const res = await fetch('/api/automacoes', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            const nova = await res.json();
+            if (!res.ok) throw new Error(nova.error || 'Erro ao criar automação');
+            modalNovaAutomacao?.classList.remove('open');
+            showToast('Automação criada!', 'Agora configure as etapas dela.', 'success', 3000);
+            await loadAutomacoes();
+            abrirConfigurarEtapas(nova.id, nova.nome);
+        }
     } catch (e) {
-        showToast('Erro ao criar', e.message, 'error');
+        showToast(automacaoModalEditandoId ? 'Erro ao salvar' : 'Erro ao criar', e.message, 'error');
     }
 });
 
