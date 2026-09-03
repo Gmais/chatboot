@@ -887,6 +887,13 @@ async function initDB() {
     // ao vivo num incidente real: mensagem "enviada com sucesso" só descoberta
     // como nunca entregue quando a aluna confirmou que não recebeu nada).
     try { await db.exec(`ALTER TABLE conversas ADD COLUMN ack INTEGER DEFAULT NULL`); } catch (e) { }
+    // Mensagem disparada (automação/campanha/reenvio de falhas) nasce oculta do
+    // Bate Papo ao Vivo — foi mandada de verdade pro WhatsApp, só não aparece na
+    // tela até o aluno responder (pedido do usuário: disparo não é conversa até
+    // virar uma). Quando chega uma mensagem 'in' desse telefone, salvarNaConversa
+    // revela (oculto=0) todo o histórico oculto dele ANTES de gravar a resposta,
+    // pra consultora ver o contexto completo (o que foi mandado + a resposta).
+    try { await db.exec(`ALTER TABLE conversas ADD COLUMN oculto INTEGER DEFAULT 0`); } catch (e) { }
     // Dedup de mensagens do webhook do Instagram — a Meta não garante entrega
     // única, pode reenviar o MESMO evento se a resposta demorar/falhar. Sem
     // isso, uma reentrega processava a mensagem de novo (lead duplicado,
@@ -1306,8 +1313,13 @@ const TIPO_LABEL_FALLBACK = {
 // segundos) — quando informado, usa esse em vez de "agora". Sem isso, uma
 // mensagem sincronizada em lote (ex: reconexão trazendo histórico) fica com
 // o horário de quando o robô processou, não o horário real da mensagem.
-async function salvarNaConversa(telefone, nome, direcao, texto, tipo = 'text', tsReal = null, manual = false, mediaPath = null, canal = 'whatsapp', msgId = null) {
+async function salvarNaConversa(telefone, nome, direcao, texto, tipo = 'text', tsReal = null, manual = false, mediaPath = null, canal = 'whatsapp', msgId = null, oculto = false) {
     const num = telefone.replace('@c.us', '').replace('@lid', '');
+    // Aluno respondeu — revela pro Bate Papo todo o histórico de disparo que
+    // estava oculto desse telefone (na ordem em que foi mandado) ANTES de
+    // gravar a resposta dele, senão a resposta aparece "solta", sem o disparo
+    // que a motivou.
+    if (direcao === 'in') await revelarHistoricoOculto(num);
     const ts = tsReal ? new Date(tsReal * 1000).toISOString() : new Date().toISOString();
     const lida = direcao === 'out' ? 1 : 0;
     // Toda mensagem 'out' só chega aqui DEPOIS de um envio que não lançou
@@ -1368,9 +1380,16 @@ async function salvarNaConversa(telefone, nome, direcao, texto, tipo = 'text', t
         }
     }
     const resultado = await db.run(
-        'INSERT INTO conversas (telefone, nome, direcao, texto, tipo, ts, lida, manual, media_path, canal, msg_id, ack) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-        [num, nome || num, direcao, texto, tipo, ts, lida, manual ? 1 : 0, mediaPath, canal, msgId, ackInicial]
+        'INSERT INTO conversas (telefone, nome, direcao, texto, tipo, ts, lida, manual, media_path, canal, msg_id, ack, oculto) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        [num, nome || num, direcao, texto, tipo, ts, lida, manual ? 1 : 0, mediaPath, canal, msgId, ackInicial, oculto ? 1 : 0]
     );
+
+    // Mensagem oculta (disparo ainda sem resposta) não deve aparecer no Bate
+    // Papo nem reabrir uma conversa fechada — pro atendente ela simplesmente
+    // não existe ainda. Continua contando pra "Mensagens Enviadas"/estatísticas
+    // normalmente (foi mandada de verdade), só não entra na UI da conversa.
+    if (oculto) return resultado.lastID;
+
     // Conta não lidas deste telefone
     const naoLidas = await db.get('SELECT COUNT(*) as c FROM conversas WHERE telefone=? AND lida=0 AND direcao="in"', num);
     io.emit('nova_mensagem', { id: resultado.lastID, telefone: num, nome: nome || num, texto, direcao, tipo, ts, nao_lidas: naoLidas.c, manual, media_path: mediaPath, canal, ack: ackInicial });
@@ -1388,6 +1407,24 @@ async function salvarNaConversa(telefone, nome, direcao, texto, tipo = 'text', t
         io.emit('conversa_status_atualizada', { telefone: num, status: 'aberta' });
     }
     return resultado.lastID;
+}
+
+// Aluno respondeu a um telefone que tinha disparo(s) oculto(s) — revela pro
+// Bate Papo tudo que estava escondido (oculto=0), na ordem em que foi mandado,
+// emitindo 'nova_mensagem' pra cada um (mesmo evento usado por uma mensagem
+// normal, o front já sabe lidar: atualiza a lista e, se a conversa já estiver
+// aberta na tela, adiciona a bolha). Chamado ANTES de gravar a resposta em si,
+// pra ela aparecer DEPOIS do que a motivou, na ordem certa.
+async function revelarHistoricoOculto(telefone) {
+    const ocultas = await db.all('SELECT * FROM conversas WHERE telefone = ? AND oculto = 1 ORDER BY ts ASC', telefone);
+    if (ocultas.length === 0) return;
+    await db.run('UPDATE conversas SET oculto = 0 WHERE telefone = ? AND oculto = 1', telefone);
+    for (const m of ocultas) {
+        io.emit('nova_mensagem', {
+            id: m.id, telefone, nome: m.nome, texto: m.texto, direcao: m.direcao, tipo: m.tipo, ts: m.ts,
+            nao_lidas: 0, manual: !!m.manual, media_path: m.media_path, canal: m.canal, ack: m.ack,
+        });
+    }
 }
 
 // =====================================
@@ -1515,12 +1552,12 @@ async function buscarExemplosRelevantes(textoCliente, topK = 3) {
 
 // Registra no histórico permanente cada mensagem realmente enviada pelo robô.
 // É a única fonte da contagem "Mensagens Enviadas" — se está no contador, está nesta tabela.
-async function registrarMensagemEnviada(telefone, texto, nome, msgId = null, manual = false, tipo = 'text', mediaPath = null, canal = 'whatsapp') {
+async function registrarMensagemEnviada(telefone, texto, nome, msgId = null, manual = false, tipo = 'text', mediaPath = null, canal = 'whatsapp', oculto = false) {
     const numeroLimpo = telefone.replace('@c.us', '').replace('@lid', '');
     marcarMensagemComoDoSistema(msgId, numeroLimpo, texto);
     await db.run('INSERT INTO mensagens_enviadas (telefone, texto) VALUES (?, ?)', [numeroLimpo, texto]);
     stats.sent++;
-    await salvarNaConversa(numeroLimpo, nome, 'out', texto, tipo, null, manual, mediaPath, canal, msgId);
+    await salvarNaConversa(numeroLimpo, nome, 'out', texto, tipo, null, manual, mediaPath, canal, msgId, oculto);
     io.emit('message_out', { to: numeroLimpo, text: texto, ts: Date.now() });
     io.emit('stats', stats);
     if (manual) indexarExemploConsultora(numeroLimpo, texto).catch(e => console.error('Erro ao indexar exemplo (fire-and-forget):', e.message));
@@ -4177,7 +4214,7 @@ async function dispararMensagensDaAutomacao(automacaoId) {
                         } else if (texto) {
                             const { pageAccessToken } = await obterConfigInstagram();
                             const resultado = await enviarMensagemInstagram(numLimpo, texto, pageAccessToken);
-                            await registrarMensagemEnviada(numLimpo, texto, nome, resultado?.message_id || null, false, 'text', null, 'instagram');
+                            await registrarMensagemEnviada(numLimpo, texto, nome, resultado?.message_id || null, false, 'text', null, 'instagram', true);
                             sucesso = true;
                         }
                     } else {
@@ -4215,7 +4252,7 @@ async function dispararMensagensDaAutomacao(automacaoId) {
                                         // falhava sempre e caía pro WhatsApp Web sem ninguém perceber.
                                         const headerImageUrl = msg.media_path ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}${msg.media_path}` : null;
                                         const resultadoTemplate = await enviarTemplateWhatsappCloud(numLimpo, template.nome, parametros, configWhatsappCloud, headerImageUrl);
-                                        await registrarMensagemEnviada(numLimpo, texto, nome, resultadoTemplate?.messages?.[0]?.id || null, false, 'text', null, 'whatsapp_cloud');
+                                        await registrarMensagemEnviada(numLimpo, texto, nome, resultadoTemplate?.messages?.[0]?.id || null, false, 'text', null, 'whatsapp_cloud', true);
                                         sucesso = true;
                                         enviadoPelaCloudApi = true;
                                     } catch (e) {
@@ -4224,7 +4261,7 @@ async function dispararMensagensDaAutomacao(automacaoId) {
                                 } else {
                                     try {
                                         const resultado = await enviarMensagemWhatsappCloud(numLimpo, texto, configWhatsappCloud);
-                                        await registrarMensagemEnviada(numLimpo, texto, nome, resultado?.messages?.[0]?.id || null, false, 'text', null, 'whatsapp_cloud');
+                                        await registrarMensagemEnviada(numLimpo, texto, nome, resultado?.messages?.[0]?.id || null, false, 'text', null, 'whatsapp_cloud', true);
                                         sucesso = true;
                                         enviadoPelaCloudApi = true;
                                     } catch (e) {
@@ -4258,7 +4295,7 @@ async function dispararMensagensDaAutomacao(automacaoId) {
                                     // isso só protege a leitura de .id (evita o crash de antes,
                                     // "Cannot read properties of undefined"), sem tratar como falha.
                                     const tipoMedia = msg.media_tipo === 'file' ? 'document' : (msg.media_tipo || 'document');
-                                    await registrarMensagemEnviada(numLimpo, texto || '[mídia]', nome, idSerializado(sent), false, tipoMedia, msg.media_path);
+                                    await registrarMensagemEnviada(numLimpo, texto || '[mídia]', nome, idSerializado(sent), false, tipoMedia, msg.media_path, 'whatsapp', true);
                                     sucesso = true;
                                 } else {
                                     console.error(`Disparo automação #${automacaoId}: mídia não encontrada (${msg.media_path}) pra ${numLimpo}`);
@@ -4272,7 +4309,7 @@ async function dispararMensagensDaAutomacao(automacaoId) {
                                 // Marca ANTES de tentar — ver explicação completa no webhook do Gympulse (marcarMensagemComoDoSistema).
                                 marcarMensagemComoDoSistema(null, numLimpo, texto);
                                 const sent = await sendMessageComRetryLid(client, chatId, texto, { waitUntilMsgSent: true });
-                                await registrarMensagemEnviada(numLimpo, texto, nome, idSerializado(sent));
+                                await registrarMensagemEnviada(numLimpo, texto, nome, idSerializado(sent), false, 'text', null, 'whatsapp', true);
                                 sucesso = true;
                             }
                         }
@@ -4383,10 +4420,10 @@ async function reenviarMensagemParaTelefone(telefone, msgRow, usaApi) {
             // no cabeçalho (ex: resgate_exalunos) precisa dela em todo envio.
             const headerImageUrl = msgRow.media_path ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}${msgRow.media_path}` : null;
             const resultado = await enviarTemplateWhatsappCloud(telefone, template.nome, parametros, configWhatsappCloud, headerImageUrl);
-            await registrarMensagemEnviada(telefone, textoFinal, nome, resultado?.messages?.[0]?.id || null, false, 'text', null, 'whatsapp_cloud');
+            await registrarMensagemEnviada(telefone, textoFinal, nome, resultado?.messages?.[0]?.id || null, false, 'text', null, 'whatsapp_cloud', true);
         } else {
             const resultado = await enviarMensagemWhatsappCloud(telefone, textoFinal, configWhatsappCloud);
-            await registrarMensagemEnviada(telefone, textoFinal, nome, resultado?.messages?.[0]?.id || null, false, 'text', null, 'whatsapp_cloud');
+            await registrarMensagemEnviada(telefone, textoFinal, nome, resultado?.messages?.[0]?.id || null, false, 'text', null, 'whatsapp_cloud', true);
         }
     } else {
         if (!isConnected) throw new Error('WhatsApp Web não está conectado.');
@@ -4398,12 +4435,12 @@ async function reenviarMensagemParaTelefone(telefone, msgRow, usaApi) {
                 const media = MessageMedia.fromFilePath(mediaFullPath);
                 const sent = await sendMessageComRetryLid(client, chatId, media, { ...(textoFinal ? { caption: textoFinal } : {}), waitUntilMsgSent: true });
                 const tipoMedia = msgRow.media_tipo === 'file' ? 'document' : (msgRow.media_tipo || 'document');
-                await registrarMensagemEnviada(telefone, textoFinal || '[mídia]', nome, idSerializado(sent), false, tipoMedia, msgRow.media_path);
+                await registrarMensagemEnviada(telefone, textoFinal || '[mídia]', nome, idSerializado(sent), false, tipoMedia, msgRow.media_path, 'whatsapp', true);
                 return;
             }
         }
         const sent = await sendMessageComRetryLid(client, chatId, textoFinal, { waitUntilMsgSent: true });
-        await registrarMensagemEnviada(telefone, textoFinal, nome, idSerializado(sent));
+        await registrarMensagemEnviada(telefone, textoFinal, nome, idSerializado(sent), false, 'text', null, 'whatsapp', true);
     }
 }
 
@@ -5246,12 +5283,17 @@ async function listarConversasComEtiquetas() {
         WITH latest_real AS (
             SELECT telefone, MAX(ts) AS max_ts
             FROM conversas
-            WHERE NOT (tipo = 'text' AND texto IN ('[text]', '[mensagem sem texto]'))
+            WHERE NOT (tipo = 'text' AND texto IN ('[text]', '[mensagem sem texto]')) AND oculto = 0
             GROUP BY telefone
         ),
         latest_any AS (
+            -- oculto=1 (disparo ainda sem resposta do aluno) não conta como
+            -- conversa pro Bate Papo — um telefone só com mensagens ocultas
+            -- some da lista até revelarHistoricoOculto tirar o oculto (aluno
+            -- respondeu).
             SELECT telefone, MAX(ts) AS max_ts
             FROM conversas
+            WHERE oculto = 0
             GROUP BY telefone
         ),
         melhor_nome AS (
@@ -5432,7 +5474,7 @@ app.get('/api/conversas/:telefone', async (req, res) => {
         // antes de chegar nas mensagens de hoje). Pega as mais recentes por
         // ts DESC, depois reordena ASC pra exibir na ordem cronológica certa.
         const msgsDesc = await db.all(
-            'SELECT * FROM conversas WHERE telefone = ? ORDER BY ts DESC LIMIT ?',
+            'SELECT * FROM conversas WHERE telefone = ? AND oculto = 0 ORDER BY ts DESC LIMIT ?',
             [telefone, limite]
         );
         const msgs = msgsDesc.reverse();
@@ -5969,12 +6011,13 @@ function iniciarBroadcast(job) {
                         } else {
                             resultadoCloud = await enviarMensagemWhatsappCloud(numeroCompleto, textoPersonalizado, entryEnvio.config);
                         }
-                        // Disparo pela API Oficial também precisa aparecer no Bate
-                        // Papo igual qualquer outro canal (pedido do usuário: "todo
-                        // disparo e conversa tem que entrar no Bate papo") — antes só
-                        // gravava em disparo_envios_log (histórico do Disparo), nunca
-                        // em conversas (o que alimenta o Bate Papo).
-                        await registrarMensagemEnviada(numeroCompleto, textoPersonalizado, nomeContato, resultadoCloud?.messages?.[0]?.id || null, false, 'text', null, 'whatsapp_cloud');
+                        // Disparo nasce OCULTO do Bate Papo (pedido do usuário, 03/09):
+                        // mensagem disparada só aparece na tela se o aluno responder —
+                        // até lá é só um envio de verdade, sem virar "conversa" pro
+                        // atendente. Continua gravando em conversas (msg_id/dedup/
+                        // estatísticas), só não emite nem lista até salvarNaConversa
+                        // revelar (ver revelarHistoricoOculto, chamado na resposta 'in').
+                        await registrarMensagemEnviada(numeroCompleto, textoPersonalizado, nomeContato, resultadoCloud?.messages?.[0]?.id || null, false, 'text', null, 'whatsapp_cloud', true);
                         enviadoPelaCloudApi = true;
                     } catch (e) {
                         console.log(`ℹ️ Disparo: falha via WhatsApp Business API pra ${numeroCompleto} (${e.message}) — tentando pelo número principal.`);
@@ -5993,7 +6036,7 @@ function iniciarBroadcast(job) {
                     // real pela rede, e sessão instável pode fazer o número do pool
                     // "reenviar" sem perceber que já tinha saído de verdade.
                     const sentTexto = await sendMessageComRetryLid(clienteFallback, chatId, textoPersonalizado, { waitUntilMsgSent: true });
-                    await registrarMensagemEnviada(numeroCompleto, textoPersonalizado, nomeContato, idSerializado(sentTexto), false, 'text', null, 'whatsapp');
+                    await registrarMensagemEnviada(numeroCompleto, textoPersonalizado, nomeContato, idSerializado(sentTexto), false, 'text', null, 'whatsapp', true);
 
                     if (mediaFile) {
                         const media = MessageMedia.fromFilePath(mediaFile.path);
@@ -6002,7 +6045,7 @@ function iniciarBroadcast(job) {
                             : mediaFile.mimetype.startsWith('video/') ? 'video'
                                 : mediaFile.mimetype.startsWith('audio/') ? 'audio'
                                     : 'document';
-                        await registrarMensagemEnviada(numeroCompleto, '[mídia]', nomeContato, idSerializado(sentMedia), false, tipoMedia, '/uploads/' + path.basename(mediaFile.path), 'whatsapp');
+                        await registrarMensagemEnviada(numeroCompleto, '[mídia]', nomeContato, idSerializado(sentMedia), false, tipoMedia, '/uploads/' + path.basename(mediaFile.path), 'whatsapp', true);
                     }
                 }
 
