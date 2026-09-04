@@ -1028,6 +1028,14 @@ async function initDB() {
     // sempre pronto assim que Token de Acesso + Phone Number ID estiverem
     // salvos em Configurações). Ver singleton logo abaixo de reidratarPoolNaInicializacao().
     try { await db.exec(`ALTER TABLE disparo_numeros ADD COLUMN tipo TEXT NOT NULL DEFAULT 'whatsapp_web'`); } catch (e) { }
+    // Só existe na linha 'cloud_api' (a de "WhatsApp Business API" em Números de
+    // Envio) — checkbox "Habilitar a API como Bate Papo" (pedido do usuário,
+    // 04/09): quando ligado, uma resposta MANUAL pelo Bate Papo pra um contato
+    // do número Principal usa essa API como rede de segurança se o Principal
+    // estiver desconectado no momento, em vez de simplesmente falhar (ver
+    // POST /api/conversas/:telefone/enviar). Desligado por padrão — número
+    // físico diferente do que o aluno está acostumado a falar, então é opt-in.
+    try { await db.exec(`ALTER TABLE disparo_numeros ADD COLUMN bate_papo_fallback INTEGER DEFAULT 0`); } catch (e) { }
     // Nome do template aprovado na Meta pra essa mensagem + ordem das variáveis
     // (JSON: { nome, variaveis: ['nome','matricula',...] }) — usado como 2ª
     // tentativa via WhatsApp Business API quando o texto livre falha (contato
@@ -1721,6 +1729,19 @@ async function obterConfigWhatsappCloud() {
         appSecret: config.whatsapp_cloud_app_secret || null,
         verifyToken: config.whatsapp_cloud_verify_token || null,
     };
+}
+
+// Devolve a config da API Oficial só se o checkbox "Habilitar a API como Bate
+// Papo" estiver ligado E o Token/Phone Number ID estiverem preenchidos —
+// null nos dois casos (usado como "pode usar de rede de segurança?" pelo
+// envio manual do Bate Papo quando o número Principal está desconectado, ver
+// POST /api/conversas/:telefone/enviar).
+async function obterFallbackBatePapoCloudApi() {
+    const row = await db.get("SELECT bate_papo_fallback FROM disparo_numeros WHERE tipo = 'cloud_api' LIMIT 1");
+    if (!row?.bate_papo_fallback) return null;
+    const config = await obterConfigWhatsappCloud();
+    if (!config.accessToken || !config.phoneNumberId) return null;
+    return config;
 }
 
 // Diferente do Disparo manual (proximoClienteDoPool — "nenhum marcado = usa
@@ -5529,7 +5550,21 @@ app.post('/api/conversas/:telefone/enviar', async (req, res) => {
             return res.json({ success: true });
         }
 
-        if (!isConnected) return res.status(400).json({ error: 'WhatsApp não está conectado.' });
+        if (!isConnected) {
+            // Principal caiu — só continua se o checkbox "Habilitar a API como
+            // Bate Papo" (Números de Envio) estiver ligado pro número da
+            // WhatsApp Business API; senão é o mesmo erro de sempre. Sai por um
+            // número físico diferente do que o aluno está acostumado (é a troca
+            // consciente que o checkbox liga), só texto — mídia continua sem
+            // suporte na API Oficial, mesma limitação de todo outro envio por ela.
+            const configFallback = await obterFallbackBatePapoCloudApi();
+            if (configFallback) {
+                const resultado = await enviarMensagemWhatsappCloud(telefone, textoFinal, configFallback);
+                await registrarMensagemEnviada(telefone, textoFinal, nome, resultado?.messages?.[0]?.id || null, true, 'text', null, 'whatsapp_cloud');
+                return res.json({ success: true });
+            }
+            return res.status(400).json({ error: 'WhatsApp não está conectado.' });
+        }
         const chatId = telefone.includes('@') ? telefone : await resolverChatId(client, telefone);
         // waitUntilMsgSent:true — sem isso o sendMessage() resolve assim que o
         // WhatsApp Web adiciona a mensagem LOCALMENTE ao chat (eco otimista da
@@ -8558,6 +8593,7 @@ app.get('/api/disparo-numeros', async (req, res) => {
                     status: configurado ? 'connected' : 'dormant',
                     numeroConectado: configCloudApi?.phoneNumberId || null,
                     qrDataUrl: null,
+                    bate_papo_fallback: !!row.bate_papo_fallback,
                 };
             }
             const entry = poolClients.get(row.client_id);
@@ -8628,6 +8664,20 @@ app.post('/api/disparo-numeros/:id/pairing-code', async (req, res) => {
         const numero = String(telefone).replace(/\D/g, '');
         const code = await entry.client.requestPairingCode(numero);
         res.json({ code });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Checkbox "Habilitar a API como Bate Papo" — só faz sentido na linha
+// 'cloud_api' (é a única que pode virar rede de segurança do Principal).
+app.put('/api/disparo-numeros/:id/bate-papo-fallback', async (req, res) => {
+    try {
+        const row = await db.get('SELECT tipo FROM disparo_numeros WHERE id = ?', req.params.id);
+        if (!row) return res.status(404).json({ error: 'Número não encontrado.' });
+        if (row.tipo !== 'cloud_api') return res.status(400).json({ error: 'Essa opção só existe pro número da WhatsApp Business API.' });
+        await db.run('UPDATE disparo_numeros SET bate_papo_fallback = ? WHERE id = ?', [req.body?.habilitado ? 1 : 0, req.params.id]);
+        res.json({ success: true });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }

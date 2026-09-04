@@ -3081,6 +3081,11 @@ function renderDisparoNumerosLista() {
                     <div style="flex:1;min-width:140px">
                         <div style="font-size:.88rem;color:var(--text-1);font-weight:500">🟢 ${n.nome}</div>
                         <div style="font-size:.75rem;color:${online ? 'var(--green)' : 'var(--text-3)'}">● ${online ? `Online${n.numeroConectado ? ` (${n.numeroConectado})` : ''}` : 'Não configurado — veja em Configurações'}</div>
+                        <label style="display:flex;align-items:center;gap:.4rem;margin-top:.5rem;cursor:pointer;font-size:.8rem;color:var(--text-2)">
+                            <input type="checkbox" class="chk-disparo-numero-bate-papo" data-id="${n.id}" ${n.bate_papo_fallback ? 'checked' : ''} style="accent-color:var(--green)">
+                            Habilitar a API como Bate Papo
+                        </label>
+                        <div style="font-size:.72rem;color:var(--text-3);margin-top:.15rem">Se o número Principal cair, usa essa API pra continuar respondendo os contatos.</div>
                     </div>
                 </div>
             `;
@@ -3304,6 +3309,36 @@ disparoNumerosLista?.addEventListener('click', async (e) => {
         } catch (err) {
             showToast('Erro', 'Não foi possível remover o número.', 'error');
         }
+    }
+});
+
+disparoNumerosLista?.addEventListener('change', async (e) => {
+    const chk = e.target.closest('.chk-disparo-numero-bate-papo');
+    if (!chk) return;
+    const id = chk.dataset.id;
+    const habilitado = chk.checked;
+    chk.disabled = true;
+    try {
+        const res = await fetch(`/api/disparo-numeros/${id}/bate-papo-fallback`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ habilitado }),
+        });
+        if (!res.ok) throw new Error();
+        const item = disparoNumerosCache.find(n => n.id == id);
+        if (item) item.bate_papo_fallback = habilitado;
+        showToast(
+            habilitado ? 'Ligado' : 'Desligado',
+            habilitado
+                ? 'Se o número Principal cair, o Bate Papo passa a usar a API Oficial.'
+                : 'O Bate Papo volta a exigir o número Principal conectado.',
+            'success', 3500
+        );
+    } catch (err) {
+        chk.checked = !habilitado;
+        showToast('Erro', 'Não foi possível salvar essa opção.', 'error');
+    } finally {
+        chk.disabled = false;
     }
 });
 
