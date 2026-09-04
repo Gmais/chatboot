@@ -8560,7 +8560,10 @@ async function garantirNumeroDisparoCloudApi() {
 // selecionado a API oficial manda pelo Principal e ponto final" — a mistura
 // antiga, herdada de uma fase de transição do pool, é que causava o
 // "Atraso no Pagamento 2" alternar aleatoriamente entre API e Principal
-// mesmo sem ninguém ter marcado a API pra essa campanha).
+// mesmo sem ninguém ter marcado a API pra essa campanha). EXCEÇÃO (pedido do
+// usuário, 04/09): se o Principal estiver desconectado, "sem regra" cai pra
+// API Oficial em vez de travar o disparo inteiro — só quando o Principal já
+// estava fora mesmo, nunca troca/mistura enquanto ele está de pé.
 let poolRoundRobinIdx = 0;
 async function proximoClienteDoPool(idsPermitidos) {
     const rowCloudApi = await db.get("SELECT id, nome FROM disparo_numeros WHERE tipo = 'cloud_api' AND ativo = 1 LIMIT 1");
@@ -8578,7 +8581,19 @@ async function proximoClienteDoPool(idsPermitidos) {
         : [];
 
     if (idsValidos.length === 0) {
-        return isConnected ? { dbId: null, nome: 'Principal', client } : null;
+        if (isConnected) return { dbId: null, nome: 'Principal', client };
+        // Principal desconectado — antes travava aqui ("nenhum número
+        // conectado"). Incidente real (04/09): isso bloqueava TODO disparo
+        // manual sem Roteamento configurado (a maioria das Mensagens
+        // Personalizadas não tem categoria/regra), mesmo com a API Oficial
+        // disponível e configurada.
+        if (rowCloudApi) {
+            const configCloudApi = await obterConfigWhatsappCloud();
+            if (configCloudApi.accessToken && configCloudApi.phoneNumberId) {
+                return { dbId: rowCloudApi.id, nome: rowCloudApi.nome, tipo: 'cloud_api', config: configCloudApi };
+            }
+        }
+        return null;
     }
 
     // Roteamento explícito pra essa campanha — respeita à risca: números
