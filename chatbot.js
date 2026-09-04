@@ -1744,6 +1744,19 @@ async function obterFallbackBatePapoCloudApi() {
     return config;
 }
 
+// A API Oficial conta como "número de disparo disponível" por si só, mesmo
+// sem nenhum número do pool (whatsapp-web.js) nem o Principal conectados —
+// usada pelos guards de início de Disparo (manual e agendado) pra não
+// bloquear um disparo já roteado 100% pra ela só porque o Principal caiu
+// (mesmo bug corrigido em dispararAutomacaoComGuardas — incidente 04/09: o
+// Principal ficou preso em loop de QR e travou disparo que nem dependia dele).
+async function cloudApiDisponivelParaDisparo() {
+    const row = await db.get("SELECT 1 FROM disparo_numeros WHERE tipo = 'cloud_api' AND ativo = 1 LIMIT 1");
+    if (!row) return false;
+    const config = await obterConfigWhatsappCloud();
+    return !!(config.accessToken && config.phoneNumberId);
+}
+
 // Diferente do Disparo manual (proximoClienteDoPool — "nenhum marcado = usa
 // todos os números conectados", convite antigo pra nunca travar um envio
 // que o operador clicou pra mandar AGORA), a Automação automática precisa do
@@ -4933,7 +4946,17 @@ async function dispararAutomacaoComGuardas(id, origem = 'manual') {
     if (automacaoDisparoRodando[id] || filaDisparosAutomacao.some(j => j.id === id)) {
         return { ok: false, error: 'Já tem um disparo rodando (ou na fila) pra essa automação.' };
     }
-    if (!isConnected) return { ok: false, error: 'WhatsApp não está conectado.' };
+    // Só exige o Principal conectado se essa automação NÃO estiver roteada pra
+    // API Oficial em "Roteamento por Campanha" — quem já manda 100% pela API
+    // Oficial só usa o Principal como rede de segurança POR CONTATO (ver
+    // enviadoPelaCloudApi em dispararMensagensDaAutomacao), não precisa dele
+    // de pé só pra COMEÇAR. Incidente real (04/09): o Principal caiu (preso em
+    // loop de QR Code) e travou a tarde inteira até automação com Template
+    // aprovado e roteamento 100% API Oficial — nenhuma sequer tentava, porque
+    // esse guard vinha ANTES de checar o roteamento.
+    if (!isConnected && !(await automacaoUsaWhatsappCloud(id))) {
+        return { ok: false, error: 'WhatsApp não está conectado.' };
+    }
     const automacao = await db.get('SELECT * FROM automacoes WHERE id = ?', id);
     if (!automacao) return { ok: false, error: 'Automação não encontrada.' };
     if (!automacao.ativo) return { ok: false, error: 'Essa automação está pausada — ative-a antes de disparar.' };
@@ -6171,7 +6194,7 @@ app.post('/api/broadcast/start', upload.single('media'), async (req, res) => {
     // proximoClienteDoPool. Remover o "|| isConnected" assim que o pool
     // tiver números suficientes conectados.
     const algumPoolConectado = [...poolClients.values()].some(e => e.status === 'connected');
-    if (!algumPoolConectado && !isConnected) {
+    if (!algumPoolConectado && !isConnected && !(await cloudApiDisponivelParaDisparo())) {
         return res.status(400).json({ error: 'Nenhum número de disparo conectado. Conecte pelo menos um em "Números de Envio" antes de disparar.' });
     }
 
@@ -6245,7 +6268,7 @@ app.delete('/api/broadcast/agendados/:id', async (req, res) => {
 async function checarDisparosAgendados() {
     if (!db) return;
     const algumPoolConectado = [...poolClients.values()].some(e => e.status === 'connected');
-    if (!algumPoolConectado && !isConnected) return; // tenta de novo no próximo minuto
+    if (!algumPoolConectado && !isConnected && !(await cloudApiDisponivelParaDisparo())) return; // tenta de novo no próximo minuto
     try {
         const agora = moment.tz('America/Sao_Paulo');
         const hojeYMD = agora.format('YYYY-MM-DD');
