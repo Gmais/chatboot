@@ -140,7 +140,7 @@ async function listarTemplatesWhatsappCloud({ accessToken, wabaId } = {}) {
     if (!accessToken || !wabaId) throw new Error('WhatsApp Business API não configurado: falta o Token de Acesso ou o WABA ID (ver Configurações).');
     const resultado = await graphRequest('GET', `${wabaId}/message_templates`, {
         accessToken,
-        params: { fields: 'name,status,category', limit: 250 },
+        params: { fields: 'name,status,category,components', limit: 250 },
     });
     return resultado?.data || [];
 }
