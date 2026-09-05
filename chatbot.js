@@ -2213,6 +2213,22 @@ app.get('/api/whatsapp-cloud/mensagens', async (req, res) => {
     }
 });
 
+// Status de aprovação de TODOS os templates na conta, direto da Meta — cobre
+// tanto os vinculados a Mensagens Personalizadas (mensagens_personalizadas.
+// template_whatsapp) quanto os que não têm nenhuma linha lá, como o
+// "resumo_treino_diario" do Gympulse (nome hardcoded no webhook, nunca passou
+// pelo fluxo de submissão automática). Usado pra investigar reclamação de
+// "mas está aprovado" sem precisar confiar só no que o sistema já sabe.
+app.get('/api/whatsapp-cloud/templates', async (req, res) => {
+    try {
+        const config = await obterConfigWhatsappCloud();
+        const templates = await listarTemplatesWhatsappCloud(config);
+        res.json(templates);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
 // =====================================
 // INTEGRAÇÃO COM GYMPULSE (resumo diário de treino → WhatsApp do aluno)
 // =====================================
