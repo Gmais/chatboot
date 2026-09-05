@@ -2271,7 +2271,7 @@ app.post('/webhooks/gympulse-daily-report', async (req, res) => {
             return res.status(401).json({ error: 'Não autorizado.' });
         }
 
-        const { matricula, studentName, totalCalories, totalPoints, totalDurationMin, zoneData, message } = req.body || {};
+        const { matricula, studentName, totalCalories, totalPoints, totalDurationMin, zoneData, message, period, vars } = req.body || {};
         if (!matricula) return res.status(400).json({ error: 'Campo "matricula" é obrigatório.' });
 
         // Mesmo padrão leading-zero-safe usado em /api/contatos/resolver-lista —
@@ -2332,6 +2332,27 @@ app.post('/webhooks/gympulse-daily-report', async (req, res) => {
         const gympulseUsaCloudApiRow = await db.get("SELECT valor FROM configuracoes WHERE chave = 'gympulse_usa_whatsapp_cloud'");
         const gympulseUsaCloudApi = gympulseUsaCloudApiRow?.valor !== 'false';
         const configWhatsappCloud = gympulseUsaCloudApi ? await obterConfigWhatsappCloud() : null;
+        // Mensagens de engajamento (period = inactive_7d/performance_drop/welcome/
+        // points_milestone/level_up/fitcoins_100) já têm Template PRÓPRIO aprovado
+        // na Meta pra cada uma (gympulse_inativo_7d, gympulse_fitcoins etc — vistos
+        // e conferidos via GET /api/whatsapp-cloud/templates, corpo/variáveis batem
+        // exatamente com o que a Meta aprovou). São propositalmente contatos "frios"
+        // (inativo há dias, aluno sem interação recente) — texto livre SEMPRE falha
+        // por "Re-engagement message" pra esse público, então o Template é o único
+        // jeito real de entregar. `vars` vem do Gympulse com o valor cru de cada
+        // placeholder (dias/queda/pontos/nivel/fitcoins), separado do texto já
+        // pronto em "message" — sem isso não dá pra montar os parâmetros do Template
+        // (incidente real, 04/09: nenhuma dessas 6 mensagens chegava, ficavam presas
+        // só na tentativa de texto livre, apesar dos Templates já aprovados).
+        const GYMPULSE_ENGAJAMENTO_TEMPLATES = {
+            inactive_7d: { template: 'gympulse_inativo_7d', varKey: 'dias' },
+            performance_drop: { template: 'gympulse_queda_desempenho', varKey: 'queda' },
+            welcome: { template: 'gympulse_boas_vindas_engajamento', varKey: null },
+            points_milestone: { template: 'gympulse_marco_pontos', varKey: 'pontos' },
+            level_up: { template: 'gympulse_subiu_nivel', varKey: 'nivel' },
+            fitcoins_100: { template: 'gympulse_fitcoins', varKey: 'fitcoins' },
+        };
+        const templateEngajamento = period && GYMPULSE_ENGAJAMENTO_TEMPLATES[period];
         // Template "resumo_treino_diario" só cobre exatamente o formato da
         // composição padrão acima (nome/kcal/pontos/min, sem a lista de zonas
         // de frequência, que tem tamanho variável — template não suporta isso).
@@ -2345,7 +2366,18 @@ app.post('/webhooks/gympulse-daily-report', async (req, res) => {
                 enviadoPelaCloudApi = true;
             } catch (e) {
                 console.log(`ℹ️ Gympulse: falha via texto livre pra ${telefoneLimpo} (${e.message}).`);
-                if (podeTentarTemplate) {
+                if (templateEngajamento) {
+                    try {
+                        const valorVar = templateEngajamento.varKey ? String(vars?.[templateEngajamento.varKey] ?? '') : null;
+                        const parametros = valorVar !== null ? [primeiroNome, valorVar] : [primeiroNome];
+                        const resultadoTemplate = await enviarTemplateWhatsappCloud(telefoneLimpo, templateEngajamento.template, parametros, configWhatsappCloud);
+                        await registrarMensagemEnviada(telefoneLimpo, mensagem, nomeExibir, resultadoTemplate?.messages?.[0]?.id || null, false, 'text', null, 'whatsapp_cloud');
+                        enviadoPelaCloudApi = true;
+                        console.log(`✅ Gympulse: entregue via template "${templateEngajamento.template}" pra ${telefoneLimpo}.`);
+                    } catch (e2) {
+                        console.log(`ℹ️ Gympulse: falha via template "${templateEngajamento.template}" também pra ${telefoneLimpo} (${e2.message}) — tentando pelo número principal.`);
+                    }
+                } else if (podeTentarTemplate) {
                     try {
                         const parametros = [primeiroNome, String(totalCalories ?? '-'), String(totalPoints ?? '-'), String(totalDurationMin ?? '-')];
                         const resultadoTemplate = await enviarTemplateWhatsappCloud(telefoneLimpo, 'resumo_treino_diario', parametros, configWhatsappCloud);
