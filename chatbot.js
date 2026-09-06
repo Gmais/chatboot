@@ -297,6 +297,73 @@ async function mesclarLeadsDuplicados() {
     return relatorio;
 }
 
+// Mesmo problema de raiz do mesclarLeadsDuplicados (variação do 9º dígito),
+// mas pro HISTÓRICO da conversa em si — sem normalizar o remetente ao
+// receber mensagem (ver processarMensagemWhatsappCloud), um cliente que já
+// tinha conversa aberta com o número certo (com o 9, ex: via campanha) abria
+// uma SEGUNDA conversa do zero ao responder, porque a Meta reportou o número
+// sem o 9 nesse webhook — a resposta dela sumia da conversa que a consultora
+// já estava vendo (achado ao vivo, 06/09: "Natiele Neumann Da Cruz"
+// 5542999835537 x "Nathy Neumann" 554299835537, mesma pessoa). Corrige o
+// código pra não acontecer de novo (normaliza antes de gravar) — essa função
+// só limpa duplicata que JÁ existe no banco. Idempotente. Roda no boot E fica
+// exposta em POST /api/admin/mesclar-conversas-duplicadas pra rodar sob demanda.
+async function mesclarConversasDuplicadas() {
+    const relatorio = [];
+    try {
+        const tabelasComTelefone = ['conversas', 'conversas_status', 'conversas_humano', 'contato_etiquetas', 'contato_automacao_estado', 'vinculo_pacto', 'mensagens_enviadas'];
+        const telefones = new Set();
+        for (const tabela of tabelasComTelefone) {
+            const rows = await db.all(`SELECT DISTINCT telefone FROM ${tabela}`);
+            rows.forEach(r => r.telefone && telefones.add(r.telefone));
+        }
+        const variantesPorCanonico = new Map();
+        for (const telefone of telefones) {
+            const canonico = normalizarTelefoneBR(telefone);
+            if (canonico === telefone) continue; // já está no formato certo
+            if (!variantesPorCanonico.has(canonico)) variantesPorCanonico.set(canonico, []);
+            variantesPorCanonico.get(canonico).push(telefone);
+        }
+        for (const [canonico, variantes] of variantesPorCanonico) {
+            for (const variante of variantes) {
+                try {
+                    await db.run('UPDATE conversas SET telefone = ? WHERE telefone = ?', [canonico, variante]);
+                    await db.run('UPDATE mensagens_enviadas SET telefone = ? WHERE telefone = ?', [canonico, variante]);
+                    // Chave única em telefone — só migra se o canônico ainda não
+                    // tiver linha; senão descarta a duplicata (mantém a do canônico).
+                    for (const tabela of ['conversas_status', 'conversas_humano', 'vinculo_pacto']) {
+                        const existeCanonico = await db.get(`SELECT 1 FROM ${tabela} WHERE telefone = ?`, canonico);
+                        if (existeCanonico) await db.run(`DELETE FROM ${tabela} WHERE telefone = ?`, variante);
+                        else await db.run(`UPDATE ${tabela} SET telefone = ? WHERE telefone = ?`, [canonico, variante]);
+                    }
+                    // Chave composta (telefone + outra coluna) — migra linha por
+                    // linha, ignora quem já existe no canônico.
+                    const etiquetas = await db.all('SELECT etiqueta_id FROM contato_etiquetas WHERE telefone = ?', variante);
+                    for (const e of etiquetas) await db.run('INSERT OR IGNORE INTO contato_etiquetas (telefone, etiqueta_id) VALUES (?, ?)', [canonico, e.etiqueta_id]);
+                    await db.run('DELETE FROM contato_etiquetas WHERE telefone = ?', variante);
+
+                    const estados = await db.all('SELECT * FROM contato_automacao_estado WHERE telefone = ?', variante);
+                    for (const a of estados) {
+                        await db.run(
+                            'INSERT OR IGNORE INTO contato_automacao_estado (telefone, automacao_id, etapa_atual, entrou_em, proxima_execucao_em, mensagem_id, ultimo_erro, ultimo_erro_em, falhas_consecutivas) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                            [canonico, a.automacao_id, a.etapa_atual, a.entrou_em, a.proxima_execucao_em, a.mensagem_id, a.ultimo_erro, a.ultimo_erro_em, a.falhas_consecutivas]
+                        );
+                    }
+                    await db.run('DELETE FROM contato_automacao_estado WHERE telefone = ?', variante);
+
+                    console.log(`🔧 Conversa duplicada mesclada: ${variante} → ${canonico}.`);
+                    relatorio.push({ variante, canonico });
+                } catch (e) {
+                    console.error(`Erro ao mesclar conversa duplicada ${variante} → ${canonico}:`, e.message);
+                }
+            }
+        }
+    } catch (e) {
+        console.error('Erro ao mesclar conversas duplicadas:', e.message);
+    }
+    return relatorio;
+}
+
 // Liga cada Mensagem Personalizada das 9 campanhas ao template aprovado
 // correspondente na Meta (mesmo texto, variáveis {placeholder} viram {{n}}
 // posicionais). "variaveis" é a ORDEM exata usada na hora de criar o
@@ -1010,6 +1077,7 @@ async function initDB() {
     // Também exposta em POST /api/admin/mesclar-leads-duplicados pra rodar
     // sob demanda, sem depender de um restart do processo.
     await mesclarLeadsDuplicados();
+    await mesclarConversasDuplicadas();
 
     // Rede de segurança do Horário de Funcionamento (robô assume depois de N
     // segundos sem resposta humana): liga por padrão com 180s na primeira vez
@@ -1932,7 +2000,14 @@ async function processarEchoWhatsappCloud(echo) {
 // (value.contacts[].profile.name) — não precisa de uma chamada extra à API
 // como obterNomeUsuarioInstagram faz pro Instagram.
 async function processarMensagemWhatsappCloud(mensagem, valor) {
-    const numLimpo = mensagem.from; // já vem em E.164 sem "+", ex: "5542999998888"
+    // mensagem.from já vem em E.164 sem "+" (ex: "5542999998888"), mas a Meta
+    // às vezes reporta o remetente SEM o 9º dígito do celular — normaliza
+    // antes de usar, senão vira uma conversa nova e separada da que a
+    // consultora já estava vendo (mesmo contato, mesmo WhatsApp, achado ao
+    // vivo em produção: "Natiele Neumann" 5542999835537 x "Nathy Neumann"
+    // 554299835537 respondendo — ver mesclarConversasDuplicadas pro histórico
+    // que já tinha se fragmentado antes desse fix).
+    const numLimpo = normalizarTelefoneBR(mensagem.from);
     const wamid = mensagem.id;
     if (!numLimpo || !wamid) return;
 
@@ -2876,6 +2951,17 @@ app.get('/api/leads/export', async (req, res) => {
 app.post('/api/admin/mesclar-leads-duplicados', async (req, res) => {
     try {
         const relatorio = await mesclarLeadsDuplicados();
+        res.json({ success: true, gruposMesclados: relatorio.length, detalhe: relatorio });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Roda a mesclagem de conversas duplicadas sob demanda (ver mesclarConversasDuplicadas)
+// — não depende de esperar o processo reiniciar num deploy novo.
+app.post('/api/admin/mesclar-conversas-duplicadas', async (req, res) => {
+    try {
+        const relatorio = await mesclarConversasDuplicadas();
         res.json({ success: true, gruposMesclados: relatorio.length, detalhe: relatorio });
     } catch (err) {
         res.status(500).json({ error: err.message });
