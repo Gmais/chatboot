@@ -2258,6 +2258,22 @@ app.put('/api/gympulse/config', async (req, res) => {
     res.json({ success: true, webhook_key: novaChave });
 });
 
+// "Dentro da janela de 24h" = teve pelo menos uma mensagem RECEBIDA (direcao
+// 'in') nas últimas 24h — é a mesma regra que a Meta usa pra decidir se
+// aceita texto livre ou exige Template aprovado. Usado pelo webhook do
+// Gympulse pra decidir ANTES de enviar (não depois de falhar) — a Meta pode
+// ACEITAR um texto livre pra contato frio na hora e só recusar a entrega de
+// verdade depois, de forma assíncrona (ack=-1), quando já não dá mais pra
+// reagir (incidente real, 05/09: resumo semanal "enviado" sem erro nenhum,
+// confirmado como falha só minutos depois, sem nenhum fallback rodar).
+async function contatoRespondeuNasUltimas24h(telefone) {
+    const ultimaIn = await db.get(
+        "SELECT 1 FROM conversas WHERE telefone = ? AND direcao = 'in' AND datetime(ts) >= datetime('now', '-24 hours') LIMIT 1",
+        telefone
+    );
+    return !!ultimaIn;
+}
+
 // Chamado pelo Gympulse toda vez que um aluno termina o treino do dia.
 // matricula é a chave de ligação entre os dois sistemas — o BotPro já
 // conhece o telefone de cada aluno pela matrícula (mesmo cadastro usado em
@@ -2353,42 +2369,56 @@ app.post('/webhooks/gympulse-daily-report', async (req, res) => {
             fitcoins_100: { template: 'gympulse_fitcoins', varKey: 'fitcoins' },
         };
         const templateEngajamento = period && GYMPULSE_ENGAJAMENTO_TEMPLATES[period];
-        // Template "resumo_treino_diario" só cobre exatamente o formato da
-        // composição padrão acima (nome/kcal/pontos/min, sem a lista de zonas
-        // de frequência, que tem tamanho variável — template não suporta isso).
-        // Texto vindo pronto do GympulsePro ("message") ou com zonas não bate
-        // com o template aprovado, então não tenta — só cai pro número principal.
-        const podeTentarTemplate = !(typeof message === 'string' && message.trim().length > 0) && !(Array.isArray(zoneData) && zoneData.length > 0);
-        if (configWhatsappCloud?.accessToken && configWhatsappCloud?.phoneNumberId) {
+        // Resumo de treino ("dia"/"semana") também já tem Template aprovado —
+        // resumo_treino_diario/resumo_treino_semanal, aprovados pela Meta em
+        // 06/09 (estavam pendentes quando os de engajamento acima foram
+        // conferidos). Cobre exatamente cabeçalho fixo + bloco de stats — não
+        // suporta a lista de zonas de frequência (tamanho variável), por isso
+        // só entra quando não tem zoneData. O texto fixo do Template
+        // ("Continue assim! 🎉") pode diferir um pouco do cabeçalho/rodapé
+        // customizado dessa academia — aceitável só quando é a alternativa a
+        // não entregar nada (aluno frio ou texto livre já tendo falhado).
+        const templateResumoTreino = (!Array.isArray(zoneData) || zoneData.length === 0)
+            ? { template: period === 'semana' ? 'resumo_treino_semanal' : 'resumo_treino_diario', parametros: [primeiroNome, String(totalCalories ?? '-'), String(totalPoints ?? '-'), String(totalDurationMin ?? '-')] }
+            : null;
+        const templateCandidato = templateEngajamento
+            ? { template: templateEngajamento.template, parametros: templateEngajamento.varKey ? [primeiroNome, String(vars?.[templateEngajamento.varKey] ?? '')] : [primeiroNome] }
+            : templateResumoTreino;
+
+        async function tentarTemplateGympulse() {
+            if (!templateCandidato) return false;
             try {
-                const resultado = await enviarMensagemWhatsappCloud(telefoneLimpo, mensagem, configWhatsappCloud);
-                await registrarMensagemEnviada(telefoneLimpo, mensagem, nomeExibir, resultado?.messages?.[0]?.id || null, false, 'text', null, 'whatsapp_cloud');
-                enviadoPelaCloudApi = true;
+                const resultadoTemplate = await enviarTemplateWhatsappCloud(telefoneLimpo, templateCandidato.template, templateCandidato.parametros, configWhatsappCloud);
+                await registrarMensagemEnviada(telefoneLimpo, mensagem, nomeExibir, resultadoTemplate?.messages?.[0]?.id || null, false, 'text', null, 'whatsapp_cloud');
+                console.log(`✅ Gympulse: entregue via template "${templateCandidato.template}" pra ${telefoneLimpo}.`);
+                return true;
             } catch (e) {
-                console.log(`ℹ️ Gympulse: falha via texto livre pra ${telefoneLimpo} (${e.message}).`);
-                if (templateEngajamento) {
-                    try {
-                        const valorVar = templateEngajamento.varKey ? String(vars?.[templateEngajamento.varKey] ?? '') : null;
-                        const parametros = valorVar !== null ? [primeiroNome, valorVar] : [primeiroNome];
-                        const resultadoTemplate = await enviarTemplateWhatsappCloud(telefoneLimpo, templateEngajamento.template, parametros, configWhatsappCloud);
-                        await registrarMensagemEnviada(telefoneLimpo, mensagem, nomeExibir, resultadoTemplate?.messages?.[0]?.id || null, false, 'text', null, 'whatsapp_cloud');
-                        enviadoPelaCloudApi = true;
-                        console.log(`✅ Gympulse: entregue via template "${templateEngajamento.template}" pra ${telefoneLimpo}.`);
-                    } catch (e2) {
-                        console.log(`ℹ️ Gympulse: falha via template "${templateEngajamento.template}" também pra ${telefoneLimpo} (${e2.message}) — tentando pelo número principal.`);
-                    }
-                } else if (podeTentarTemplate) {
-                    try {
-                        const parametros = [primeiroNome, String(totalCalories ?? '-'), String(totalPoints ?? '-'), String(totalDurationMin ?? '-')];
-                        const resultadoTemplate = await enviarTemplateWhatsappCloud(telefoneLimpo, 'resumo_treino_diario', parametros, configWhatsappCloud);
-                        await registrarMensagemEnviada(telefoneLimpo, mensagem, nomeExibir, resultadoTemplate?.messages?.[0]?.id || null, false, 'text', null, 'whatsapp_cloud');
-                        enviadoPelaCloudApi = true;
-                        console.log(`✅ Gympulse: entregue via template "resumo_treino_diario" pra ${telefoneLimpo}.`);
-                    } catch (e2) {
-                        console.log(`ℹ️ Gympulse: falha via template também pra ${telefoneLimpo} (${e2.message}) — tentando pelo número principal.`);
-                    }
-                } else {
-                    console.log(`ℹ️ Gympulse: mensagem não bate com o template aprovado (texto customizado ou com zonas) — tentando pelo número principal.`);
+                console.log(`ℹ️ Gympulse: falha via template "${templateCandidato.template}" pra ${telefoneLimpo} (${e.message}).`);
+                return false;
+            }
+        }
+
+        if (configWhatsappCloud?.accessToken && configWhatsappCloud?.phoneNumberId) {
+            // Aluno frio (sem mensagem recebida nas últimas 24h) vai direto pro
+            // Template, pulando o texto livre — pra esse público a Meta pode
+            // aceitar o texto livre na hora e recusar a entrega de verdade só
+            // depois (ver contatoRespondeuNasUltimas24h), quando já não dá mais
+            // pra reagir. Só pula se já tiver um Template aplicável pra tentar.
+            const alunoFrio = templateCandidato && !(await contatoRespondeuNasUltimas24h(telefoneLimpo));
+            if (alunoFrio) enviadoPelaCloudApi = await tentarTemplateGympulse();
+
+            if (!enviadoPelaCloudApi) {
+                try {
+                    const resultado = await enviarMensagemWhatsappCloud(telefoneLimpo, mensagem, configWhatsappCloud);
+                    await registrarMensagemEnviada(telefoneLimpo, mensagem, nomeExibir, resultado?.messages?.[0]?.id || null, false, 'text', null, 'whatsapp_cloud');
+                    enviadoPelaCloudApi = true;
+                } catch (e) {
+                    console.log(`ℹ️ Gympulse: falha via texto livre pra ${telefoneLimpo} (${e.message}).`);
+                    // Se já tentou o Template como aluno frio acima, não repete a
+                    // mesma tentativa fadada a falhar de novo — só tenta aqui quem
+                    // ainda não tinha passado por ele.
+                    if (!alunoFrio) enviadoPelaCloudApi = await tentarTemplateGympulse();
+                    if (!enviadoPelaCloudApi) console.log(`ℹ️ Gympulse: sem Template aplicável (ou também falhou) pra ${telefoneLimpo} — tentando pelo número principal.`);
                 }
             }
         }
