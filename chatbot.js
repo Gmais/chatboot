@@ -1468,7 +1468,14 @@ async function salvarNaConversa(telefone, nome, direcao, texto, tipo = 'text', t
 
     // Conta não lidas deste telefone
     const naoLidas = await db.get('SELECT COUNT(*) as c FROM conversas WHERE telefone=? AND lida=0 AND direcao="in"', num);
-    io.emit('nova_mensagem', { id: resultado.lastID, telefone: num, nome: nome || num, texto, direcao, tipo, ts, nao_lidas: naoLidas.c, manual, media_path: mediaPath, canal, ack: ackInicial });
+    // matricula precisa vir junto aqui: quando esse telefone ainda não estava
+    // carregado no mapa de contatos do front (conversa nova, ou revelada de
+    // oculto agora mesmo — ver revelarHistoricoOculto), o contato é criado só
+    // com o que vier neste evento. Sem a matrícula aqui, cabeçalho e lista do
+    // Bate Papo ficam sem "#matrícula" até a página ser recarregada (aí sim
+    // /api/conversas resolve certo).
+    const matriculaEvento = await resolverMatriculaContato(num);
+    io.emit('nova_mensagem', { id: resultado.lastID, telefone: num, nome: nome || num, texto, direcao, tipo, ts, nao_lidas: naoLidas.c, manual, media_path: mediaPath, canal, ack: ackInicial, matricula: matriculaEvento });
 
     // Qualquer mensagem nova (do cliente OU pro cliente — bot, automação,
     // envio manual) reabre a conversa se ela tinha sido finalizada. "Finalizada"
@@ -1495,10 +1502,15 @@ async function revelarHistoricoOculto(telefone) {
     const ocultas = await db.all('SELECT * FROM conversas WHERE telefone = ? AND oculto = 1 ORDER BY ts ASC', telefone);
     if (ocultas.length === 0) return;
     await db.run('UPDATE conversas SET oculto = 0 WHERE telefone = ? AND oculto = 1', telefone);
+    // Telefone que só tinha mensagem oculta (disparo sem resposta) nunca
+    // apareceu em /api/conversas, então não existe ainda no mapa de contatos
+    // do front — precisa vir com matrícula aqui, senão o contato nasce sem
+    // ela até a página ser recarregada.
+    const matricula = await resolverMatriculaContato(telefone);
     for (const m of ocultas) {
         io.emit('nova_mensagem', {
             id: m.id, telefone, nome: m.nome, texto: m.texto, direcao: m.direcao, tipo: m.tipo, ts: m.ts,
-            nao_lidas: 0, manual: !!m.manual, media_path: m.media_path, canal: m.canal, ack: m.ack,
+            nao_lidas: 0, manual: !!m.manual, media_path: m.media_path, canal: m.canal, ack: m.ack, matricula,
         });
     }
 }
