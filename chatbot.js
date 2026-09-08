@@ -95,6 +95,31 @@ const { enviarMensagemInstagram, obterNomeUsuarioInstagram, verificarAssinaturaW
 const { enviarMensagemWhatsappCloud, enviarTemplateWhatsappCloud, criarTemplateWhatsappCloud, listarTemplatesWhatsappCloud } = require('./whatsappCloudApi');
 const { buscarAgendaDoDia } = require('./agenda');
 
+// Descobre se um Template aprovado pela Meta REALMENTE tem um componente de
+// cabeçalho com imagem — sem isso, os 3 pontos que montam headerImageUrl (automação,
+// reenvio manual, disparo) decidiam isso só por "essa mensagem tem media_path
+// no nosso banco?", que é uma pergunta diferente e pode divergir do que foi
+// de fato aprovado no Business Manager. Incidente confirmado (08/09): mensagem
+// "Confirmação de agendamento" tem foto anexada aqui, mas o template
+// aprovado (confirmacao_agendamento_1) só tem BODY, sem HEADER nenhum — mandar
+// o parâmetro de imagem mesmo assim faz a Meta recusar com "(#132018) issue
+// with the parameters in your template", e isso derrubava a mensagem inteira
+// (corpo incluso), não só a imagem. Cache com TTL curto: a lista de templates
+// quase nunca muda (só quando alguém cria/edita um no Business Manager), não
+// vale a pena 1 chamada à Graph API por envio.
+const TEMPLATE_HEADER_CACHE_MS = 10 * 60 * 1000;
+let templatesHeaderCache = null;
+let templatesHeaderCacheEm = 0;
+async function templateTemHeaderImagem(nomeTemplate, config) {
+    const agora = Date.now();
+    if (!templatesHeaderCache || (agora - templatesHeaderCacheEm) > TEMPLATE_HEADER_CACHE_MS) {
+        const templates = await listarTemplatesWhatsappCloud(config);
+        templatesHeaderCache = new Map(templates.map(t => [t.name, (t.components || []).some(c => c.type === 'HEADER' && c.format === 'IMAGE')]));
+        templatesHeaderCacheEm = agora;
+    }
+    return templatesHeaderCache.get(nomeTemplate) ?? false;
+}
+
 // Matrículas da carteira da consultora Juliana, extraídas de um relatório
 // exportado do Pacto (consultora_juliana_matriculas.json). Usado só pra
 // exibir o nome da consultora responsável no relatório de "Erros de Número
@@ -4461,10 +4486,12 @@ async function dispararMensagensDaAutomacao(automacaoId) {
                                             horario: horarioStr, professor: professorStr, dia: diaStr,
                                         };
                                         const parametros = template.variaveis.map(v => valorPorPlaceholder[v] ?? '');
-                                        // ver comentário em enviarTemplateWhatsappCloud (whatsappCloudApi.js) —
-                                        // sem isso, template com imagem no cabeçalho (ex: resgate_exalunos)
-                                        // falhava sempre e caía pro WhatsApp Web sem ninguém perceber.
-                                        const headerImageUrl = msg.media_path ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}${msg.media_path}` : null;
+                                        // ver comentário em templateTemHeaderImagem — só manda o parâmetro de
+                                        // cabeçalho se o Template aprovado REALMENTE tiver HEADER de imagem;
+                                        // media_path aqui é só "essa mensagem tem foto anexada no BotPro",
+                                        // não prova nada sobre o que foi aprovado na Meta.
+                                        const headerImageUrl = (msg.media_path && await templateTemHeaderImagem(template.nome, configWhatsappCloud))
+                                            ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}${msg.media_path}` : null;
                                         const resultadoTemplate = await enviarTemplateWhatsappCloud(numLimpo, template.nome, parametros, configWhatsappCloud, headerImageUrl);
                                         await registrarMensagemEnviada(numLimpo, texto, nome, resultadoTemplate?.messages?.[0]?.id || null, false, 'text', null, 'whatsapp_cloud', true);
                                         sucesso = true;
@@ -4637,9 +4664,10 @@ async function reenviarMensagemParaTelefone(telefone, msgRow, usaApi) {
             const template = JSON.parse(msgRow.template_whatsapp);
             const parametros = [];
             for (const chave of template.variaveis || []) parametros.push(await resolverValorPlaceholder(chave, telefone));
-            // ver comentário em enviarTemplateWhatsappCloud — template com imagem
-            // no cabeçalho (ex: resgate_exalunos) precisa dela em todo envio.
-            const headerImageUrl = msgRow.media_path ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}${msgRow.media_path}` : null;
+            // ver comentário em templateTemHeaderImagem — só manda o cabeçalho se
+            // o Template aprovado realmente tiver um.
+            const headerImageUrl = (msgRow.media_path && await templateTemHeaderImagem(template.nome, configWhatsappCloud))
+                ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}${msgRow.media_path}` : null;
             const resultado = await enviarTemplateWhatsappCloud(telefone, template.nome, parametros, configWhatsappCloud, headerImageUrl);
             await registrarMensagemEnviada(telefone, textoFinal, nome, resultado?.messages?.[0]?.id || null, false, 'text', null, 'whatsapp_cloud', true);
         } else {
@@ -6248,10 +6276,10 @@ function iniciarBroadcast(job) {
                             // ali é justamente o padrão que arrisca bloqueio dele.
                             const primeiroNome = (nomeContato || '').trim().split(' ')[0] || '';
                             const parametros = (templateWhatsapp.variaveis || []).map(v => v === 'nome' ? primeiroNome : '');
-                            // ver comentário em enviarTemplateWhatsappCloud (whatsappCloudApi.js) —
-                            // sem isso, template com imagem no cabeçalho (ex: resgate_exalunos)
-                            // falhava sempre e caía pro número Principal sem ninguém perceber.
-                            const headerImageUrl = templateMediaPath ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}${templateMediaPath}` : null;
+                            // ver comentário em templateTemHeaderImagem — só manda o cabeçalho se
+                            // o Template aprovado realmente tiver um.
+                            const headerImageUrl = (templateMediaPath && await templateTemHeaderImagem(templateWhatsapp.nome, entryEnvio.config))
+                                ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}${templateMediaPath}` : null;
                             resultadoCloud = await enviarTemplateWhatsappCloud(numeroCompleto, templateWhatsapp.nome, parametros, entryEnvio.config, headerImageUrl);
                         } else {
                             resultadoCloud = await enviarMensagemWhatsappCloud(numeroCompleto, textoPersonalizado, entryEnvio.config);
