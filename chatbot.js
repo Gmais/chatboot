@@ -8319,6 +8319,17 @@ client.on('auth_failure', (msg) => {
 client.on('ready', async () => {
     console.log('✅ Tudo certo! WhatsApp conectado.');
     desarmarInitWatchdog(); // conectou (sessão restaurada sem precisar de QR) — não estava travado
+    // client.lastLoggedOut é flag interna do whatsapp-web.js que só é
+    // resetada por um framenavigated da própria lib, nem sempre confiável
+    // (ver comentário em disconnected/LOGOUT abaixo). Os dois resets manuais
+    // existentes só cobrem os caminhos de restart via watchdog/crash — um
+    // reconhecimento normal via QR (logout real → re-pareamento, sem passar
+    // por esses restarts) podia deixar a flag presa em true e disparar um
+    // LOGOUT autoinfligido horas depois (incidente 08/09, 09:03→14:16: LOGOUT
+    // real às 09:03, reconectou, e às 14:16 desconectou nesse mesmo instante
+    // do 'ready' com lastLoggedOut ainda true). Reset aqui cobre TODO caminho
+    // que chega em 'ready', não só os de restart.
+    client.lastLoggedOut = false;
     registrarEventoConexao('conectado');
     try {
         const info = client.info;
@@ -8555,6 +8566,7 @@ function wireEventosPoolClient(entry) {
         }
     });
     c.on('ready', () => {
+        c.lastLoggedOut = false; // mesmo motivo do client principal — ver comentário em client.on('ready')
         entry.status = 'connected';
         entry.qrDataUrl = null;
         entry.readyForPairing = false;
