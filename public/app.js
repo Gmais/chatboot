@@ -137,6 +137,16 @@ socket.on('loading', (msg) => {
     setBadge('loading');
 });
 
+// Pareamento via QR desabilitado temporariamente (08/09) — só a API Oficial
+// fica ativa. Sem isso, o painel ficava preso mostrando "Iniciando
+// conexão..." pra sempre, parecendo travado em vez de uma escolha deliberada.
+socket.on('principal_desativado', () => {
+    if (qrContainer) qrContainer.innerHTML = `<span style="color:#666;font-size:.85rem">🚫 Pareamento via QR desativado — usando só a API Oficial</span>`;
+    if (statusText) { statusText.textContent = 'Só API Oficial'; statusText.style.color = 'var(--text-3)'; }
+    setBadge('desativado');
+    if (pairingSection) pairingSection.style.display = 'none';
+});
+
 const pairingSection     = document.getElementById('pairing-section');
 const pairingCodeDisplay = document.getElementById('pairing-code-display');
 const pairingCodeValue   = document.getElementById('pairing-code-value');
@@ -257,6 +267,7 @@ function setBadge(state) {
         online:       { text: '● Conectado', cls: 'connected', dot: 'online', label: 'Online' },
         offline:      { text: '● Desconectado', cls: 'disconnected', dot: 'offline', label: 'Offline' },
         reconectando: { text: '🔄 Reconectando...', cls: '', dot: '', label: 'Reconectando ao servidor...' },
+        desativado:   { text: '🚫 Só API Oficial', cls: '', dot: 'offline', label: 'Principal desativado' },
     };
     const s = states[state] || states.loading;
     statusBadge.textContent = s.text;

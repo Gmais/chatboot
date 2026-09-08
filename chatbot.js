@@ -2511,6 +2511,10 @@ app.post('/webhooks/gympulse-daily-report', async (req, res) => {
         }
 
         if (!enviadoPelaCloudApi) {
+            if (!PRINCIPAL_HABILITADO) {
+                console.log(`ℹ️ Gympulse: falhou pela API Oficial e Principal está desabilitado — não entregue pra ${telefoneLimpo}.`);
+                return res.status(502).json({ error: 'Falha ao enviar pela API Oficial (Principal está desabilitado, sem fallback).' });
+            }
             let chatId;
             try {
                 chatId = await resolverChatId(client, telefoneLimpo);
@@ -4481,6 +4485,9 @@ async function dispararMensagensDaAutomacao(automacaoId) {
                             }
                         }
                         if (!enviadoPelaCloudApi) {
+                            if (!PRINCIPAL_HABILITADO) {
+                                throw new Error('Principal desabilitado — API Oficial falhou e não há fallback ativo');
+                            }
                             const chatId = await resolverChatId(client, numLimpo);
                             if (msg.media_path) {
                                 const mediaFullPath = path.join(__dirname, 'public', msg.media_path.replace(/^\//, ''));
@@ -6259,6 +6266,9 @@ function iniciarBroadcast(job) {
                 }
 
                 if (!enviadoPelaCloudApi) {
+                    if (entryEnvio.tipo === 'cloud_api' && !PRINCIPAL_HABILITADO) {
+                        throw new Error('Principal desabilitado — API Oficial falhou e não há fallback ativo');
+                    }
                     // Números normais do pool caem aqui direto (comportamento de
                     // sempre); só o número "WhatsApp Business API" que falhou usa o
                     // client PRINCIPAL como rede de segurança, não outro do pool.
@@ -6511,6 +6521,7 @@ app.post('/api/broadcast/resume', (req, res) => {
 app.post('/api/pairing-code', async (req, res) => {
     const { telefone } = req.body;
     if (!telefone) return res.status(400).json({ error: 'Informe o número de telefone.' });
+    if (!PRINCIPAL_HABILITADO) return res.status(400).json({ error: 'Pareamento via QR está temporariamente desabilitado — só a API Oficial está ativa.' });
     if (!clientReadyForPairing) return res.status(400).json({ error: 'Aguarde o QR Code aparecer antes de solicitar o código.' });
     try {
         // Remove tudo exceto dígitos
@@ -8156,6 +8167,21 @@ function criarClienteWhatsApp(clientId) {
     });
 }
 
+// Pareamento via QR (client Principal, whatsapp-web.js) desabilitado
+// temporariamente a pedido do usuário (08/09) — sessão vivia entrando em
+// LOGOUT (real ou autoinfligido por bug do lastLoggedOut, ver client.on
+// 'disconnected' mais abaixo) e ficava presa em loop de QR sem ninguém
+// escanear. Enquanto false: o client nunca chama initialize() (nunca sobe
+// Chrome/Puppeteer, nunca gera QR), os 3 pontos que usavam o Principal como
+// "rede de segurança" quando a API Oficial falha (Gympulse, Automação,
+// Disparo) falham rápido e de forma visível em vez de tentar por ele, e
+// reiniciarClienteAposFalha() (watchdogs + botão "Reiniciar") vira no-op.
+// Bate Papo ao Vivo já tem fallback próprio pra API Oficial (bate_papo_
+// fallback) e continua funcionando normalmente. Pra reabilitar: true de
+// novo (ainda vai exigir escanear um QR novo, a sessão anterior já foi
+// deslogada/apagada).
+const PRINCIPAL_HABILITADO = false;
+
 const client = criarClienteWhatsApp();
 
 let currentQR = null;
@@ -8264,6 +8290,7 @@ io.on('connection', async (socket) => {
 
     if (isConnected) socket.emit('ready');
     else if (currentQR) socket.emit('qr', currentQR);
+    else if (!PRINCIPAL_HABILITADO) socket.emit('principal_desativado');
     else socket.emit('loading', 'Iniciando o WhatsApp...');
 
     // Replay do estado atual de cada número do pool de Disparo, pra uma aba
@@ -8401,6 +8428,10 @@ let ultimoRestartAutomatico = 0;
 // silêncio) — extraído do handler de crash original pra ser reaproveitado
 // pelas duas fontes sem duplicar a sequência destroy → aguarda → initialize.
 async function reiniciarClienteAposFalha(tipoEvento, motivo) {
+    if (!PRINCIPAL_HABILITADO) {
+        console.log(`ℹ️ Principal desabilitado — ignorando pedido de reinício (${tipoEvento}: ${motivo}).`);
+        return;
+    }
     console.error(`🧨 [${tipoEvento.toUpperCase()}]`, motivo);
     if (restartInProgress) {
         console.log('⚠️  Restart já em andamento — ignorando falha duplicada.');
@@ -8709,7 +8740,7 @@ async function reidratarPoolNaInicializacao() {
             // direto da config do WhatsApp Business (ver GET /api/disparo-numeros),
             // nunca entra em poolClients.
             if (row.tipo === 'cloud_api') continue;
-            const temSessao = fs.existsSync(pastaSessaoPool(row.client_id));
+            const temSessao = PRINCIPAL_HABILITADO && fs.existsSync(pastaSessaoPool(row.client_id));
             if (temSessao) {
                 iniciarClientePool(row);
             } else {
@@ -8857,6 +8888,7 @@ app.post('/api/disparo-numeros/:id/conectar', async (req, res) => {
         const row = await db.get('SELECT * FROM disparo_numeros WHERE id = ?', req.params.id);
         if (!row) return res.status(404).json({ error: 'Número não encontrado.' });
         if (row.tipo === 'cloud_api') return res.status(400).json({ error: 'Esse número já usa a API oficial — configure o Token de Acesso em Configurações, não precisa conectar aqui.' });
+        if (!PRINCIPAL_HABILITADO) return res.status(400).json({ error: 'Pareamento via QR está temporariamente desabilitado — só a API Oficial está ativa.' });
         iniciarClientePool(row);
         res.json({ success: true });
     } catch (err) {
@@ -10295,18 +10327,22 @@ client.on('message_reaction', async (reaction) => {
 // =====================================
 (async () => {
     await initDB();
-    removerLocksChromeStale();
-    armarInitWatchdog();
-    console.log('⏱️ Watchdog de inicialização armado (90s).');
-    // Único client.initialize() do arquivo sem .catch() até agora — uma
-    // rejeição aqui (ex: TimeoutError do Puppeteer em Client.inject) virava
-    // "unhandled rejection" sem acionar nenhuma recuperação, deixando o
-    // painel preso em "Iniciando..." até alguém reiniciar na mão. Confirmado
-    // ao vivo (2026-08-25): 3h+ travado sem NENHUMA tentativa de recuperação
-    // nos logs. O timer do watchdog por si só deveria ter reiniciado mesmo
-    // assim — mas registrar esse erro aqui garante visibilidade real do que
-    // aconteceu, em vez de só um "unhandled rejection" solto no log.
-    client.initialize().catch(err => console.error('Erro ao inicializar client no boot:', err.message));
+    if (PRINCIPAL_HABILITADO) {
+        removerLocksChromeStale();
+        armarInitWatchdog();
+        console.log('⏱️ Watchdog de inicialização armado (90s).');
+        // Único client.initialize() do arquivo sem .catch() até agora — uma
+        // rejeição aqui (ex: TimeoutError do Puppeteer em Client.inject) virava
+        // "unhandled rejection" sem acionar nenhuma recuperação, deixando o
+        // painel preso em "Iniciando..." até alguém reiniciar na mão. Confirmado
+        // ao vivo (2026-08-25): 3h+ travado sem NENHUMA tentativa de recuperação
+        // nos logs. O timer do watchdog por si só deveria ter reiniciado mesmo
+        // assim — mas registrar esse erro aqui garante visibilidade real do que
+        // aconteceu, em vez de só um "unhandled rejection" solto no log.
+        client.initialize().catch(err => console.error('Erro ao inicializar client no boot:', err.message));
+    } else {
+        console.log('🚫 Principal (pareamento via QR) desabilitado — só a API Oficial fica ativa.');
+    }
     await garantirNumeroDisparoCloudApi();
     await reidratarPoolNaInicializacao();
     const PORT = process.env.PORT || 3000;
