@@ -4561,7 +4561,11 @@ async function dispararMensagensDaAutomacao(automacaoId) {
             // contato. Sem isso, uma automação inteira passava por todos os
             // contatos falhando um a um até o watchdog passivo (até 90min)
             // notar sozinho — foi exatamente o padrão visto na automação #14.
-            const erroDeSessao = e.message.includes('Timeout de 45s') || e.message.includes('timed out') || e.message.includes('Protocol error');
+            // "Principal desabilitado" (ver PRINCIPAL_HABILITADO) entra no mesmo
+            // grupo por analogia: também não é culpa do contato, é limitação
+            // temporária do sistema — sem isso, contava como falha dele e podia
+            // esgotar LIMITE_FALHAS_CONSECUTIVAS_AUTOMACAO e sair da fila à toa.
+            const erroDeSessao = e.message.includes('Timeout de 45s') || e.message.includes('timed out') || e.message.includes('Protocol error') || e.message.includes('Principal desabilitado');
             if (!restartInProgress && erroDeSessao) {
                 reiniciarClienteAposFalha('travamento_disparo_automacao', e.message);
             }
