@@ -246,6 +246,22 @@ function marcarMensagemComoDoSistema(msgId, telefone = null, texto = null) {
     }
 }
 
+// Retry automático via Template quando um resumo do Gympulse mandado como
+// texto livre é ACEITO pela Meta na hora do envio (sem exceção, por isso o
+// fallback síncrono pro Template não roda) mas falha de verdade DEPOIS, de
+// forma assíncrona (ver processarStatusWhatsappCloud) — caso real e
+// recorrente: aluno "morno" nossa contagem, mas fora da janela de 24h pra
+// Meta ("Re-engagement message"), incidente visto em 05,06,08 e 09/09.
+// Chave = wamid da tentativa em texto livre; TTL generoso porque o status
+// de falha da Meta pode demorar a chegar.
+const GYMPULSE_RETRY_TEMPLATE_TTL_MS = 6 * 60 * 60 * 1000;
+const gympulseRetryTemplatePorWamid = new Map();
+function agendarRetryTemplateGympulse(wamid, retry) {
+    if (!wamid) return;
+    gympulseRetryTemplatePorWamid.set(wamid, retry);
+    setTimeout(() => gympulseRetryTemplatePorWamid.delete(wamid), GYMPULSE_RETRY_TEMPLATE_TTL_MS);
+}
+
 // Em produção (Railway), aponta para o volume persistente; localmente, usa a pasta do projeto.
 const DATA_DIR = process.env.RAILWAY_VOLUME_MOUNT_PATH || __dirname;
 const DB_PATH = path.join(DATA_DIR, 'database.sqlite');
@@ -1958,7 +1974,10 @@ const ACK_POR_STATUS_CLOUD = { sent: 1, delivered: 2, read: 3, failed: -1 };
 // janela de 24h) NÃO cai pro número Principal automaticamente: reenviar em
 // massa por ali é justamente o tipo de padrão (muita gente fria de uma vez)
 // que arrisca bloqueio do número principal de verdade. Fica só registrado
-// como falha real (ack=-1) — reenvio, se for o caso, é decisão manual.
+// como falha real (ack=-1) — reenvio pro Principal, se for o caso, é decisão
+// manual. A ÚNICA exceção automática é o retry via Template do Gympulse
+// (tentarRetryTemplateGympulse, agendado em agendarRetryTemplateGympulse) —
+// sempre pela própria Cloud API, nunca pelo Principal, então sem esse risco.
 async function processarStatusWhatsappCloud(status) {
     const wamid = status?.id;
     const ack = ACK_POR_STATUS_CLOUD[status?.status];
@@ -1969,6 +1988,27 @@ async function processarStatusWhatsappCloud(status) {
     if (ack < 0) {
         const erroDetalhe = status.errors?.[0]?.title || 'motivo não informado pela Meta';
         console.error(`❌ [ACK_ERRO] WhatsApp Business API confirmou falha de entrega real pra ${status.recipient_id}: wamid=${wamid} — ${erroDetalhe}`);
+        await tentarRetryTemplateGympulse(wamid);
+    }
+}
+
+// Só dispara quando agendarRetryTemplateGympulse guardou um Template
+// aplicável pra esse wamid (ver POST /webhooks/gympulse-daily-report) — pra
+// qualquer outra mensagem (automação, Bate Papo manual etc.) o Map não tem
+// entrada e isso não faz nada. Tenta uma única vez (delete antes de tentar,
+// não depois) — se o Template também falhar, fica só como falha registrada,
+// sem loop de retry.
+async function tentarRetryTemplateGympulse(wamid) {
+    const retry = gympulseRetryTemplatePorWamid.get(wamid);
+    if (!retry) return;
+    gympulseRetryTemplatePorWamid.delete(wamid);
+    try {
+        const config = await obterConfigWhatsappCloud();
+        const resultado = await enviarTemplateWhatsappCloud(retry.telefone, retry.template, retry.parametros, config);
+        await registrarMensagemEnviada(retry.telefone, retry.mensagem, retry.nomeExibir, resultado?.messages?.[0]?.id || null, false, 'text', null, 'whatsapp_cloud');
+        console.log(`✅ [Gympulse] Reenvio via template "${retry.template}" deu certo pra ${retry.telefone} (a tentativa em texto livre tinha falhado assíncrono).`);
+    } catch (e) {
+        console.log(`ℹ️ [Gympulse] Reenvio via template "${retry.template}" também falhou pra ${retry.telefone}: ${e.message}`);
     }
 }
 
@@ -2617,8 +2657,17 @@ app.post('/webhooks/gympulse-daily-report', async (req, res) => {
             if (!enviadoPelaCloudApi) {
                 try {
                     const resultado = await enviarMensagemWhatsappCloud(telefoneLimpo, mensagem, configWhatsappCloud);
-                    await registrarMensagemEnviada(telefoneLimpo, mensagem, nomeExibir, resultado?.messages?.[0]?.id || null, false, 'text', null, 'whatsapp_cloud');
+                    const wamid = resultado?.messages?.[0]?.id || null;
+                    await registrarMensagemEnviada(telefoneLimpo, mensagem, nomeExibir, wamid, false, 'text', null, 'whatsapp_cloud');
                     enviadoPelaCloudApi = true;
+                    // A Meta pode aceitar o texto livre agora e recusar a entrega de
+                    // verdade só depois (ack assíncrono, ver
+                    // processarStatusWhatsappCloud/tentarRetryTemplateGympulse) — só
+                    // agenda quando tem Template aplicável e ele ainda não foi
+                    // tentado (alunoFrio já teria tentado antes de chegar aqui).
+                    if (wamid && templateCandidato && !alunoFrio) {
+                        agendarRetryTemplateGympulse(wamid, { telefone: telefoneLimpo, template: templateCandidato.template, parametros: templateCandidato.parametros, mensagem, nomeExibir });
+                    }
                 } catch (e) {
                     console.log(`ℹ️ Gympulse: falha via texto livre pra ${telefoneLimpo} (${e.message}).`);
                     // Se já tentou o Template como aluno frio acima, não repete a
