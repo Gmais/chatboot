@@ -181,6 +181,20 @@ async function inscreverWebhookWabaWhatsappCloud(wabaId, accessToken) {
     });
 }
 
+// Consulta direto na Meta o status atual do número (não depende de nada que
+// a gente tenha salvo localmente) — usado pra confirmar se o Embedded
+// Signup com Coexistência realmente terminou do lado da Meta, já que o
+// evento FINISH_WHATSAPP_BUSINESS_APP_ONBOARDING acontece só no navegador
+// (a gente não tem log server-side de qual evento disparou).
+async function consultarStatusNumeroWhatsappCloud(phoneNumberId, accessToken) {
+    if (!phoneNumberId || !accessToken) throw new Error('phoneNumberId e accessToken são obrigatórios.');
+    return graphRequest('GET', phoneNumberId, {
+        version: EMBEDDED_SIGNUP_GRAPH_VERSION,
+        accessToken,
+        params: { fields: 'display_phone_number,verified_name,quality_rating,platform_type,code_verification_status,is_pin_enabled,messaging_limit_tier' },
+    });
+}
+
 module.exports = {
     enviarMensagemWhatsappCloud,
     enviarTemplateWhatsappCloud,
@@ -188,4 +202,5 @@ module.exports = {
     listarTemplatesWhatsappCloud,
     trocarCodigoPorAccessTokenWhatsappCloud,
     inscreverWebhookWabaWhatsappCloud,
+    consultarStatusNumeroWhatsappCloud,
 };

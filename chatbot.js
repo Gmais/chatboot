@@ -93,7 +93,7 @@ const OpenAI = require('openai');
 const moment = require('moment-timezone');
 const { buscarAlunoPorMatricula, buscarAlunoPorCodigo, obterParcelasEmAberto, obterContratosPorMatricula, criarCliente, matricularAluno, gerarLinkPagamentoPixSantander } = require('./pacto');
 const { enviarMensagemInstagram, obterNomeUsuarioInstagram, verificarAssinaturaWebhook } = require('./instagram');
-const { enviarMensagemWhatsappCloud, enviarTemplateWhatsappCloud, criarTemplateWhatsappCloud, listarTemplatesWhatsappCloud, trocarCodigoPorAccessTokenWhatsappCloud, inscreverWebhookWabaWhatsappCloud } = require('./whatsappCloudApi');
+const { enviarMensagemWhatsappCloud, enviarTemplateWhatsappCloud, criarTemplateWhatsappCloud, listarTemplatesWhatsappCloud, trocarCodigoPorAccessTokenWhatsappCloud, inscreverWebhookWabaWhatsappCloud, consultarStatusNumeroWhatsappCloud } = require('./whatsappCloudApi');
 const { buscarAgendaDoDia } = require('./agenda');
 
 // Descobre se um Template aprovado pela Meta REALMENTE tem um componente de
@@ -2330,6 +2330,7 @@ app.post('/whatsapp/exchange-token', cors(), async (req, res) => {
         const resultado = await trocarCodigoPorAccessTokenWhatsappCloud(code, process.env.WA_APP_SECRET);
         if (!resultado?.access_token) throw new Error('A Meta não retornou access_token.');
         await db.run('INSERT OR REPLACE INTO configuracoes (chave, valor) VALUES (?, ?)', ['whatsapp_cloud_access_token', resultado.access_token]);
+        console.log('✅ [Embedded Signup] Access token obtido e salvo.');
         res.json({ success: true, access_token: resultado.access_token });
     } catch (err) {
         console.error('🧨 [Embedded Signup] Erro ao trocar code por access token:', err.message);
@@ -2350,10 +2351,26 @@ app.post('/whatsapp/coex-assets', cors(), async (req, res) => {
         if (business_id) await db.run('INSERT OR REPLACE INTO configuracoes (chave, valor) VALUES (?, ?)', ['whatsapp_cloud_business_id', business_id]);
 
         await inscreverWebhookWabaWhatsappCloud(waba_id, accessToken);
+        console.log(`✅ [Embedded Signup] CoEx concluído — phone_number_id=${phone_number_id} waba_id=${waba_id}${business_id ? ` business_id=${business_id}` : ''}`);
         res.json({ success: true });
     } catch (err) {
         console.error('🧨 [Embedded Signup] Erro ao salvar assets do CoEx:', err.message);
         res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// Consulta ao vivo na Meta o status do número configurado — não depende de
+// nada salvo localmente. Criado pra responder com certeza "o CoEx está
+// ativo?" sem precisar confiar só em log (o evento que confirma o CoEx do
+// lado da Meta acontece no navegador do usuário, não chega aqui).
+app.get('/api/whatsapp-cloud/status', async (req, res) => {
+    try {
+        const { accessToken, phoneNumberId } = await obterConfigWhatsappCloud();
+        if (!accessToken || !phoneNumberId) return res.status(400).json({ error: 'WhatsApp Business API não configurado (falta access token ou phone_number_id).' });
+        const status = await consultarStatusNumeroWhatsappCloud(phoneNumberId, accessToken);
+        res.json(status);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
     }
 });
 
