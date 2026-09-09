@@ -15,8 +15,12 @@ const GRAPH_API_VERSION = 'v21.0';
 // a conexão e nunca responder, a chamada fica pendurada pra sempre.
 const GRAPH_REQUEST_TIMEOUT_MS = 20000;
 
-function graphRequest(method, path, { params, body, accessToken } = {}) {
-    const url = new URL(path, `https://graph.facebook.com/${GRAPH_API_VERSION}/`);
+// `version` é opcional (default GRAPH_API_VERSION) — usado pelo Embedded
+// Signup (ver trocarCodigoPorAccessTokenWhatsappCloud/inscreverWebhookWabaWhatsappCloud
+// abaixo), que precisa da v25.0 exigida por esse fluxo, sem mexer na versão
+// usada pelas chamadas já em produção.
+function graphRequest(method, path, { params, body, accessToken, version } = {}) {
+    const url = new URL(path, `https://graph.facebook.com/${version || GRAPH_API_VERSION}/`);
     Object.entries(params || {}).forEach(([key, value]) => url.searchParams.set(key, value));
     if (accessToken) url.searchParams.set('access_token', accessToken);
     const payload = body ? JSON.stringify(body) : null;
@@ -145,9 +149,43 @@ async function listarTemplatesWhatsappCloud({ accessToken, wabaId } = {}) {
     return resultado?.data || [];
 }
 
+// =====================================
+// EMBEDDED SIGNUP COM COEXISTÊNCIA (CoEx) — conecta o WhatsApp Business App
+// já usado no celular ao Cloud API sem desconectar ele (ver /signup e as
+// rotas /whatsapp/exchange-token e /whatsapp/coex-assets em chatbot.js).
+// App ID não é segredo (já vai exposto no HTML público do fluxo de login,
+// como qualquer client_id OAuth) — só o App Secret (WA_APP_SECRET, em
+// variável de ambiente) precisa ficar fora do código/banco.
+const EMBEDDED_SIGNUP_APP_ID = '1706771480627522';
+const EMBEDDED_SIGNUP_GRAPH_VERSION = 'v25.0';
+
+// O `code` devolvido pelo FB.login() expira em ~30s — quem chama precisa
+// repassar pra cá sem atrasos (nada de fila/retry aqui).
+async function trocarCodigoPorAccessTokenWhatsappCloud(code, appSecret) {
+    if (!appSecret) throw new Error('WA_APP_SECRET não configurado no ambiente.');
+    if (!code) throw new Error('code é obrigatório.');
+    return graphRequest('GET', 'oauth/access_token', {
+        version: EMBEDDED_SIGNUP_GRAPH_VERSION,
+        params: { client_id: EMBEDDED_SIGNUP_APP_ID, client_secret: appSecret, code },
+    });
+}
+
+// Sem isso, a WABA conectada via Embedded Signup não manda webhook nenhum
+// pro nosso endpoint (mensagem recebida, status de entrega) — a inscrição
+// não é automática só por ter feito o login.
+async function inscreverWebhookWabaWhatsappCloud(wabaId, accessToken) {
+    if (!wabaId || !accessToken) throw new Error('wabaId e accessToken são obrigatórios.');
+    return graphRequest('POST', `${wabaId}/subscribed_apps`, {
+        version: EMBEDDED_SIGNUP_GRAPH_VERSION,
+        accessToken,
+    });
+}
+
 module.exports = {
     enviarMensagemWhatsappCloud,
     enviarTemplateWhatsappCloud,
     criarTemplateWhatsappCloud,
     listarTemplatesWhatsappCloud,
+    trocarCodigoPorAccessTokenWhatsappCloud,
+    inscreverWebhookWabaWhatsappCloud,
 };

@@ -76,6 +76,7 @@ try {
 // =====================================
 require('dotenv').config();
 const express = require('express');
+const cors = require('cors');
 const http = require('http');
 const https = require('https');
 const pdfParse = require('pdf-parse');
@@ -92,7 +93,7 @@ const OpenAI = require('openai');
 const moment = require('moment-timezone');
 const { buscarAlunoPorMatricula, buscarAlunoPorCodigo, obterParcelasEmAberto, obterContratosPorMatricula, criarCliente, matricularAluno, gerarLinkPagamentoPixSantander } = require('./pacto');
 const { enviarMensagemInstagram, obterNomeUsuarioInstagram, verificarAssinaturaWebhook } = require('./instagram');
-const { enviarMensagemWhatsappCloud, enviarTemplateWhatsappCloud, criarTemplateWhatsappCloud, listarTemplatesWhatsappCloud } = require('./whatsappCloudApi');
+const { enviarMensagemWhatsappCloud, enviarTemplateWhatsappCloud, criarTemplateWhatsappCloud, listarTemplatesWhatsappCloud, trocarCodigoPorAccessTokenWhatsappCloud, inscreverWebhookWabaWhatsappCloud } = require('./whatsappCloudApi');
 const { buscarAgendaDoDia } = require('./agenda');
 
 // Descobre se um Template aprovado pela Meta REALMENTE tem um componente de
@@ -2291,6 +2292,55 @@ app.put('/api/whatsapp-cloud/config', async (req, res) => {
     if (app_secret !== undefined) await db.run('INSERT OR REPLACE INTO configuracoes (chave, valor) VALUES (?, ?)', ['whatsapp_cloud_app_secret', app_secret]);
     if (verify_token !== undefined) await db.run('INSERT OR REPLACE INTO configuracoes (chave, valor) VALUES (?, ?)', ['whatsapp_cloud_verify_token', verify_token]);
     res.json({ success: true });
+});
+
+// =====================================
+// EMBEDDED SIGNUP COM COEXISTÊNCIA (CoEx) — página /signup deixa a
+// recepção conectar o WhatsApp Business App (celular) ao Cloud API sem
+// desconectar o app do celular. As duas rotas abaixo são chamadas pelo
+// JS da própria página (public/embedded-signup.html) e gravam direto nas
+// MESMAS chaves de `configuracoes` que obterConfigWhatsappCloud() já lê
+// pra mandar mensagem pela API Oficial — terminar esse fluxo já deixa o
+// Cloud API funcionando, sem precisar preencher nada manualmente em
+// Configurações depois.
+app.get('/signup', (req, res) => {
+    res.sendFile(path.join(__dirname, 'public', 'embedded-signup.html'));
+});
+
+// O `code` do FB.login() expira em ~30s — por isso troca na hora, sem
+// nenhuma fila/retry no meio do caminho.
+app.post('/whatsapp/exchange-token', cors(), async (req, res) => {
+    try {
+        const { code } = req.body || {};
+        if (!code) return res.status(400).json({ success: false, error: 'code é obrigatório.' });
+        const resultado = await trocarCodigoPorAccessTokenWhatsappCloud(code, process.env.WA_APP_SECRET);
+        if (!resultado?.access_token) throw new Error('A Meta não retornou access_token.');
+        await db.run('INSERT OR REPLACE INTO configuracoes (chave, valor) VALUES (?, ?)', ['whatsapp_cloud_access_token', resultado.access_token]);
+        res.json({ success: true, access_token: resultado.access_token });
+    } catch (err) {
+        console.error('🧨 [Embedded Signup] Erro ao trocar code por access token:', err.message);
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+app.post('/whatsapp/coex-assets', cors(), async (req, res) => {
+    try {
+        const { phone_number_id, waba_id, business_id } = req.body || {};
+        if (!phone_number_id || !waba_id) return res.status(400).json({ success: false, error: 'phone_number_id e waba_id são obrigatórios.' });
+
+        const { accessToken } = await obterConfigWhatsappCloud();
+        if (!accessToken) return res.status(400).json({ success: false, error: 'Nenhum access token salvo ainda — chame /whatsapp/exchange-token antes.' });
+
+        await db.run('INSERT OR REPLACE INTO configuracoes (chave, valor) VALUES (?, ?)', ['whatsapp_cloud_phone_number_id', phone_number_id]);
+        await db.run('INSERT OR REPLACE INTO configuracoes (chave, valor) VALUES (?, ?)', ['whatsapp_cloud_waba_id', waba_id]);
+        if (business_id) await db.run('INSERT OR REPLACE INTO configuracoes (chave, valor) VALUES (?, ?)', ['whatsapp_cloud_business_id', business_id]);
+
+        await inscreverWebhookWabaWhatsappCloud(waba_id, accessToken);
+        res.json({ success: true });
+    } catch (err) {
+        console.error('🧨 [Embedded Signup] Erro ao salvar assets do CoEx:', err.message);
+        res.status(500).json({ success: false, error: err.message });
+    }
 });
 
 // Monitor exclusivo da API Oficial (tela "Monitor API Oficial") — mesma

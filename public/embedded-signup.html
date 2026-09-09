@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Conectar WhatsApp — Planeta Corpo Club</title>
+  <style>
+    body { font-family: -apple-system, sans-serif; max-width: 600px; margin: 4rem auto; padding: 2rem; text-align: center; background: #f8f9fa; color: #1a1a2e; }
+    h1 { font-size: 1.6rem; margin-bottom: 0.5rem; }
+    p { color: #555; line-height: 1.6; }
+    .btn-connect { background: #1877f2; color: #fff; border: none; border-radius: 8px; padding: 14px 32px; font-size: 16px; font-weight: 600; cursor: pointer; margin-top: 2rem; }
+    .btn-connect:hover { background: #166fe5; }
+    .status { margin-top: 2rem; padding: 1rem; border-radius: 8px; display: none; }
+    .status.success { display: block; background: #d4edda; color: #155724; }
+    .status.error { display: block; background: #f8d7da; color: #721c24; }
+    #log { text-align: left; margin-top: 2rem; font-size: 0.82rem; background: #f0f0f0; padding: 1rem; border-radius: 8px; max-height: 300px; overflow-y: auto; white-space: pre-wrap; font-family: monospace; }
+    .info { margin-top: 2rem; padding: 1rem; background: #e8f4fd; border-radius: 8px; font-size: 0.85rem; color: #1a5276; }
+  </style>
+</head>
+<body>
+  <h1>🔗 Conectar WhatsApp Business</h1>
+  <p>Conecte o número do <strong>Planeta Corpo Club</strong> ao Cloud API<br>mantendo o WhatsApp Business App ativo (Modo Coexistência)</p>
+  <div class="info">📱 Número: <strong>+55 42 99922-2857</strong></div>
+  <button class="btn-connect" onclick="launchWhatsAppSignup()">Conectar WhatsApp Business App</button>
+  <div id="statusBox" class="status"></div>
+  <div id="log">Aguardando ação...
+</div>
+  <script async defer crossorigin="anonymous" src="https://connect.facebook.net/pt_BR/sdk.js"></script>
+  <script>
+  const APP_ID = '1706771480627522';
+  const CONFIG_ID = '910843878424346';
+  const BACKEND_URL = 'https://chatboot-production-b349.up.railway.app';
+  const GRAPH_API_VERSION = 'v25.0';
+
+  window.fbAsyncInit = function() {
+    FB.init({ appId: APP_ID, autoLogAppEvents: true, xfbml: true, version: GRAPH_API_VERSION });
+    addLog('✅ Facebook SDK inicializado');
+  };
+
+  window.addEventListener('message', (event) => {
+    if (!event.origin.endsWith('facebook.com')) return;
+    try {
+      const data = JSON.parse(event.data);
+      if (data.type === 'WA_EMBEDDED_SIGNUP') {
+        addLog('📨 Evento: ' + data.event);
+        if (data.event === 'FINISH_WHATSAPP_BUSINESS_APP_ONBOARDING') {
+          showStatus('success', '✅ CoEx ativado! Phone ID: ' + data.data.phone_number_id);
+          sendToBackend('/whatsapp/coex-assets', { phone_number_id: data.data.phone_number_id, waba_id: data.data.waba_id, business_id: data.data.business_id });
+        } else if (data.event === 'FINISH') {
+          showStatus('success', '✅ Número registrado. Phone ID: ' + data.data.phone_number_id);
+        } else if (data.event === 'CANCEL') {
+          showStatus('error', '❌ Fluxo cancelado');
+        }
+      }
+    } catch {}
+  });
+
+  function launchWhatsAppSignup() {
+    addLog('🚀 Iniciando Embedded Signup...');
+    FB.login(function(response) {
+      if (response.authResponse) {
+        addLog('🔑 Código recebido (30s TTL), enviando...');
+        sendToBackend('/whatsapp/exchange-token', { code: response.authResponse.code })
+          .then(() => addLog('✅ Token obtido!'))
+          .catch(err => { addLog('❌ Erro: ' + err.message); showStatus('error', '❌ Erro ao trocar token'); });
+      } else { showStatus('error', '❌ Login cancelado'); }
+    }, { config_id: CONFIG_ID, response_type: 'code', override_default_response_type: true, extras: { setup: {} } });
+  }
+
+  async function sendToBackend(path, data) {
+    const res = await fetch(BACKEND_URL + path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    return res.json();
+  }
+  function showStatus(type, msg) { const b = document.getElementById('statusBox'); b.className = 'status ' + type; b.textContent = msg; }
+  function addLog(msg) { const l = document.getElementById('log'); l.textContent += '[' + new Date().toLocaleTimeString() + '] ' + msg + '\n'; l.scrollTop = l.scrollHeight; }
+  </script>
+</body>
+</html>
