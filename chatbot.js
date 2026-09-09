@@ -2268,18 +2268,32 @@ app.put('/api/instagram/config', async (req, res) => {
     res.json({ success: true });
 });
 
-// Config do WhatsApp Business Cloud API (token/ids/secret em texto puro) —
-// mesma separação de /api/instagram/config: a rota genérica /api/configuracoes
-// nunca devolve essas chaves.
+// Essa rota não tem autenticação nenhuma (nem essa nem o resto do painel) —
+// devolver access_token/app_secret em texto puro pra qualquer um que bater
+// nessa URL era um vazamento de credencial real (achado em 09/09, ver
+// [[project_whatsapp_coex_embedded_signup]]). Mascara mantendo só os
+// últimos 4 caracteres — dá pra reconhecer QUAL token está salvo (útil pra
+// conferir se bate com o que está no Meta) sem expor o valor de verdade. A
+// tela de Configurações (public/app.js) só reenvia esses dois campos no
+// Salvar quando o valor foi realmente editado, pra não sobrescrever o
+// token real pela versão mascarada por engano.
+function mascararSegredo(valor) {
+    if (!valor) return '';
+    if (valor.length <= 4) return '••••';
+    return '•'.repeat(Math.min(24, valor.length - 4)) + valor.slice(-4);
+}
+
+// Config do WhatsApp Business Cloud API — a rota genérica /api/configuracoes
+// nunca devolve essas chaves (mesma separação de /api/instagram/config).
 app.get('/api/whatsapp-cloud/config', async (req, res) => {
     const rows = await db.all("SELECT chave, valor FROM configuracoes WHERE chave LIKE 'whatsapp_cloud_%'");
     const config = {};
     rows.forEach(r => config[r.chave] = r.valor);
     res.json({
-        access_token: config.whatsapp_cloud_access_token || '',
+        access_token: mascararSegredo(config.whatsapp_cloud_access_token || ''),
         phone_number_id: config.whatsapp_cloud_phone_number_id || '',
         waba_id: config.whatsapp_cloud_waba_id || '',
-        app_secret: config.whatsapp_cloud_app_secret || '',
+        app_secret: mascararSegredo(config.whatsapp_cloud_app_secret || ''),
         verify_token: config.whatsapp_cloud_verify_token || '',
     });
 });

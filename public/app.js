@@ -1151,10 +1151,20 @@ async function loadWhatsappCloudConfig() {
         const res = await fetch('/api/whatsapp-cloud/config');
         const config = await res.json();
         if (whatsappCloudVerifyTokenInput) whatsappCloudVerifyTokenInput.value = config.verify_token || '';
-        if (whatsappCloudAccessTokenInput) whatsappCloudAccessTokenInput.value = config.access_token || '';
+        // access_token/app_secret vêm mascarados da API (só os últimos 4
+        // caracteres) — guarda o valor mascarado em dataset pra comparar no
+        // Salvar e não reenviar ele por engano como se fosse o token real
+        // (ver GET /api/whatsapp-cloud/config em chatbot.js).
+        if (whatsappCloudAccessTokenInput) {
+            whatsappCloudAccessTokenInput.value = config.access_token || '';
+            whatsappCloudAccessTokenInput.dataset.mascarado = config.access_token || '';
+        }
         if (whatsappCloudPhoneNumberIdInput) whatsappCloudPhoneNumberIdInput.value = config.phone_number_id || '';
         if (whatsappCloudWabaIdInput) whatsappCloudWabaIdInput.value = config.waba_id || '';
-        if (whatsappCloudAppSecretInput) whatsappCloudAppSecretInput.value = config.app_secret || '';
+        if (whatsappCloudAppSecretInput) {
+            whatsappCloudAppSecretInput.value = config.app_secret || '';
+            whatsappCloudAppSecretInput.dataset.mascarado = config.app_secret || '';
+        }
     } catch (e) {
         console.error('Erro ao carregar configuração do WhatsApp Business API', e);
     }
@@ -1162,17 +1172,27 @@ async function loadWhatsappCloudConfig() {
 
 btnWhatsappCloudConfigSalvar?.addEventListener('click', async () => {
     try {
+        const corpo = {
+            verify_token: whatsappCloudVerifyTokenInput?.value || '',
+            phone_number_id: whatsappCloudPhoneNumberIdInput?.value || '',
+            waba_id: whatsappCloudWabaIdInput?.value || '',
+        };
+        // Só manda access_token/app_secret se o campo foi de fato editado
+        // (valor diferente do mascarado que veio do GET) — senão o Salvar
+        // sobrescreveria o token real salvo no banco pela string mascarada
+        // ("••••••••1234") exibida no campo.
+        if (whatsappCloudAccessTokenInput && whatsappCloudAccessTokenInput.value !== whatsappCloudAccessTokenInput.dataset.mascarado) {
+            corpo.access_token = whatsappCloudAccessTokenInput.value || '';
+        }
+        if (whatsappCloudAppSecretInput && whatsappCloudAppSecretInput.value !== whatsappCloudAppSecretInput.dataset.mascarado) {
+            corpo.app_secret = whatsappCloudAppSecretInput.value || '';
+        }
         await fetch('/api/whatsapp-cloud/config', {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                verify_token: whatsappCloudVerifyTokenInput?.value || '',
-                access_token: whatsappCloudAccessTokenInput?.value || '',
-                phone_number_id: whatsappCloudPhoneNumberIdInput?.value || '',
-                waba_id: whatsappCloudWabaIdInput?.value || '',
-                app_secret: whatsappCloudAppSecretInput?.value || '',
-            }),
+            body: JSON.stringify(corpo),
         });
+        await loadWhatsappCloudConfig();
         showToast('WhatsApp Business salvo!', 'Configuração atualizada.', 'success', 3000);
     } catch (e) {
         showToast('Erro', 'Não foi possível salvar a configuração do WhatsApp Business.', 'error');
