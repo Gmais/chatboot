@@ -195,6 +195,22 @@ async function consultarStatusNumeroWhatsappCloud(phoneNumberId, accessToken) {
     });
 }
 
+// Lista TODOS os números já registrados na WABA (não só o que está salvo em
+// `configuracoes`) — usado pra checar se um número que passou pelo
+// Embedded Signup já apareceu do lado da Meta mesmo que o nosso backend
+// nunca tenha recebido o POST /whatsapp/coex-assets pra ele (o wabaId
+// salvo localmente já é o mesmo da conta, então dá pra listar mesmo sem o
+// phone_number_id do número novo).
+async function listarNumerosWabaWhatsappCloud(wabaId, accessToken) {
+    if (!wabaId || !accessToken) throw new Error('wabaId e accessToken são obrigatórios.');
+    const resultado = await graphRequest('GET', `${wabaId}/phone_numbers`, {
+        version: EMBEDDED_SIGNUP_GRAPH_VERSION,
+        accessToken,
+        params: { fields: 'id,display_phone_number,verified_name,quality_rating,platform_type,code_verification_status' },
+    });
+    return resultado?.data || [];
+}
+
 module.exports = {
     enviarMensagemWhatsappCloud,
     enviarTemplateWhatsappCloud,
@@ -203,4 +219,5 @@ module.exports = {
     trocarCodigoPorAccessTokenWhatsappCloud,
     inscreverWebhookWabaWhatsappCloud,
     consultarStatusNumeroWhatsappCloud,
+    listarNumerosWabaWhatsappCloud,
 };

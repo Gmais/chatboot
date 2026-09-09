@@ -93,7 +93,7 @@ const OpenAI = require('openai');
 const moment = require('moment-timezone');
 const { buscarAlunoPorMatricula, buscarAlunoPorCodigo, obterParcelasEmAberto, obterContratosPorMatricula, criarCliente, matricularAluno, gerarLinkPagamentoPixSantander } = require('./pacto');
 const { enviarMensagemInstagram, obterNomeUsuarioInstagram, verificarAssinaturaWebhook } = require('./instagram');
-const { enviarMensagemWhatsappCloud, enviarTemplateWhatsappCloud, criarTemplateWhatsappCloud, listarTemplatesWhatsappCloud, trocarCodigoPorAccessTokenWhatsappCloud, inscreverWebhookWabaWhatsappCloud, consultarStatusNumeroWhatsappCloud } = require('./whatsappCloudApi');
+const { enviarMensagemWhatsappCloud, enviarTemplateWhatsappCloud, criarTemplateWhatsappCloud, listarTemplatesWhatsappCloud, trocarCodigoPorAccessTokenWhatsappCloud, inscreverWebhookWabaWhatsappCloud, consultarStatusNumeroWhatsappCloud, listarNumerosWabaWhatsappCloud } = require('./whatsappCloudApi');
 const { buscarAgendaDoDia } = require('./agenda');
 
 // Descobre se um Template aprovado pela Meta REALMENTE tem um componente de
@@ -2369,6 +2369,20 @@ app.get('/api/whatsapp-cloud/status', async (req, res) => {
         if (!accessToken || !phoneNumberId) return res.status(400).json({ error: 'WhatsApp Business API não configurado (falta access token ou phone_number_id).' });
         const status = await consultarStatusNumeroWhatsappCloud(phoneNumberId, accessToken);
         res.json(status);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Lista todos os números da WABA — dá pra ver se um número já apareceu do
+// lado da Meta (ex: após um Embedded Signup) mesmo sem o phone_number_id
+// dele estar salvo em `configuracoes` ainda.
+app.get('/api/whatsapp-cloud/numeros', async (req, res) => {
+    try {
+        const { accessToken, wabaId } = await obterConfigWhatsappCloud();
+        if (!accessToken || !wabaId) return res.status(400).json({ error: 'WhatsApp Business API não configurado (falta access token ou waba_id).' });
+        const numeros = await listarNumerosWabaWhatsappCloud(wabaId, accessToken);
+        res.json(numeros);
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
