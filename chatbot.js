@@ -2000,8 +2000,12 @@ async function processarStatusWhatsappCloud(status) {
 // sem loop de retry.
 async function tentarRetryTemplateGympulse(wamid) {
     const retry = gympulseRetryTemplatePorWamid.get(wamid);
-    if (!retry) return;
+    if (!retry) {
+        console.log(`ℹ️ [Gympulse] Falha assíncrona sem retry agendado pra wamid=${wamid} (não era um resumo do Gympulse com Template aplicável, ou o TTL de 6h já expirou).`);
+        return;
+    }
     gympulseRetryTemplatePorWamid.delete(wamid);
+    console.log(`🔁 [Gympulse] Disparando retry via template "${retry.template}" pra ${retry.telefone} (wamid original=${wamid}).`);
     try {
         const config = await obterConfigWhatsappCloud();
         const resultado = await enviarTemplateWhatsappCloud(retry.telefone, retry.template, retry.parametros, config);
@@ -2667,6 +2671,9 @@ app.post('/webhooks/gympulse-daily-report', async (req, res) => {
                     // tentado (alunoFrio já teria tentado antes de chegar aqui).
                     if (wamid && templateCandidato && !alunoFrio) {
                         agendarRetryTemplateGympulse(wamid, { telefone: telefoneLimpo, template: templateCandidato.template, parametros: templateCandidato.parametros, mensagem, nomeExibir });
+                        console.log(`🔁 [Gympulse] Retry via template "${templateCandidato.template}" agendado pra ${telefoneLimpo} (wamid=${wamid}), caso a entrega em texto livre falhe assíncrono.`);
+                    } else {
+                        console.log(`ℹ️ [Gympulse] Sem retry agendado pra ${telefoneLimpo} (wamid=${wamid || 'sem wamid'}) — templateCandidato=${templateCandidato?.template || 'nenhum'}, alunoFrio=${alunoFrio}.`);
                     }
                 } catch (e) {
                     console.log(`ℹ️ Gympulse: falha via texto livre pra ${telefoneLimpo} (${e.message}).`);
