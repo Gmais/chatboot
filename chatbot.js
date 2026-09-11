@@ -2624,14 +2624,19 @@ app.post('/webhooks/gympulse-daily-report', async (req, res) => {
         // resumo_treino_diario/resumo_treino_semanal, aprovados pela Meta em
         // 06/09 (estavam pendentes quando os de engajamento acima foram
         // conferidos). Cobre exatamente cabeçalho fixo + bloco de stats — não
-        // suporta a lista de zonas de frequência (tamanho variável), por isso
-        // só entra quando não tem zoneData. O texto fixo do Template
-        // ("Continue assim! 🎉") pode diferir um pouco do cabeçalho/rodapé
-        // customizado dessa academia — aceitável só quando é a alternativa a
-        // não entregar nada (aluno frio ou texto livre já tendo falhado).
-        const templateResumoTreino = (!Array.isArray(zoneData) || zoneData.length === 0)
-            ? { template: period === 'semana' ? 'resumo_treino_semanal' : 'resumo_treino_diario', parametros: [primeiroNome, String(totalCalories ?? '-'), String(totalPoints ?? '-'), String(totalDurationMin ?? '-')] }
-            : null;
+        // suporta a lista de zonas de frequência (tamanho variável), então
+        // quando tem zoneData ele já sai incompleto (sem as zonas) — mas
+        // continua sendo o candidato usado como fallback/retry. Sem isso,
+        // resumo de cárdio (que É o caso mais comum de zoneData) nunca tinha
+        // Template pra recorrer e ficava sem NENHUM caminho de recuperação
+        // quando a Meta aceitava o texto livre na hora mas recusava a entrega
+        // depois (incidente real, recorrente 05 a 11/09: Marli, Ilani — log
+        // "templateCandidato=nenhum" confirmou essa causa). O texto fixo do
+        // Template ("Continue assim! 🎉") pode diferir um pouco do
+        // cabeçalho/rodapé customizado dessa academia — aceitável só quando é
+        // a alternativa a não entregar nada (aluno frio ou texto livre já
+        // tendo falhado).
+        const templateResumoTreino = { template: period === 'semana' ? 'resumo_treino_semanal' : 'resumo_treino_diario', parametros: [primeiroNome, String(totalCalories ?? '-'), String(totalPoints ?? '-'), String(totalDurationMin ?? '-')] };
         const templateCandidato = templateEngajamento
             ? { template: templateEngajamento.template, parametros: templateEngajamento.varKey ? [primeiroNome, String(vars?.[templateEngajamento.varKey] ?? '')] : [primeiroNome] }
             : templateResumoTreino;
