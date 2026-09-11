@@ -4042,6 +4042,23 @@ const CM = (() => {
         }
     }
 
+    // ---- Filtra e ordena os contatos de uma aba (Abertas/Fechadas) ----
+    // Extraído de renderContactList pra dar pra descobrir "qual é a próxima
+    // conversa da lista" antes de finalizar a atual (ver btnChatResolver).
+    function getFilteredContacts(tab) {
+        // Abertas/Fechadas são mutuamente exclusivas pelo status — assumida
+        // por humano ou não, enquanto não estiver finalizada ela é "Abertas".
+        return [...contacts.values()].filter(c => {
+            const status = c.status || 'aberta';
+            const aba = status === 'fechada' ? 'fechada' : 'aberta';
+            if (aba !== tab) return false;
+            if (!searchQuery) return true;
+            const q = searchQuery.toLowerCase();
+            const bateEtiqueta = (c.etiquetas || []).some(e => e.nome.toLowerCase().includes(q));
+            return c.nome.toLowerCase().includes(q) || c.telefone.includes(q) || bateEtiqueta;
+        }).sort((a, b) => new Date(b.ultimo_ts) - new Date(a.ultimo_ts));
+    }
+
     // ---- Renderiza a lista de contatos ----
     function renderContactList() {
         if (!contactList) return;
@@ -4049,18 +4066,7 @@ const CM = (() => {
         const existing = contactList.querySelectorAll('.chat-contact-item');
         existing.forEach(el => el.remove());
 
-        // Filtra e ordena: por data decrescente. Abertas/Fechadas são
-        // mutuamente exclusivas pelo status — assumida por humano ou não,
-        // enquanto não estiver finalizada ela é "Abertas".
-        const filtered = [...contacts.values()].filter(c => {
-            const status = c.status || 'aberta';
-            const aba = status === 'fechada' ? 'fechada' : 'aberta';
-            if (aba !== activeTab) return false;
-            if (!searchQuery) return true;
-            const q = searchQuery.toLowerCase();
-            const bateEtiqueta = (c.etiquetas || []).some(e => e.nome.toLowerCase().includes(q));
-            return c.nome.toLowerCase().includes(q) || c.telefone.includes(q) || bateEtiqueta;
-        }).sort((a, b) => new Date(b.ultimo_ts) - new Date(a.ultimo_ts));
+        const filtered = getFilteredContacts(activeTab);
 
         if (filtered.length === 0) {
             if (chatEmpty) {
@@ -4178,14 +4184,32 @@ const CM = (() => {
     // ---- Resolver (fechar) a conversa ativa ----
     btnChatResolver?.addEventListener('click', async () => {
         if (!activePhone) return;
+        const telefoneFinalizado = activePhone;
+        // Descobre a próxima conversa da lista ANTES de finalizar (finalizar
+        // tira a atual da aba corrente) — pedido do usuário pra não ficar
+        // "grudado" na conversa que acabou de finalizar, igual Gmail arquivar
+        // e já ir pra próxima.
+        const listaAtual = getFilteredContacts(activeTab);
+        const idx = listaAtual.findIndex(c => c.telefone === telefoneFinalizado);
+        const proximo = idx >= 0 ? (listaAtual[idx + 1] || listaAtual[idx - 1]) : null;
         try {
-            await fetch(`/api/conversas/${encodeURIComponent(activePhone)}/status`, {
+            await fetch(`/api/conversas/${encodeURIComponent(telefoneFinalizado)}/status`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ status: 'fechada' })
             });
-            upsertContact({ telefone: activePhone, status: 'fechada' });
-            renderContactList();
+            upsertContact({ telefone: telefoneFinalizado, status: 'fechada' });
+            if (proximo) {
+                await openChat(proximo.telefone);
+            } else {
+                activePhone = null;
+                document.querySelector('.chat-layout')?.classList.remove('mobile-chat-open');
+                if (chatHeader) chatHeader.style.display = 'none';
+                if (chatMessages) chatMessages.style.display = 'none';
+                if (chatInputBar) chatInputBar.style.display = 'none';
+                if (chatPlaceholder) chatPlaceholder.style.display = 'flex';
+                renderContactList();
+            }
             showToast('Conversa finalizada', 'Ela volta pra aba Abertas automaticamente se o cliente escrever de novo.', 'success', 3000);
         } catch (e) {
             showToast('Erro', 'Não foi possível finalizar a conversa', 'error');
