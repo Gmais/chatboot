@@ -1482,6 +1482,15 @@ Sempre tente agendar uma aula experimental."></textarea>
                         <input type="password" id="whatsapp-cloud-app-secret" placeholder="Configurações Básicas do App na Meta" style="width:100%;background:var(--input-bg);border:1px solid rgba(255,255,255,0.1);border-radius:var(--radius-sm);padding:.6rem .8rem;color:var(--text-1);font-family:'Inter',sans-serif">
                     </div>
                     <button class="btn-primary" id="btn-whatsapp-cloud-config-salvar" style="padding:.6rem 1.1rem;font-size:.85rem">💾 Salvar</button>
+
+                    <div style="margin-top:1.4rem;padding-top:1.1rem;border-top:1px solid rgba(255,255,255,0.08)">
+                        <h4 style="margin-bottom:.3rem">📱 Coexistência (WhatsApp Business App do celular)</h4>
+                        <p style="color:var(--text-3);font-size:.8rem;margin-bottom:.8rem">Quando ativa, as conversas do número conectado por Coexistência aparecem no Bate Papo e as respostas saem por esse mesmo número (o robô não responde nele — é o WhatsApp da recepção). Desativada, o BotPro ignora esse número; o app do celular continua funcionando normal.</p>
+                        <div style="display:flex;align-items:center;gap:1rem;flex-wrap:wrap">
+                            <span id="coex-status" style="font-size:.85rem;color:var(--text-2)">Carregando...</span>
+                            <button type="button" class="btn-primary" id="btn-coex-toggle" style="padding:.5rem 1rem;font-size:.85rem" disabled>...</button>
+                        </div>
+                    </div>
                 </div>
 
                 <div class="card glass">

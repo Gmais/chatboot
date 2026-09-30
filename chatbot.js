@@ -1022,6 +1022,18 @@ async function initDB() {
             processado_em DATETIME DEFAULT CURRENT_TIMESTAMP
         )`);
     } catch (e) { console.error('Erro ao criar tabela de dedup do WhatsApp Business API:', e.message); }
+    // Por qual número da API Oficial (phone_number_id) cada contato falou por
+    // último — com a Coexistência ativa chegam webhooks de DOIS números (o
+    // 8411 configurado e o do WhatsApp Business App do celular), e a resposta
+    // precisa sair pelo mesmo número, senão a Meta recusa com "Re-engagement
+    // message" (o contato nunca falou com o outro número, sem janela de 24h).
+    try {
+        await db.exec(`CREATE TABLE IF NOT EXISTS whatsapp_cloud_rota (
+            telefone TEXT PRIMARY KEY,
+            phone_number_id TEXT NOT NULL,
+            atualizado_em DATETIME DEFAULT CURRENT_TIMESTAMP
+        )`);
+    } catch (e) { console.error('Erro ao criar tabela de rota do WhatsApp Business API:', e.message); }
 
     // Semeia as programações automáticas que antes eram horários fixos no
     // código (Situação Financeira às 06:05, dias úteis) — agora editável em
@@ -1853,6 +1865,44 @@ async function obterConfigWhatsappCloud() {
     };
 }
 
+// Coexistência (WhatsApp Business App do celular + Cloud API no mesmo número).
+// O phone_number_id do número em CoEx é aprendido sozinho pelo webhook (ver
+// processarWebhookWhatsappCloud) — é qualquer número que mande evento e não
+// seja o whatsapp_cloud_phone_number_id principal. Ativa por padrão.
+async function obterConfigCoex() {
+    const rows = await db.all("SELECT chave, valor FROM configuracoes WHERE chave LIKE 'whatsapp_coex_%'");
+    const config = {};
+    rows.forEach(r => config[r.chave] = r.valor);
+    return {
+        ativa: config.whatsapp_coex_ativa !== '0',
+        phoneNumberId: config.whatsapp_coex_phone_number_id || null,
+        displayPhoneNumber: config.whatsapp_coex_display_phone_number || null,
+    };
+}
+
+// Config de envio pra UM contato: sai pelo mesmo número por onde ele falou
+// por último (whatsapp_cloud_rota). Sem isso, resposta pra contato que
+// chegou pelo número em Coexistência saía pelo número principal e a Meta
+// recusava ("Re-engagement message"). Com a Coexistência desligada, volta
+// sempre pro principal.
+async function obterConfigWhatsappCloudPara(telefone) {
+    const config = await obterConfigWhatsappCloud();
+    const rota = await db.get('SELECT phone_number_id FROM whatsapp_cloud_rota WHERE telefone = ?', telefone);
+    if (!rota || rota.phone_number_id === config.phoneNumberId) return config;
+    const coex = await obterConfigCoex();
+    if (!coex.ativa) return config;
+    return { ...config, phoneNumberId: rota.phone_number_id };
+}
+
+async function registrarRotaWhatsappCloud(telefone, phoneNumberId) {
+    if (!telefone || !phoneNumberId) return;
+    await db.run(
+        `INSERT INTO whatsapp_cloud_rota (telefone, phone_number_id, atualizado_em) VALUES (?, ?, CURRENT_TIMESTAMP)
+         ON CONFLICT(telefone) DO UPDATE SET phone_number_id = excluded.phone_number_id, atualizado_em = CURRENT_TIMESTAMP`,
+        [telefone, phoneNumberId]
+    );
+}
+
 // Devolve a config da API Oficial só se o checkbox "Habilitar a API como Bate
 // Papo" estiver ligado E o Token/Phone Number ID estiverem preenchidos —
 // null nos dois casos (usado como "pode usar de rede de segurança?" pelo
@@ -2018,12 +2068,38 @@ async function tentarRetryTemplateGympulse(wamid) {
 
 async function processarWebhookWhatsappCloud(payload) {
     if (payload?.object !== 'whatsapp_business_account') return;
+    const { phoneNumberId: phoneNumberIdPrincipal } = await obterConfigWhatsappCloud();
     for (const entry of payload.entry || []) {
         for (const change of entry.changes || []) {
             const valor = change.value;
+            // Qual número nosso recebeu/mandou esse evento. Qualquer um
+            // diferente do principal é o número em Coexistência (a WABA dele
+            // também está inscrita no webhook do app) — guarda o id sozinho
+            // pra tela de Configurações e pro envio sair pelo número certo.
+            const phoneNumberIdDestino = valor?.metadata?.phone_number_id || null;
+            const viaCoex = !!(phoneNumberIdDestino && phoneNumberIdPrincipal && phoneNumberIdDestino !== phoneNumberIdPrincipal);
+            if (viaCoex) {
+                const coex = await obterConfigCoex();
+                if (coex.phoneNumberId !== phoneNumberIdDestino) {
+                    await db.run('INSERT OR REPLACE INTO configuracoes (chave, valor) VALUES (?, ?)', ['whatsapp_coex_phone_number_id', phoneNumberIdDestino]);
+                    console.log(`📱 Coexistência: número detectado pelo webhook — phone_number_id=${phoneNumberIdDestino} (${valor?.metadata?.display_phone_number || '?'})`);
+                }
+                if (valor?.metadata?.display_phone_number && coex.displayPhoneNumber !== valor.metadata.display_phone_number) {
+                    await db.run('INSERT OR REPLACE INTO configuracoes (chave, valor) VALUES (?, ?)', ['whatsapp_coex_display_phone_number', valor.metadata.display_phone_number]);
+                }
+                // Desligada no botão de Configurações: ignora mensagens e ecos
+                // desse número (nem Bate Papo, nem robô). Status de entrega
+                // continua sendo processado — é só ack de algo que já saiu.
+                if (!coex.ativa) {
+                    for (const status of valor?.statuses || []) {
+                        try { await processarStatusWhatsappCloud(status); } catch (e) { console.error('Erro ao processar status de entrega do WhatsApp Business API:', e.message); }
+                    }
+                    continue;
+                }
+            }
             for (const mensagem of valor?.messages || []) {
                 try {
-                    await processarMensagemWhatsappCloud(mensagem, valor);
+                    await processarMensagemWhatsappCloud(mensagem, valor, { phoneNumberIdDestino, viaCoex });
                 } catch (e) {
                     console.error('Erro ao processar mensagem do WhatsApp Business API:', e.message);
                 }
@@ -2043,7 +2119,7 @@ async function processarWebhookWhatsappCloud(payload) {
             // respondido.
             for (const echo of valor?.message_echoes || []) {
                 try {
-                    await processarEchoWhatsappCloud(echo);
+                    await processarEchoWhatsappCloud(echo, phoneNumberIdDestino);
                 } catch (e) {
                     console.error('Erro ao processar eco do WhatsApp Business App (coexistência):', e.message);
                 }
@@ -2052,8 +2128,8 @@ async function processarWebhookWhatsappCloud(payload) {
     }
 }
 
-async function processarEchoWhatsappCloud(echo) {
-    const numLimpo = echo?.to;
+async function processarEchoWhatsappCloud(echo, phoneNumberIdDestino) {
+    const numLimpo = normalizarTelefoneBR(echo?.to);
     const wamid = echo?.id;
     if (!numLimpo || !wamid) return;
 
@@ -2071,6 +2147,7 @@ async function processarEchoWhatsappCloud(echo) {
     const texto = echo.text?.body;
     if (!texto) return;
 
+    await registrarRotaWhatsappCloud(numLimpo, phoneNumberIdDestino);
     const nomeContato = await resolverNomeContato(numLimpo);
     await registrarMensagemEnviada(numLimpo, texto, nomeContato, wamid, true, 'text', null, 'whatsapp_cloud');
     console.log(`📱 Coexistência: mensagem enviada pelo WhatsApp Business App do celular pra ${numLimpo} — sincronizada no Bate Papo.`);
@@ -2081,7 +2158,7 @@ async function processarEchoWhatsappCloud(echo) {
 // Diferença: o nome do contato já vem no próprio payload do webhook
 // (value.contacts[].profile.name) — não precisa de uma chamada extra à API
 // como obterNomeUsuarioInstagram faz pro Instagram.
-async function processarMensagemWhatsappCloud(mensagem, valor) {
+async function processarMensagemWhatsappCloud(mensagem, valor, { phoneNumberIdDestino = null, viaCoex = false } = {}) {
     // mensagem.from já vem em E.164 sem "+" (ex: "5542999998888"), mas a Meta
     // às vezes reporta o remetente SEM o 9º dígito do celular — normaliza
     // antes de usar, senão vira uma conversa nova e separada da que a
@@ -2096,6 +2173,7 @@ async function processarMensagemWhatsappCloud(mensagem, valor) {
     const jaProcessado = await db.get('SELECT 1 FROM whatsapp_cloud_mensagens_processadas WHERE wamid = ?', wamid);
     if (jaProcessado) return; // reentrega do mesmo evento — Meta não garante entrega única
     await db.run('INSERT OR IGNORE INTO whatsapp_cloud_mensagens_processadas (wamid) VALUES (?)', wamid);
+    await registrarRotaWhatsappCloud(numLimpo, phoneNumberIdDestino);
 
     // Só texto nessa 1ª versão — mesma limitação que o Instagram já tem hoje.
     if (mensagem.type !== 'text') {
@@ -2111,6 +2189,11 @@ async function processarMensagemWhatsappCloud(mensagem, valor) {
     registerLead(numLimpo, 'whatsapp_cloud').catch(e => console.error('Erro ao registrar lead do WhatsApp Business API:', e.message));
     await salvarNaConversa(numLimpo, nomeContato, 'in', texto, 'text', null, false, null, 'whatsapp_cloud');
     io.emit('message_in', { from: numLimpo, nome: nomeContato, text: texto, ts: Date.now() });
+
+    // Número em Coexistência é o WhatsApp da recepção (app do celular) — a
+    // conversa só aparece no Bate Papo pra ser respondida por gente, o robô
+    // não responde por cima da recepcionista.
+    if (viaCoex) return;
 
     const assumidaPorHumano = await db.get('SELECT 1 FROM conversas_humano WHERE telefone = ?', numLimpo);
     if (assumidaPorHumano) return;
@@ -2350,6 +2433,29 @@ app.put('/api/whatsapp-cloud/config', async (req, res) => {
     if (app_secret !== undefined) await db.run('INSERT OR REPLACE INTO configuracoes (chave, valor) VALUES (?, ?)', ['whatsapp_cloud_app_secret', app_secret]);
     if (verify_token !== undefined) await db.run('INSERT OR REPLACE INTO configuracoes (chave, valor) VALUES (?, ?)', ['whatsapp_cloud_verify_token', verify_token]);
     res.json({ success: true });
+});
+
+// Botão "Ativar/Desativar Coexistência" (Configurações → WhatsApp Business).
+// Desligar não mexe em nada na Meta (o app do celular continua funcionando
+// normal) — só faz o BotPro ignorar as mensagens do número em Coexistência e
+// responder tudo pelo número principal.
+app.get('/api/whatsapp-cloud/coex', async (req, res) => {
+    try {
+        const coex = await obterConfigCoex();
+        const contatos = coex.phoneNumberId
+            ? (await db.get('SELECT COUNT(*) AS c FROM whatsapp_cloud_rota WHERE phone_number_id = ?', coex.phoneNumberId)).c
+            : 0;
+        res.json({ ativa: coex.ativa, phone_number_id: coex.phoneNumberId, display_phone_number: coex.displayPhoneNumber, contatos });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.put('/api/whatsapp-cloud/coex', async (req, res) => {
+    const ativa = !!req.body?.ativa;
+    await db.run('INSERT OR REPLACE INTO configuracoes (chave, valor) VALUES (?, ?)', ['whatsapp_coex_ativa', ativa ? '1' : '0']);
+    console.log(`📱 Coexistência ${ativa ? 'ATIVADA' : 'DESATIVADA'} pela tela de Configurações.`);
+    res.json({ success: true, ativa });
 });
 
 // =====================================
@@ -5936,7 +6042,7 @@ app.post('/api/conversas/:telefone/enviar', async (req, res) => {
                 resultado = await enviarMensagemInstagram(telefone, textoFinal, pageAccessToken);
                 msgId = resultado?.message_id || null;
             } else {
-                const configWhatsappCloud = await obterConfigWhatsappCloud();
+                const configWhatsappCloud = await obterConfigWhatsappCloudPara(telefone);
                 resultado = await enviarMensagemWhatsappCloud(telefone, textoFinal, configWhatsappCloud);
                 msgId = resultado?.messages?.[0]?.id || null;
             }
@@ -9903,7 +10009,7 @@ async function enviarRespostaCanal(canal, msg, telefoneReal, conteudo, opcoes = 
             return null;
         }
         try {
-            const configWhatsappCloud = await obterConfigWhatsappCloud();
+            const configWhatsappCloud = await obterConfigWhatsappCloudPara(telefoneReal);
             const resultado = await enviarMensagemWhatsappCloud(telefoneReal, conteudo, configWhatsappCloud);
             console.log('✅ Resposta entregue via WhatsApp Business API.');
             return { id: { _serialized: resultado?.messages?.[0]?.id || null } };

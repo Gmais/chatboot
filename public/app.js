@@ -1168,7 +1168,43 @@ async function loadWhatsappCloudConfig() {
     } catch (e) {
         console.error('Erro ao carregar configuração do WhatsApp Business API', e);
     }
+    loadCoexConfig();
 }
+
+// Botão liga/desliga da Coexistência (ver GET/PUT /api/whatsapp-cloud/coex).
+const coexStatusSpan = document.getElementById('coex-status');
+const btnCoexToggle = document.getElementById('btn-coex-toggle');
+let coexAtiva = true;
+
+async function loadCoexConfig() {
+    if (!coexStatusSpan || !btnCoexToggle) return;
+    try {
+        const res = await fetch('/api/whatsapp-cloud/coex');
+        const coex = await res.json();
+        coexAtiva = !!coex.ativa;
+        const numero = coex.display_phone_number || (coex.phone_number_id ? `ID ${coex.phone_number_id}` : 'nenhum número detectado ainda');
+        coexStatusSpan.innerHTML = `${coexAtiva ? '🟢 Ativa' : '🔴 Desativada'} — ${numero}${coex.contatos ? ` · ${coex.contatos} contato(s)` : ''}`;
+        btnCoexToggle.textContent = coexAtiva ? '⏸️ Desativar Coexistência' : '▶️ Ativar Coexistência';
+        btnCoexToggle.disabled = false;
+    } catch (e) {
+        coexStatusSpan.textContent = 'Erro ao carregar status da Coexistência.';
+    }
+}
+
+btnCoexToggle?.addEventListener('click', async () => {
+    btnCoexToggle.disabled = true;
+    try {
+        await fetch('/api/whatsapp-cloud/coex', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ativa: !coexAtiva }),
+        });
+        showToast(!coexAtiva ? 'Coexistência ativada' : 'Coexistência desativada', '', 'success', 3000);
+    } catch (e) {
+        showToast('Erro', 'Não foi possível alterar a Coexistência.', 'error');
+    }
+    await loadCoexConfig();
+});
 
 btnWhatsappCloudConfigSalvar?.addEventListener('click', async () => {
     try {
