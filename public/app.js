@@ -140,9 +140,19 @@ socket.on('loading', (msg) => {
 // Pareamento via QR desabilitado temporariamente (08/09) — só a API Oficial
 // fica ativa. Sem isso, o painel ficava preso mostrando "Iniciando
 // conexão..." pra sempre, parecendo travado em vez de uma escolha deliberada.
+// O texto muda conforme a Coexistência (ver coexAtiva/loadCoexConfig mais
+// abaixo) — com ela ativa, o WhatsApp Business do celular também responde
+// junto com a API Oficial, então o selo deixa isso claro.
 socket.on('principal_desativado', () => {
-    if (qrContainer) qrContainer.innerHTML = `<span style="color:#666;font-size:.85rem">🚫 Pareamento via QR desativado — usando só a API Oficial</span>`;
-    if (statusText) { statusText.textContent = 'Só API Oficial'; statusText.style.color = 'var(--text-3)'; }
+    if (qrContainer) {
+        qrContainer.innerHTML = coexAtiva
+            ? `<span style="color:#666;font-size:.85rem">🚫 Pareamento via QR desativado — usando API Oficial + Coexistência</span>`
+            : `<span style="color:#666;font-size:.85rem">🚫 Pareamento via QR desativado — usando só a API Oficial</span>`;
+    }
+    if (statusText) {
+        statusText.textContent = coexAtiva ? 'API Oficial + Coexistência' : 'Só API Oficial';
+        statusText.style.color = 'var(--text-3)';
+    }
     setBadge('desativado');
     if (pairingSection) pairingSection.style.display = 'none';
 });
@@ -259,7 +269,15 @@ btnPairing?.addEventListener('click', async () => {
     }
 });
 
+// Guarda o último estado pedido pra dar pra "redesenhar" o selo quando a
+// Coexistência termina de carregar (loadCoexConfig é assíncrono e pode
+// responder depois do socket já ter mandado 'principal_desativado') — sem
+// isso, o selo podia ficar com o texto errado até o próximo evento do
+// socket, que às vezes demora.
+let currentBadgeState = 'loading';
+
 function setBadge(state) {
+    currentBadgeState = state;
     if (!statusBadge) return;
     const states = {
         loading:      { text: '● Iniciando...', cls: '', dot: '', label: 'Iniciando...' },
@@ -267,7 +285,12 @@ function setBadge(state) {
         online:       { text: '● Conectado', cls: 'connected', dot: 'online', label: 'Online' },
         offline:      { text: '● Desconectado', cls: 'disconnected', dot: 'offline', label: 'Offline' },
         reconectando: { text: '🔄 Reconectando...', cls: '', dot: '', label: 'Reconectando ao servidor...' },
-        desativado:   { text: '🚫 Só API Oficial', cls: '', dot: 'offline', label: 'Principal desativado' },
+        // Com Coexistência ativa, o WhatsApp Business do celular também
+        // responde junto com a API Oficial — o selo mostra os dois nomes
+        // nesse caso em vez de só "API Oficial".
+        desativado: coexAtiva
+            ? { text: '🚫 API Oficial + Coexistência', cls: '', dot: 'offline', label: 'API Oficial + Coexistência' }
+            : { text: '🚫 Só API Oficial', cls: '', dot: 'offline', label: 'Principal desativado (Só API Oficial)' },
     };
     const s = states[state] || states.loading;
     statusBadge.textContent = s.text;
@@ -1177,19 +1200,29 @@ const btnCoexToggle = document.getElementById('btn-coex-toggle');
 let coexAtiva = true;
 
 async function loadCoexConfig() {
-    if (!coexStatusSpan || !btnCoexToggle) return;
     try {
         const res = await fetch('/api/whatsapp-cloud/coex');
         const coex = await res.json();
         coexAtiva = !!coex.ativa;
-        const numero = coex.display_phone_number || (coex.phone_number_id ? `ID ${coex.phone_number_id}` : 'nenhum número detectado ainda');
-        coexStatusSpan.innerHTML = `${coexAtiva ? '🟢 Ativa' : '🔴 Desativada'} — ${numero}${coex.contatos ? ` · ${coex.contatos} contato(s)` : ''}`;
-        btnCoexToggle.textContent = coexAtiva ? '⏸️ Desativar Coexistência' : '▶️ Ativar Coexistência';
-        btnCoexToggle.disabled = false;
+        if (coexStatusSpan && btnCoexToggle) {
+            const numero = coex.display_phone_number || (coex.phone_number_id ? `ID ${coex.phone_number_id}` : 'nenhum número detectado ainda');
+            coexStatusSpan.innerHTML = `${coexAtiva ? '🟢 Ativa' : '🔴 Desativada'} — ${numero}${coex.contatos ? ` · ${coex.contatos} contato(s)` : ''}`;
+            btnCoexToggle.textContent = coexAtiva ? '⏸️ Desativar Coexistência' : '▶️ Ativar Coexistência';
+            btnCoexToggle.disabled = false;
+        }
+        // O selo "Só API Oficial" / "API Oficial + Coexistência" depende de
+        // coexAtiva — se já estava mostrando esse estado quando essa busca
+        // termina (ela é assíncrona, pode responder depois do socket já ter
+        // mandado 'principal_desativado'), redesenha com o valor certo.
+        if (currentBadgeState === 'desativado') setBadge('desativado');
     } catch (e) {
-        coexStatusSpan.textContent = 'Erro ao carregar status da Coexistência.';
+        if (coexStatusSpan) coexStatusSpan.textContent = 'Erro ao carregar status da Coexistência.';
     }
 }
+// Busca o valor de verdade assim que a página carrega, em vez de só quando
+// a seção de Configurações é aberta — senão coexAtiva ficava preso no
+// default (true) até alguém visitar Configurações nessa aba.
+loadCoexConfig();
 
 btnCoexToggle?.addEventListener('click', async () => {
     btnCoexToggle.disabled = true;
