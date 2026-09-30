@@ -6035,6 +6035,18 @@ app.post('/api/conversas/:telefone/enviar', async (req, res) => {
         const leadRow = await db.get('SELECT canal FROM leads WHERE telefone = ?', telefone);
         const canalContato = leadRow?.canal || 'whatsapp';
 
+        // Contato que falou pelo número em Coexistência responde por ele,
+        // independente do canal do lead — ex-aluno importado do Pacto fica com
+        // canal 'whatsapp' e caía no fallback abaixo, que usa sempre o número
+        // principal da API ("Re-engagement message", sem janela de 24h nele).
+        const configCloudContato = await obterConfigWhatsappCloudPara(telefone);
+        const { phoneNumberId: phoneNumberIdPrincipal } = await obterConfigWhatsappCloud();
+        if (configCloudContato.accessToken && configCloudContato.phoneNumberId && configCloudContato.phoneNumberId !== phoneNumberIdPrincipal) {
+            const resultado = await enviarMensagemWhatsappCloud(telefone, textoFinal, configCloudContato);
+            await registrarMensagemEnviada(telefone, textoFinal, nome, resultado?.messages?.[0]?.id || null, true, 'text', null, 'whatsapp_cloud');
+            return res.json({ success: true });
+        }
+
         if (canalContato === 'instagram' || canalContato === 'whatsapp_cloud') {
             let resultado, msgId;
             if (canalContato === 'instagram') {
