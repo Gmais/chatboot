@@ -2099,7 +2099,7 @@ async function processarWebhookWhatsappCloud(payload) {
             }
             for (const mensagem of valor?.messages || []) {
                 try {
-                    await processarMensagemWhatsappCloud(mensagem, valor, { phoneNumberIdDestino, viaCoex });
+                    await processarMensagemWhatsappCloud(mensagem, valor, { phoneNumberIdDestino });
                 } catch (e) {
                     console.error('Erro ao processar mensagem do WhatsApp Business API:', e.message);
                 }
@@ -2158,7 +2158,7 @@ async function processarEchoWhatsappCloud(echo, phoneNumberIdDestino) {
 // Diferença: o nome do contato já vem no próprio payload do webhook
 // (value.contacts[].profile.name) — não precisa de uma chamada extra à API
 // como obterNomeUsuarioInstagram faz pro Instagram.
-async function processarMensagemWhatsappCloud(mensagem, valor, { phoneNumberIdDestino = null, viaCoex = false } = {}) {
+async function processarMensagemWhatsappCloud(mensagem, valor, { phoneNumberIdDestino = null } = {}) {
     // mensagem.from já vem em E.164 sem "+" (ex: "5542999998888"), mas a Meta
     // às vezes reporta o remetente SEM o 9º dígito do celular — normaliza
     // antes de usar, senão vira uma conversa nova e separada da que a
@@ -2189,11 +2189,6 @@ async function processarMensagemWhatsappCloud(mensagem, valor, { phoneNumberIdDe
     registerLead(numLimpo, 'whatsapp_cloud').catch(e => console.error('Erro ao registrar lead do WhatsApp Business API:', e.message));
     await salvarNaConversa(numLimpo, nomeContato, 'in', texto, 'text', null, false, null, 'whatsapp_cloud');
     io.emit('message_in', { from: numLimpo, nome: nomeContato, text: texto, ts: Date.now() });
-
-    // Número em Coexistência é o WhatsApp da recepção (app do celular) — a
-    // conversa só aparece no Bate Papo pra ser respondida por gente, o robô
-    // não responde por cima da recepcionista.
-    if (viaCoex) return;
 
     const assumidaPorHumano = await db.get('SELECT 1 FROM conversas_humano WHERE telefone = ?', numLimpo);
     if (assumidaPorHumano) return;
