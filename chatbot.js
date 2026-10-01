@@ -10198,7 +10198,11 @@ async function obterChaveAnthropic(config) {
 }
 
 async function chamarClaude({ apiKey, modelo, systemFixo, systemDinamico, mensagens }) {
-    const client = new Anthropic({ apiKey });
+    // Chave de usuário (sk-ant-usr-...) não é presa a um workspace — a
+    // Anthropic exige o header com o ID do workspace (wrkspc_...) em toda
+    // chamada. Chave de workspace normal (sk-ant-api03-...) não precisa.
+    const workspaceId = process.env.ANTHROPIC_WORKSPACE_ID;
+    const client = new Anthropic({ apiKey, ...(workspaceId && { defaultHeaders: { 'anthropic-workspace-id': workspaceId } }) });
     const parametros = {
         model: modelo,
         max_tokens: 4000,
