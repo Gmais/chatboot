@@ -90,6 +90,7 @@ const { open } = require('sqlite');
 const multer = require('multer');
 const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
 const OpenAI = require('openai');
+const Anthropic = require('@anthropic-ai/sdk').default;
 const moment = require('moment-timezone');
 const { buscarAlunoPorMatricula, buscarAlunoPorCodigo, obterParcelasEmAberto, obterContratosPorMatricula, criarCliente, matricularAluno, gerarLinkPagamentoPixSantander } = require('./pacto');
 const { enviarMensagemInstagram, obterNomeUsuarioInstagram, verificarAssinaturaWebhook } = require('./instagram');
@@ -1677,15 +1678,15 @@ async function buscarExemplosRelevantes(textoCliente, topK = 3) {
         const exemplos = await db.all('SELECT pergunta_cliente, resposta_consultora, embedding FROM ia_exemplos_consultoras');
         if (exemplos.length === 0) return [];
 
-        return exemplos
+        const parecidos = exemplos
             .map(e => {
                 let vetor;
                 try { vetor = JSON.parse(e.embedding); } catch (_) { return null; }
                 return { pergunta_cliente: e.pergunta_cliente, resposta_consultora: e.resposta_consultora, similaridade: similaridadeCosseno(embeddingAtual, vetor) };
             })
             .filter(e => e && e.similaridade >= IA_EXEMPLOS_SIMILARIDADE_MINIMA)
-            .sort((a, b) => b.similaridade - a.similaridade)
-            .slice(0, topK);
+            .sort((a, b) => b.similaridade - a.similaridade);
+        return filtrarExemplosUteis(parecidos, exemplos).slice(0, topK);
     } catch (e) {
         console.error('Erro ao buscar exemplos relevantes de consultoras:', e.message);
         return [];
@@ -2342,28 +2343,44 @@ app.delete('/api/respostas/:id', async (req, res) => {
 // em texto puro. Quem realmente precisa da chave (tela Inteligência
 // Artificial, pra mostrar/editar o que já está salvo) usa /api/ia/config.
 const CONFIG_CHAVES_SENSIVEIS = ['openai_api_key', 'groq_api_key', 'instagram_page_access_token', 'instagram_app_secret', 'instagram_verify_token', 'whatsapp_cloud_access_token', 'whatsapp_cloud_app_secret', 'whatsapp_cloud_verify_token', 'whatsapp_cloud_phone_number_id', 'whatsapp_cloud_waba_id', 'gympulse_webhook_key'];
+// Além da lista fixa, qualquer chave com cara de credencial (ex:
+// ia_embeddings_api_key, que ficou de fora da lista e vazava aqui em 30/09).
+function ehChaveSensivel(chave) {
+    return CONFIG_CHAVES_SENSIVEIS.includes(chave) || /(api_key|_token|_secret|webhook_key)$/.test(chave);
+}
+
+// Valor mascarado por mascararSegredo (ver abaixo) voltando no Salvar de
+// alguma tela — nunca pode sobrescrever a credencial real.
+function ehValorMascarado(valor) {
+    return typeof valor === 'string' && valor.includes('••••');
+}
+
 app.get('/api/configuracoes', async (req, res) => {
     const rows = await db.all('SELECT * FROM configuracoes');
     const config = {};
-    rows.forEach(r => { if (!CONFIG_CHAVES_SENSIVEIS.includes(r.chave)) config[r.chave] = r.valor; });
+    rows.forEach(r => { if (!ehChaveSensivel(r.chave)) config[r.chave] = r.valor; });
     res.json(config);
 });
 
 app.put('/api/configuracoes', async (req, res) => {
     const keys = Object.keys(req.body);
     for (const key of keys) {
+        if (ehValorMascarado(req.body[key])) continue;
         await db.run('INSERT OR REPLACE INTO configuracoes (chave, valor) VALUES (?, ?)', [key, String(req.body[key])]);
     }
     res.json({ success: true });
 });
 
-// Config completa da IA (inclui a chave de API em texto puro) — usada só
-// pela tela Inteligência Artificial, que precisa mostrar/editar a chave já
-// salva. Deliberadamente separada da rota genérica acima.
+// Config da tela Inteligência Artificial. Credenciais saem mascaradas (só os
+// últimos 4 caracteres) — o painel não tem login, e essa rota devolvia todas
+// as chaves (OpenAI, Groq, Instagram, Gympulse...) em texto puro pra qualquer
+// um com o link. O Salvar da tela reenvia o valor mascarado quando a chave
+// não foi editada, e o PUT acima ignora (ehValorMascarado).
 app.get('/api/ia/config', async (req, res) => {
     const rows = await db.all('SELECT * FROM configuracoes');
     const config = {};
-    rows.forEach(r => config[r.chave] = r.valor);
+    rows.forEach(r => { config[r.chave] = ehChaveSensivel(r.chave) ? mascararSegredo(r.valor) : r.valor; });
+    config.anthropic_api_key_no_railway = !!process.env.ANTHROPIC_API_KEY;
     res.json(config);
 });
 
@@ -2376,14 +2393,16 @@ app.get('/api/instagram/config', async (req, res) => {
     const config = {};
     rows.forEach(r => config[r.chave] = r.valor);
     res.json({
-        page_access_token: config.instagram_page_access_token || '',
-        app_secret: config.instagram_app_secret || '',
+        page_access_token: mascararSegredo(config.instagram_page_access_token || ''),
+        app_secret: mascararSegredo(config.instagram_app_secret || ''),
         verify_token: config.instagram_verify_token || '',
     });
 });
 
 app.put('/api/instagram/config', async (req, res) => {
-    const { page_access_token, app_secret, verify_token } = req.body;
+    let { page_access_token, app_secret, verify_token } = req.body;
+    if (ehValorMascarado(page_access_token)) page_access_token = undefined;
+    if (ehValorMascarado(app_secret)) app_secret = undefined;
     if (page_access_token !== undefined) await db.run('INSERT OR REPLACE INTO configuracoes (chave, valor) VALUES (?, ?)', ['instagram_page_access_token', page_access_token]);
     if (app_secret !== undefined) await db.run('INSERT OR REPLACE INTO configuracoes (chave, valor) VALUES (?, ?)', ['instagram_app_secret', app_secret]);
     if (verify_token !== undefined) await db.run('INSERT OR REPLACE INTO configuracoes (chave, valor) VALUES (?, ?)', ['instagram_verify_token', verify_token]);
@@ -2421,7 +2440,9 @@ app.get('/api/whatsapp-cloud/config', async (req, res) => {
 });
 
 app.put('/api/whatsapp-cloud/config', async (req, res) => {
-    const { access_token, phone_number_id, waba_id, app_secret, verify_token } = req.body;
+    let { access_token, phone_number_id, waba_id, app_secret, verify_token } = req.body;
+    if (ehValorMascarado(access_token)) access_token = undefined;
+    if (ehValorMascarado(app_secret)) app_secret = undefined;
     if (access_token !== undefined) await db.run('INSERT OR REPLACE INTO configuracoes (chave, valor) VALUES (?, ?)', ['whatsapp_cloud_access_token', access_token]);
     if (phone_number_id !== undefined) await db.run('INSERT OR REPLACE INTO configuracoes (chave, valor) VALUES (?, ?)', ['whatsapp_cloud_phone_number_id', phone_number_id]);
     if (waba_id !== undefined) await db.run('INSERT OR REPLACE INTO configuracoes (chave, valor) VALUES (?, ?)', ['whatsapp_cloud_waba_id', waba_id]);
@@ -2597,9 +2618,11 @@ async function obterConfigGympulse() {
     return { webhookKey: novaChave };
 }
 
+// Mascarada (painel sem login — ver /api/ia/config). A chave completa só
+// aparece uma vez, na resposta do Regenerar abaixo, pra colar no Gympulse.
 app.get('/api/gympulse/config', async (req, res) => {
     const { webhookKey } = await obterConfigGympulse();
-    res.json({ webhook_key: webhookKey });
+    res.json({ webhook_key: mascararSegredo(webhookKey) });
 });
 
 // Regenerar invalida a chave antiga na hora — quem ainda usa a velha do lado
@@ -9562,6 +9585,11 @@ const FAIXAS_VELOCIDADE = {
 const PRECO_POR_1K_TOKENS = {
     'gpt-3.5-turbo': { prompt: 0.0005, completion: 0.0015 },
     'gpt-4o': { prompt: 0.0025, completion: 0.01 },
+    // Claude: prompt_tokens inclui leitura de cache (cobrada a ~10%), então
+    // o custo aqui é um teto — o real costuma ser bem menor.
+    'claude-opus-5-5': { prompt: 0.004, completion: 0.02 },
+    'claude-sonnet-5-5': { prompt: 0.002, completion: 0.01 },
+    'claude-haiku-4-5': { prompt: 0.001, completion: 0.005 },
 };
 function custoEstimadoIA(provedor, modelo, promptTokens, completionTokens) {
     if (provedor === 'groq') return 0;
@@ -10094,6 +10122,134 @@ async function encaminharParaHumanoSeEncerrou(texto, numLimpo) {
     }
 }
 
+// =====================================
+// IA — montagem do contexto e chamada ao provedor
+// =====================================
+// Histórico vem do banco (tabela conversas), não de memória: antes ficava
+// num Map em RAM com só as últimas 3 trocas DA PRÓPRIA IA — sumia a cada
+// deploy e não via nada que consultora/automação tinha mandado (ex: aluna
+// responde "minha matrícula está incorreta" a uma automação e a IA não fazia
+// ideia do que era).
+const IA_HISTORICO_MAX_MENSAGENS = 20;
+const IA_HISTORICO_JANELA_DIAS = 7;
+async function montarHistoricoConversaIA(numLimpo, textoAtualOriginal) {
+    const rows = await db.all(
+        `SELECT direcao, texto, tipo FROM conversas
+         WHERE telefone = ? AND ts >= datetime('now', ?)
+         ORDER BY ts DESC, id DESC LIMIT ?`,
+        [numLimpo, `-${IA_HISTORICO_JANELA_DIAS} days`, IA_HISTORICO_MAX_MENSAGENS]
+    );
+    const mensagens = [];
+    for (const r of rows.reverse()) {
+        const conteudo = (r.texto && r.texto.trim()) || (r.tipo && r.tipo !== 'text' ? `[${r.tipo}]` : '');
+        if (!conteudo) continue;
+        const role = r.direcao === 'in' ? 'user' : 'assistant';
+        const ultima = mensagens[mensagens.length - 1];
+        // Mesma pessoa mandando várias seguidas vira uma mensagem só.
+        if (ultima && ultima.role === role) ultima.content += `\n${conteudo}`;
+        else mensagens.push({ role, content: conteudo });
+    }
+    // Garante que a mensagem que disparou essa resposta está no fim (a
+    // gravação em conversas acontece antes, mas não custa conferir).
+    const ultima = mensagens[mensagens.length - 1];
+    if (!ultima || ultima.role !== 'user') mensagens.push({ role: 'user', content: textoAtualOriginal });
+    else if (!ultima.content.includes(textoAtualOriginal)) ultima.content += `\n${textoAtualOriginal}`;
+    // Claude exige começar com mensagem do usuário — conversa que começou
+    // com automação/consultora ganha um marcador em vez de perder esse
+    // contexto (é justamente o que a IA mais precisa ver).
+    if (mensagens[0].role !== 'user') mensagens.unshift({ role: 'user', content: '(início da conversa)' });
+    return mensagens;
+}
+
+// Exemplos das consultoras: além da similaridade, descarta o que não ensina
+// nada ou é perigoso copiar — respostas curtas/genéricas ("só um momento",
+// "atualiza a página e tenta denovo"), mensagens prontas repetidas (texto de
+// automação/mensagem rápida, que vêm com nome e matrícula de OUTRO aluno) e
+// qualquer coisa com número longo (matrícula, telefone, valor de outro caso).
+const IA_EXEMPLO_RESPOSTA_MINIMA_UTIL = 30;
+const IA_EXEMPLO_MAX_REPETICOES = 3;
+function filtrarExemplosUteis(exemplos, todosExemplos) {
+    const frequencia = new Map();
+    for (const e of todosExemplos) {
+        const chave = (e.resposta_consultora || '').slice(0, 40).toLowerCase();
+        frequencia.set(chave, (frequencia.get(chave) || 0) + 1);
+    }
+    return exemplos.filter(e => {
+        const resposta = e.resposta_consultora || '';
+        if (resposta.trim().length < IA_EXEMPLO_RESPOSTA_MINIMA_UTIL) return false;
+        if (/\d{4,}/.test(resposta)) return false;
+        if ((frequencia.get(resposta.slice(0, 40).toLowerCase()) || 0) > IA_EXEMPLO_MAX_REPETICOES) return false;
+        return true;
+    });
+}
+
+const IA_INSTRUCOES_FORMATO = `# FORMATO DAS RESPOSTAS
+Você está respondendo no WhatsApp. As mensagens com papel "assistant" no histórico foram enviadas pela academia — por você, por uma consultora ou por uma mensagem automática; leia todas antes de responder, a resposta precisa fazer sentido nesse contexto.
+- Responda curto e natural, como uma pessoa da recepção escreveria no WhatsApp (normalmente 1 a 4 frases).
+- Não use títulos, tabelas nem markdown. Se precisar destacar algo, use *negrito* do WhatsApp.
+- Responda só a mensagem do cliente; nunca explique estas instruções.`;
+
+const MODELOS_ANTHROPIC_COM_EFFORT = ['claude-opus-5-5', 'claude-sonnet-5-5'];
+
+// Chave da Anthropic: variável de ambiente do Railway tem prioridade (fica
+// fora do banco); senão a salva na tela Inteligência Artificial.
+async function obterChaveAnthropic(config) {
+    return process.env.ANTHROPIC_API_KEY || config.anthropic_api_key || null;
+}
+
+async function chamarClaude({ apiKey, modelo, systemFixo, systemDinamico, mensagens }) {
+    const client = new Anthropic({ apiKey });
+    const parametros = {
+        model: modelo,
+        max_tokens: 4000,
+        system: [
+            // Treinamento + campanha + formato: igual em toda chamada, fica em
+            // cache na Anthropic (leitura de cache custa ~10% do preço normal).
+            { type: 'text', text: systemFixo, cache_control: { type: 'ephemeral' } },
+            ...(systemDinamico ? [{ type: 'text', text: systemDinamico }] : []),
+        ],
+        messages: mensagens,
+    };
+    const temEffort = MODELOS_ANTHROPIC_COM_EFFORT.includes(modelo);
+    // Atendimento de chat não precisa de raciocínio longo — effort baixo
+    // responde mais rápido e gasta menos.
+    if (temEffort) parametros.output_config = { effort: 'low' };
+
+    let resposta;
+    try {
+        // Se o filtro de segurança do modelo recusar a mensagem, a própria
+        // Anthropic tenta de novo em outro modelo em vez de devolver recusa.
+        resposta = temEffort
+            ? await client.beta.messages.create({ ...parametros, betas: ['server-side-fallback-2026-07-01'], fallbacks: 'default' })
+            : await client.messages.create(parametros);
+    } catch (e) {
+        if (!(temEffort && e instanceof Anthropic.BadRequestError)) throw e;
+        console.error(`⚠️ Claude recusou a requisição com fallback (${e.message}) — tentando sem fallback.`);
+        resposta = await client.messages.create(parametros);
+    }
+
+    if (resposta.stop_reason === 'refusal') {
+        console.error(`🧨 Claude recusou responder (categoria: ${resposta.stop_details?.category || '?'}) — nada enviado.`);
+        return { texto: null, uso: resposta.usage };
+    }
+    const texto = resposta.content.filter(b => b.type === 'text').map(b => b.text).join('').trim();
+    return { texto, uso: resposta.usage };
+}
+
+async function chamarOpenAICompativel({ provider, apiKey, modelo, systemFixo, systemDinamico, mensagens }) {
+    const openai = new OpenAI({
+        apiKey,
+        ...(provider === 'groq' && { baseURL: 'https://api.groq.com/openai/v1' })
+    });
+    const system = systemDinamico ? `${systemFixo}\n\n${systemDinamico}` : systemFixo;
+    const completion = await openai.chat.completions.create({
+        messages: [{ role: 'system', content: system }, ...mensagens],
+        model: modelo,
+        max_tokens: 600,
+    });
+    return { texto: (completion.choices[0].message.content || '').trim(), uso: completion.usage };
+}
+
 // Fluxo normal do robô: fluxo de cadastro/Pacto, regras de palavra-chave, e IA
 // como fallback. Extraído do handler de 'message' pra poder ser chamado tanto
 // na hora (modo robô) quanto adiado (rede de segurança de horário, ver
@@ -10131,121 +10287,74 @@ async function processarComoRobo(msg, numLimpo, texto, telefoneReal, nomeContato
 
         const provider = config.ia_provider || 'openai';
         const iaAtiva = config.openai_status === 'true';
-        const apiKey = provider === 'groq' ? config.groq_api_key : config.openai_api_key;
-        const modelo = provider === 'groq'
-            ? (config.groq_modelo || 'llama-3.3-70b-versatile')
+        const apiKey = provider === 'anthropic' ? await obterChaveAnthropic(config)
+            : provider === 'groq' ? config.groq_api_key : config.openai_api_key;
+        const modelo = provider === 'anthropic' ? (config.anthropic_modelo || 'claude-opus-5-5')
+            : provider === 'groq' ? (config.groq_modelo || 'llama-3.3-70b-versatile')
             : (config.openai_modelo || 'gpt-3.5-turbo');
 
         if (iaAtiva && apiKey) {
+            // Parte fixa (vai pro cache no Claude): treinamento + campanha +
+            // regras de formato. Parte que muda por conversa fica separada.
+            let systemFixo = config.openai_treinamento || '';
+            if (config.ia_campanha_mes) systemFixo += `\n\n# CAMPANHA DO MÊS (promoção vigente)\n${config.ia_campanha_mes}`;
+            systemFixo = `${systemFixo}\n\n${IA_INSTRUCOES_FORMATO}`.trim();
 
+            const nomeParaIA = nomeContato && nomeContato !== numLimpo ? nomeContato.split(' ')[0] : null;
+            const agora = moment.tz('America/Sao_Paulo');
+            const diaSemana = ['domingo', 'segunda-feira', 'terça-feira', 'quarta-feira', 'quinta-feira', 'sexta-feira', 'sábado'][agora.day()];
+            const partesDinamicas = [`Agora: ${diaSemana}, ${agora.format('DD/MM/YYYY HH:mm')} (horário de Brasília).`];
+            if (nomeParaIA) partesDinamicas.push(`Você está conversando com ${nomeParaIA}. Use esse nome diretamente — nunca use [nome] ou {nome} como placeholder.`);
 
-            if (!global.chatHistory) global.chatHistory = new Map();
-            const history = global.chatHistory.get(telefoneReal) || [];
-
-            if (history.length === 0) {
-                // Monta o prompt de sistema combinando o treinamento configurado
-                // com o nome real do contato — assim a IA nunca precisa usar [nome].
-                const nomeParaIA = nomeContato && nomeContato !== numLimpo
-                    ? nomeContato.split(' ')[0]  // usa só o primeiro nome
-                    : null;
-                let systemContent = config.openai_treinamento || '';
-                if (config.ia_campanha_mes) {
-                    systemContent = systemContent
-                        ? `${systemContent}\n\n# CAMPANHA DO MÊS (promoção vigente)\n${config.ia_campanha_mes}`
-                        : `# CAMPANHA DO MÊS (promoção vigente)\n${config.ia_campanha_mes}`;
-                }
-                if (nomeParaIA) {
-                    systemContent = systemContent
-                        ? `${systemContent}\n\nVocê está conversando com ${nomeParaIA}. Ao personalizar a mensagem, use esse nome diretamente — nunca use [nome] ou {nome} como placeholder.`
-                        : `Você está conversando com ${nomeParaIA}.`;
-                }
-                if (systemContent) history.push({ role: 'system', content: systemContent });
-            }
-
-            // Exemplos reais de consultoras parecidos com a mensagem ATUAL — busca
-            // de novo a cada turno (não só na primeira mensagem), porque a pergunta
-            // muda de turno a turno. Entra como mensagem de sistema à parte, não
-            // misturada no systemContent fixo acima.
-            const exemplosConsultoras = await buscarExemplosRelevantes(texto);
+            const textoOriginal = (msg.body || texto).trim();
+            const exemplosConsultoras = await buscarExemplosRelevantes(textoOriginal);
             if (exemplosConsultoras.length > 0) {
-                const textoExemplos = 'Exemplos reais de como nossas consultoras já responderam perguntas parecidas com essa — use como referência de tom e estilo, sem copiar literalmente se não fizer sentido pro contexto atual:\n\n' +
-                    exemplosConsultoras.map(e => `Cliente: ${e.pergunta_cliente}\nConsultora: ${e.resposta_consultora}`).join('\n\n');
-                history.push({ role: 'system', content: textoExemplos });
+                partesDinamicas.push('Exemplos reais de como nossas consultoras já responderam perguntas parecidas — use só como referência de tom e estilo, nunca copie nomes, números ou dados de outro aluno:\n\n' +
+                    exemplosConsultoras.map(e => `Cliente: ${e.pergunta_cliente}\nConsultora: ${e.resposta_consultora}`).join('\n\n'));
             }
-
-            history.push({ role: 'user', content: texto });
-
-            // Tenta com retry automático em caso de rate limit (429)
-            const chamarIA = async (tentativa = 1) => {
-                try {
-                    const openai = new OpenAI({
-                        apiKey,
-                        ...(provider === 'groq' && { baseURL: 'https://api.groq.com/openai/v1' })
-                    });
-                    return await openai.chat.completions.create({
-                        messages: history,
-                        model: modelo,
-                        max_tokens: 300
-                    });
-                } catch (e) {
-                    if (e.status === 429 && tentativa < 3) {
-                        const espera = tentativa * 15000; // 15s, 30s
-                        console.log(`⏳ Rate limit (${provider}), tentativa ${tentativa}/3 — aguardando ${espera / 1000}s...`);
-                        await new Promise(r => setTimeout(r, espera));
-                        return chamarIA(tentativa + 1);
-                    }
-                    throw e;
-                }
-            };
+            const systemDinamico = partesDinamicas.join('\n\n');
+            const mensagens = await montarHistoricoConversaIA(numLimpo, textoOriginal);
 
             try {
-                const completion = await chamarIA();
+                const { texto: respostaIARaw, uso } = provider === 'anthropic'
+                    ? await chamarClaude({ apiKey, modelo, systemFixo, systemDinamico, mensagens })
+                    : await chamarOpenAICompativel({ provider, apiKey, modelo, systemFixo, systemDinamico, mensagens });
 
-                // Loga tokens/custo da chamada — fire-and-forget, nunca pode
-                // atrapalhar o envio da resposta real pro cliente (só console.error).
+                // Loga tokens/custo da chamada — nunca pode atrapalhar o envio.
                 try {
-                    const uso = completion.usage || {};
+                    const promptTokens = provider === 'anthropic'
+                        ? (uso?.input_tokens || 0) + (uso?.cache_read_input_tokens || 0) + (uso?.cache_creation_input_tokens || 0)
+                        : (uso?.prompt_tokens || 0);
+                    const completionTokens = provider === 'anthropic' ? (uso?.output_tokens || 0) : (uso?.completion_tokens || 0);
                     await db.run(
                         'INSERT INTO ia_uso_log (telefone, provedor, modelo, prompt_tokens, completion_tokens, total_tokens) VALUES (?, ?, ?, ?, ?, ?)',
-                        [numLimpo, provider, modelo, uso.prompt_tokens || 0, uso.completion_tokens || 0, uso.total_tokens || 0]
+                        [numLimpo, provider, modelo, promptTokens, completionTokens, promptTokens + completionTokens]
                     );
                 } catch (e) {
                     console.error('Erro ao registrar uso de IA:', e.message);
                 }
 
+                if (!respostaIARaw) {
+                    io.emit('bot_digitando', { telefone: numLimpo, ativo: false });
+                    return;
+                }
+
                 // Substitui placeholders de nome antes de enviar — caso o treinamento
                 // ou o modelo ainda use [nome] ou {nome}, o aluno vê o nome de verdade.
-                const nomeExibir = (nomeContato && nomeContato !== numLimpo)
-                    ? nomeContato.split(' ')[0]
-                    : '';
-                const respostaIARaw = completion.choices[0].message.content;
+                const nomeExibir = nomeParaIA || '';
                 const respostaIA = nomeExibir
-                    ? respostaIARaw
-                        .replace(/\[nome\]/gi, nomeExibir)
-                        .replace(/\{nome\}/gi, nomeExibir)
+                    ? respostaIARaw.replace(/\[nome\]/gi, nomeExibir).replace(/\{nome\}/gi, nomeExibir)
                     : respostaIARaw;
 
-                // Sanity-check: se a resposta parecer vazamento de meta-instrução
-                // (ex: "vamos criar uma conversa... mensagem do Fulano:") em vez de
-                // uma resposta de verdade pro cliente, descarta — não põe no
-                // histórico (senão o próximo turno herda a bagunça) nem manda.
+                // Sanity-check: resposta com cara de vazamento de meta-instrução
+                // em vez de resposta de verdade pro cliente — descarta.
                 if (respostaIAParecevazamento(respostaIA)) {
                     console.error(`🧨 IA (${provider}/${modelo}) gerou resposta com cara de vazamento de prompt pra ${numLimpo} — descartada, nada enviado. Trecho: "${respostaIA.slice(0, 120)}..."`);
                     io.emit('bot_digitando', { telefone: numLimpo, ativo: false });
                     return;
                 }
 
-                history.push({ role: 'assistant', content: respostaIA });
-
-                if (history.length > 7) {
-                    const sys = history.shift();
-                    history.shift();
-                    history.shift();
-                    history.unshift(sys);
-                }
-                global.chatHistory.set(telefoneReal, history);
-
-                console.log(`🤖 IA respondendo para ${numLimpo}`);
+                console.log(`🤖 IA (${provider}/${modelo}) respondendo para ${numLimpo}`);
                 const sentIA = await enviarRespostaCanal(canal, msg, telefoneReal, respostaIA);
                 io.emit('bot_digitando', { telefone: numLimpo, ativo: false });
                 if (sentIA) {
@@ -10254,7 +10363,7 @@ async function processarComoRobo(msg, numLimpo, texto, telefoneReal, nomeContato
                 }
             } catch (e) {
                 io.emit('bot_digitando', { telefone: numLimpo, ativo: false });
-                console.error(`❌ Erro na API da IA (${provider}):`, e.message);
+                console.error(`❌ Erro na API da IA (${provider}/${modelo}):`, e.message);
             }
         }
         return;

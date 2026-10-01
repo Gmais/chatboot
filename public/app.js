@@ -824,9 +824,16 @@ const OPENAI_MODELS = [
     { value: 'gpt-4o',        label: 'GPT-4o (Mais Inteligente, Maior Custo)' },
 ];
 
+const ANTHROPIC_MODELS = [
+    { value: 'claude-opus-5-5',   label: 'Claude Opus 5.5 (Melhor Qualidade)' },
+    { value: 'claude-sonnet-5-5', label: 'Claude Sonnet 5.5 (Ótimo, Metade do Custo)' },
+    { value: 'claude-haiku-4-5',  label: 'Claude Haiku 4.5 (Mais Barato)' },
+];
+let anthropicChaveNoRailway = false;
+
 function updateIaProviderUI(provider) {
     if (!iaModelo) return;
-    const models = provider === 'groq' ? GROQ_MODELS : OPENAI_MODELS;
+    const models = provider === 'groq' ? GROQ_MODELS : provider === 'anthropic' ? ANTHROPIC_MODELS : OPENAI_MODELS;
     const currentVal = iaModelo.value;
     iaModelo.innerHTML = models.map(m => `<option value="${m.value}">${m.label}</option>`).join('');
     if (models.find(m => m.value === currentVal)) iaModelo.value = currentVal;
@@ -837,6 +844,12 @@ function updateIaProviderUI(provider) {
         if (label) label.innerHTML = 'Groq API Key <a href="https://console.groq.com/keys" target="_blank" style="color:var(--green);font-size:.75rem;margin-left:.5rem">⚡ Pegar chave grátis</a>';
         if (hint)  hint.textContent = 'Gratuito. Crie uma conta em console.groq.com e gere sua chave.';
         if (iaApikey) iaApikey.placeholder = 'gsk_xxxxxxxxxxxxxxxxxxxxxxxx';
+    } else if (provider === 'anthropic') {
+        if (label) label.innerHTML = 'Anthropic API Key <a href="https://console.anthropic.com/settings/keys" target="_blank" style="color:var(--green);font-size:.75rem;margin-left:.5rem">Pegar minha chave</a>';
+        if (hint)  hint.textContent = anthropicChaveNoRailway
+            ? 'Usando a chave configurada no Railway (ANTHROPIC_API_KEY) — o campo abaixo é ignorado.'
+            : 'Depois de salva, a chave aparece mascarada aqui (só os últimos 4 caracteres).';
+        if (iaApikey) iaApikey.placeholder = 'sk-ant-xxxxxxxxxxxxxxxxxxxxxxxx';
     } else {
         if (label) label.innerHTML = 'OpenAI API Key <a href="https://platform.openai.com/api-keys" target="_blank" style="color:var(--green);font-size:.75rem;margin-left:.5rem">Pegar minha chave</a>';
         if (hint)  hint.textContent = 'Sua chave é armazenada com segurança no banco local.';
@@ -853,6 +866,7 @@ async function loadIaConfig() {
         // o que já está salvo.
         const res = await fetch('/api/ia/config');
         const config = await res.json();
+        anthropicChaveNoRailway = !!config.anthropic_api_key_no_railway;
         const provider = config.ia_provider || 'openai';
         if (iaProvider)    iaProvider.value  = provider;
         updateIaProviderUI(provider);
@@ -864,6 +878,9 @@ async function loadIaConfig() {
         if (provider === 'groq') {
             if (iaApikey) iaApikey.value = config.groq_api_key || '';
             if (iaModelo) iaModelo.value = config.groq_modelo || 'llama-3.1-8b-instant';
+        } else if (provider === 'anthropic') {
+            if (iaApikey) iaApikey.value = config.anthropic_api_key || '';
+            if (iaModelo) iaModelo.value = config.anthropic_modelo || 'claude-opus-5-5';
         } else {
             if (iaApikey) iaApikey.value = config.openai_api_key || '';
             if (iaModelo) iaModelo.value = config.openai_modelo || 'gpt-3.5-turbo';
@@ -881,8 +898,12 @@ btnSalvarIa?.addEventListener('click', async () => {
         openai_treinamento: iaTreinamento.value.trim(),
         ia_campanha_mes: iaCampanhaMes.value.trim(),
         ia_aprender_com_consultoras: iaAprenderConsultoras?.checked ? 'true' : 'false',
+        // Chave mascarada ("••••1234", vinda do GET) que não foi editada é
+        // ignorada pelo servidor — não sobrescreve a chave real.
         ...(provider === 'groq'
             ? { groq_api_key: iaApikey.value.trim(), groq_modelo: iaModelo.value }
+            : provider === 'anthropic'
+            ? { anthropic_api_key: iaApikey.value.trim(), anthropic_modelo: iaModelo.value }
             : { openai_api_key: iaApikey.value.trim(), openai_modelo: iaModelo.value }
         )
     };
@@ -916,6 +937,7 @@ const btnIaEmbeddingsApikeySalvar = document.getElementById('btn-ia-embeddings-a
 // ninguém percebeu até o backfill falhar com 401).
 btnIaEmbeddingsApikeySalvar?.addEventListener('click', async () => {
     const valor = (iaEmbeddingsApikey?.value || '').trim();
+    if (valor.includes('••••')) { showToast('Nada mudou', 'A chave salva continua a mesma.', 'success', 2000); return; }
     if (valor && !valor.startsWith('sk-')) {
         if (!confirm('Essa chave não começa com "sk-", que é o formato padrão das chaves da OpenAI — parece ser de outro provider (Groq, por exemplo). Salvar mesmo assim?')) return;
     }
