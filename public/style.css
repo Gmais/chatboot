@@ -1218,6 +1218,24 @@ header h1 {
 .chat-slash-item.active { background: rgba(255,255,255,0.08); }
 .chat-slash-menu-vazio { padding: 0.8rem 0.7rem; font-size: 0.8rem; color: var(--text-3); text-align: center; }
 
+/* Ordem manual das Mensagens Personalizadas (▲▼ / arrastar o card) */
+#mensagens-personalizadas-lista [data-mensagem-id] { cursor: grab; }
+#mensagens-personalizadas-lista [data-mensagem-id].mp-arrastando { opacity: 0.4; border-color: var(--green); }
+.mp-ordem { display: flex; flex-direction: column; align-items: center; gap: 0.1rem; min-width: 2.2rem; }
+.mp-ordem-pos { font-size: 0.78rem; font-weight: 700; color: var(--green); }
+.btn-mover-mensagem {
+    background: rgba(255,255,255,0.05);
+    border: 1px solid rgba(255,255,255,0.1);
+    border-radius: 6px;
+    color: var(--text-2);
+    font-size: 0.6rem;
+    line-height: 1;
+    padding: 0.2rem 0.45rem;
+    cursor: pointer;
+}
+.btn-mover-mensagem:hover:not(:disabled) { background: rgba(255,255,255,0.12); color: var(--text-1); }
+.btn-mover-mensagem:disabled { opacity: 0.25; cursor: default; }
+
 /* Responsividade */
 @media (max-width: 900px) {
     .chat-layout { grid-template-columns: 1fr; }

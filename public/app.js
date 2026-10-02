@@ -4560,19 +4560,18 @@ const CM = (() => {
 
     // ---- Menu "/" de mensagens pré-definidas ----
     let mensagensSlash = [];
-    let mensagensSlashCarregadas = false;
     let slashFiltradas = [];
     let slashIndex = -1;
 
+    // Busca de novo a cada vez que o menu abre — pega mensagem nova e a ordem
+    // definida na tela de Mensagens sem precisar recarregar a página. Se falhar,
+    // fica com a última lista que deu certo.
     async function carregarMensagensSlash() {
-        mensagensSlashCarregadas = true;
         try {
             const res = await fetch('/api/mensagens-personalizadas');
             const todas = await res.json();
             mensagensSlash = todas.filter(m => !m.media_path);
-        } catch (_) {
-            mensagensSlash = [];
-        }
+        } catch (_) { }
     }
 
     function renderSlashMenuHtml() {
@@ -4751,7 +4750,7 @@ const CM = (() => {
 
             const slashMatch = /^\/([^\n]*)$/.exec(chatInput.value);
             if (!slashMatch) { fecharSlashMenu(); return; }
-            if (!mensagensSlashCarregadas) {
+            if (!chatSlashMenu?.classList.contains('open')) {
                 carregarMensagensSlash().then(() => {
                     const aindaValido = /^\/([^\n]*)$/.exec(chatInput.value);
                     if (aindaValido) abrirSlashMenu(aindaValido[1]);
@@ -6491,10 +6490,16 @@ function renderMensagensPersonalizadasLista() {
         mensagensPersonalizadasLista.innerHTML = `<div style="padding:2rem;text-align:center;color:var(--text-3)">${campanha ? `Nenhuma mensagem em "${campanha.label}" ainda.` : 'Nenhuma mensagem criada ainda.'} Crie a primeira!</div>`;
         return;
     }
-    mensagensPersonalizadasLista.innerHTML = mensagensPersonalizadasGlobais.map(m => {
+    const total = mensagensPersonalizadasGlobais.length;
+    mensagensPersonalizadasLista.innerHTML = mensagensPersonalizadasGlobais.map((m, i) => {
         const info = m.categoria ? CAMPANHAS_INFO[m.categoria] : null;
         return `
-        <div class="card glass" style="padding:1.1rem 1.3rem;display:flex;align-items:center;gap:1rem;flex-wrap:wrap" data-mensagem-id="${m.id}">
+        <div class="card glass" draggable="true" style="padding:1.1rem 1.3rem;display:flex;align-items:center;gap:1rem;flex-wrap:wrap" data-mensagem-id="${m.id}">
+            <div class="mp-ordem" title="Arraste o card ou use as setas pra mudar a posição">
+                <button type="button" class="btn-mover-mensagem" data-id="${m.id}" data-dir="-1" title="Subir" ${i === 0 ? 'disabled' : ''}>▲</button>
+                <span class="mp-ordem-pos">${i + 1}º</span>
+                <button type="button" class="btn-mover-mensagem" data-id="${m.id}" data-dir="1" title="Descer" ${i === total - 1 ? 'disabled' : ''}>▼</button>
+            </div>
             <div style="flex:1;min-width:200px">
                 <div style="font-weight:600;color:var(--text-1);font-size:.95rem;margin-bottom:.3rem">${info ? info.icon : '📝'} ${m.nome}</div>
                 <div style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap">
@@ -6539,7 +6544,73 @@ document.getElementById('btn-limpar-filtro-mensagens')?.addEventListener('click'
     loadMensagensPersonalizadas();
 });
 
+// Ordem manual (▲▼ ou arrastar o card) — é a mesma ordem do menu "/" do Bate
+// Papo e dos selects de Disparos/Automação. Com filtro de campanha ativo só
+// mexe nas posições dessa campanha (ver PUT /api/mensagens-personalizadas/ordem).
+async function salvarOrdemMensagens(ids) {
+    const porId = new Map(mensagensPersonalizadasGlobais.map(m => [m.id, m]));
+    mensagensPersonalizadasGlobais = ids.map(id => porId.get(id));
+    renderMensagensPersonalizadasLista();
+    try {
+        const res = await fetch('/api/mensagens-personalizadas/ordem', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ids })
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Erro ao salvar a ordem');
+    } catch (e) {
+        showToast('Erro ao salvar a ordem', e.message, 'error');
+        loadMensagensPersonalizadas();
+    }
+}
+
+mensagensPersonalizadasLista?.addEventListener('dragstart', (e) => {
+    const card = e.target.closest('[data-mensagem-id]');
+    if (!card) return;
+    card.classList.add('mp-arrastando');
+    e.dataTransfer.effectAllowed = 'move';
+});
+
+// Card arrastado já vai mudando de lugar enquanto passa por cima dos outros;
+// a ordem só é salva no dragend.
+mensagensPersonalizadasLista?.addEventListener('dragover', (e) => {
+    const arrastando = mensagensPersonalizadasLista.querySelector('.mp-arrastando');
+    if (!arrastando) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    const alvo = e.target.closest('[data-mensagem-id]');
+    if (!alvo || alvo === arrastando) return;
+    const r = alvo.getBoundingClientRect();
+    const depois = e.clientY > r.top + r.height / 2;
+    mensagensPersonalizadasLista.insertBefore(arrastando, depois ? alvo.nextSibling : alvo);
+});
+
+mensagensPersonalizadasLista?.addEventListener('drop', (e) => e.preventDefault());
+
+mensagensPersonalizadasLista?.addEventListener('dragend', (e) => {
+    const card = e.target.closest('[data-mensagem-id]');
+    if (!card) return;
+    card.classList.remove('mp-arrastando');
+    // Soltou fora da lista ou apertou Esc — volta tudo pro lugar
+    if (e.dataTransfer.dropEffect === 'none') { renderMensagensPersonalizadasLista(); return; }
+    const ids = [...mensagensPersonalizadasLista.querySelectorAll('[data-mensagem-id]')].map(el => Number(el.dataset.mensagemId));
+    const mudou = ids.some((id, i) => id !== mensagensPersonalizadasGlobais[i]?.id);
+    if (mudou) salvarOrdemMensagens(ids);
+});
+
 mensagensPersonalizadasLista?.addEventListener('click', async (e) => {
+    const btnMover = e.target.closest('.btn-mover-mensagem');
+    if (btnMover) {
+        const ids = mensagensPersonalizadasGlobais.map(m => m.id);
+        const i = ids.indexOf(Number(btnMover.dataset.id));
+        const j = i + Number(btnMover.dataset.dir);
+        if (i < 0 || j < 0 || j >= ids.length) return;
+        [ids[i], ids[j]] = [ids[j], ids[i]];
+        salvarOrdemMensagens(ids);
+        return;
+    }
+
     const btnEditar = e.target.closest('.btn-editar-mensagem-personalizada');
     if (btnEditar) { abrirModalMensagemPersonalizada(mensagensPersonalizadasGlobais.find(x => x.id == btnEditar.dataset.id)); return; }
 

@@ -1245,6 +1245,18 @@ async function initDB() {
         await db.run(`UPDATE mensagens_personalizadas SET categoria = 'inadimplentes' WHERE categoria IS NULL AND nome LIKE 'Cobrança%'`);
         await db.run(`UPDATE mensagens_personalizadas SET categoria = 'ex-alunos' WHERE categoria IS NULL AND (nome LIKE 'Ex Aluno%' OR nome LIKE 'Ex-Aluno%')`);
     } catch (e) { }
+    // Ordem escolhida pelo operador na tela de Mensagens (arrastar / ▲▼) — é a
+    // ordem do menu "/" do Bate Papo e dos selects de Disparos/Automação.
+    // Migração parte da ordem que já aparecia antes (mais nova primeiro), com
+    // posições únicas (PUT /api/mensagens-personalizadas/ordem depende disso).
+    try {
+        await db.exec(`ALTER TABLE mensagens_personalizadas ADD COLUMN ordem INTEGER`);
+        await db.run(`UPDATE mensagens_personalizadas SET ordem = (
+            SELECT COUNT(*) FROM mensagens_personalizadas m2
+             WHERE m2.criado_em > mensagens_personalizadas.criado_em
+                OR (m2.criado_em = mensagens_personalizadas.criado_em AND m2.id > mensagens_personalizadas.id)
+        )`);
+    } catch (e) { }
     await seedTemplatesWhatsappCloud();
     await submeterBacklogTemplatesFaltantes();
     setInterval(sincronizarTemplatesAprovados, 60 * 60 * 1000); // checa aprovação da Meta 1x/hora
@@ -5169,9 +5181,29 @@ app.get('/api/automacoes', async (req, res) => {
 app.get('/api/mensagens-personalizadas', async (req, res) => {
     const { categoria } = req.query;
     const mensagens = categoria
-        ? await db.all('SELECT * FROM mensagens_personalizadas WHERE categoria = ? ORDER BY criado_em DESC', categoria)
-        : await db.all('SELECT * FROM mensagens_personalizadas ORDER BY criado_em DESC');
+        ? await db.all('SELECT * FROM mensagens_personalizadas WHERE categoria = ? ORDER BY ordem ASC, criado_em DESC', categoria)
+        : await db.all('SELECT * FROM mensagens_personalizadas ORDER BY ordem ASC, criado_em DESC');
     res.json(mensagens);
+});
+
+// Reordenação da tela de Mensagens — recebe os ids na ordem nova. Pode ser só
+// um pedaço da lista (filtro por campanha): redistribui entre eles as posições
+// que esse pedaço já ocupava, sem mexer na posição das outras mensagens.
+// Fica antes do PUT /:id pra "ordem" não ser lido como id.
+app.put('/api/mensagens-personalizadas/ordem', async (req, res) => {
+    const ids = Array.isArray(req.body.ids) ? req.body.ids.map(Number).filter(Number.isInteger) : [];
+    if (ids.length === 0) return res.status(400).json({ error: 'Nenhuma mensagem pra ordenar.' });
+    try {
+        const linhas = await db.all(`SELECT id, ordem FROM mensagens_personalizadas WHERE id IN (${ids.map(() => '?').join(',')})`, ids);
+        if (linhas.length !== ids.length) return res.status(400).json({ error: 'A lista mudou enquanto você ordenava — recarregue a tela.' });
+        const posicoes = linhas.map(l => l.ordem).sort((a, b) => a - b);
+        for (let i = 0; i < ids.length; i++) {
+            await db.run('UPDATE mensagens_personalizadas SET ordem = ? WHERE id = ?', [posicoes[i], ids[i]]);
+        }
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
 app.post('/api/mensagens-personalizadas', async (req, res) => {
@@ -5179,8 +5211,11 @@ app.post('/api/mensagens-personalizadas', async (req, res) => {
     if (!nome || !nome.trim()) return res.status(400).json({ error: 'Nome é obrigatório.' });
     if (!texto || !texto.trim()) return res.status(400).json({ error: 'Mensagem é obrigatória.' });
     try {
+        // Mensagem nova entra no topo da lista (como já era antes de existir
+        // ordem manual) — daí o operador arrasta pra onde quiser.
         const result = await db.run(
-            'INSERT INTO mensagens_personalizadas (nome, texto, media_path, media_tipo, categoria) VALUES (?, ?, ?, ?, ?)',
+            `INSERT INTO mensagens_personalizadas (nome, texto, media_path, media_tipo, categoria, ordem)
+             VALUES (?, ?, ?, ?, ?, (SELECT COALESCE(MIN(ordem), 0) - 1 FROM mensagens_personalizadas))`,
             [nome.trim(), texto.trim(), media_path || null, media_tipo || null, categoria || null]
         );
         // Padrão adotado em 27/08: toda Mensagem Personalizada nova já entra
