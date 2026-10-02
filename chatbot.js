@@ -2854,6 +2854,75 @@ app.post('/webhooks/gympulse-daily-report', async (req, res) => {
     }
 });
 
+// =====================================
+// INTEGRAÇÃO DE ENTREGAS (nova entrega → WhatsApp do entregador)
+// =====================================
+// Mesmo esquema de chave do Gympulse (gera sozinha, mascarada no GET, completa
+// só na resposta do Regenerar), só que com chave própria — regenerar uma não
+// derruba a outra.
+async function obterChaveWebhookEntregas() {
+    const row = await db.get("SELECT valor FROM configuracoes WHERE chave = 'entregas_webhook_key'");
+    if (row?.valor) return row.valor;
+    const novaChave = require('crypto').randomBytes(24).toString('hex');
+    await db.run('INSERT OR REPLACE INTO configuracoes (chave, valor) VALUES (?, ?)', ['entregas_webhook_key', novaChave]);
+    return novaChave;
+}
+
+app.get('/api/entregas/config', async (req, res) => {
+    const webhookKey = await obterChaveWebhookEntregas();
+    res.json({ webhook_key: mascararSegredo(webhookKey) });
+});
+
+app.put('/api/entregas/config', async (req, res) => {
+    const novaChave = require('crypto').randomBytes(24).toString('hex');
+    await db.run('INSERT OR REPLACE INTO configuracoes (chave, valor) VALUES (?, ?)', ['entregas_webhook_key', novaChave]);
+    res.json({ success: true, webhook_key: novaChave });
+});
+
+// Chamado pelo sistema de entregas quando entra uma entrega nova. Sai sempre
+// pelo Template "nova_entrega_entregador" na API Oficial — o entregador é
+// contato frio quase sempre (fora da janela de 24h), então texto livre não
+// entregaria, e o Principal não faz disparo (PRINCIPAL_HABILITADO).
+// Texto abaixo é cópia do corpo aprovado na Meta, só pra aparecer igual no
+// Bate Papo ao Vivo — se o Template mudar lá, atualizar aqui também.
+app.post('/webhooks/nova-entrega', async (req, res) => {
+    try {
+        const webhookKey = await obterChaveWebhookEntregas();
+        const auth = req.headers['authorization'] || '';
+        const tokenRecebido = auth.startsWith('Bearer ') ? auth.slice('Bearer '.length) : '';
+        if (!webhookKey || tokenRecebido !== webhookKey) {
+            return res.status(401).json({ error: 'Não autorizado.' });
+        }
+
+        const { telefone, valor, endereco, nome } = req.body || {};
+        if (!telefone || valor == null || String(valor).trim() === '' || !endereco) {
+            return res.status(400).json({ error: 'Campos obrigatórios: "telefone", "valor" e "endereco".' });
+        }
+        const telefoneLimpo = normalizarTelefoneImportado(telefone);
+        if (!telefoneLimpo) return res.status(400).json({ error: 'Telefone inválido (esperado DDD + número, com ou sem 55).' });
+
+        const configWhatsappCloud = await obterConfigWhatsappCloud();
+        if (!configWhatsappCloud?.accessToken || !configWhatsappCloud?.phoneNumberId) {
+            return res.status(503).json({ error: 'WhatsApp Business API não configurada no BotPro.' });
+        }
+
+        const mensagem = `🛵 Nova entrega disponível na Sorvetes Guri!\n\nValor da entrega: ${valor}\nEndereço: ${endereco}\n\nAbra o app do entregador para aceitar antes que outro entregador pegue.`;
+        try {
+            const resultado = await enviarTemplateWhatsappCloud(telefoneLimpo, 'nova_entrega_entregador', [valor, endereco], configWhatsappCloud);
+            const wamid = resultado?.messages?.[0]?.id || null;
+            await registrarMensagemEnviada(telefoneLimpo, mensagem, nome || telefoneLimpo, wamid, false, 'text', null, 'whatsapp_cloud');
+            console.log(`✅ Entregas: "nova_entrega_entregador" enviado pra ${telefoneLimpo} (wamid=${wamid || 'sem wamid'}).`);
+            res.json({ success: true, wamid });
+        } catch (e) {
+            console.log(`ℹ️ Entregas: falha ao enviar "nova_entrega_entregador" pra ${telefoneLimpo} (${e.message}).`);
+            res.status(502).json({ error: `Falha ao enviar pela API Oficial: ${e.message}` });
+        }
+    } catch (err) {
+        console.error('Erro no webhook de entregas:', err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
 app.get('/api/ia/exemplos/contagem', async (req, res) => {
     const row = await db.get('SELECT COUNT(*) AS total FROM ia_exemplos_consultoras');
     res.json({ total: row.total });

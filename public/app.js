@@ -778,7 +778,7 @@ navBtns.forEach(btn => {
         if (targetId === 'configuracoes-section') { loadHorarioConfig(); loadDelayResposta(); loadProgramacoes(); loadInstagramConfig(); loadWhatsappCloudConfig(); }
         if (targetId === 'conversas-section') CM.onEnterSection();
         if (targetId === 'contatos-section' || targetId === 'disparos-section') loadContatos();
-        if (targetId === 'integracoes-section') { loadPactoInadimplentes(); loadPactoVencemHoje(); loadContratosAnuais(); loadAgendaAvaliacao(); loadGympulseConfig(); }
+        if (targetId === 'integracoes-section') { loadPactoInadimplentes(); loadPactoVencemHoje(); loadContratosAnuais(); loadAgendaAvaliacao(); loadGympulseConfig(); loadEntregasConfig(); }
         if (targetId === 'automacoes-section') { loadEtiquetas().then(() => loadAutomacoes()); }
         if (targetId === 'mensagens-personalizadas-section') loadMensagensPersonalizadas();
         if (targetId === 'disparos-section') {
@@ -1316,6 +1316,37 @@ btnGympulseGerarChave?.addEventListener('click', async () => {
         const data = await res.json();
         if (gympulseWebhookKeyInput) gympulseWebhookKeyInput.value = data.webhook_key || '';
         showToast('Chave gerada!', 'Atualize a configuração no GympulsePro com a nova chave.', 'success', 4000);
+    } catch (e) {
+        showToast('Erro', 'Não foi possível gerar uma nova chave.', 'error');
+    }
+});
+
+// =====================================
+// ENTREGAS (aviso de nova entrega pro entregador)
+// =====================================
+const entregasWebhookUrlInput = document.getElementById('entregas-webhook-url');
+const entregasWebhookKeyInput = document.getElementById('entregas-webhook-key');
+const btnEntregasGerarChave = document.getElementById('btn-entregas-gerar-chave');
+
+async function loadEntregasConfig() {
+    if (!entregasWebhookUrlInput) return;
+    entregasWebhookUrlInput.value = `${window.location.origin}/webhooks/nova-entrega`;
+    try {
+        const res = await fetch('/api/entregas/config');
+        const config = await res.json();
+        if (entregasWebhookKeyInput) entregasWebhookKeyInput.value = config.webhook_key || '';
+    } catch (e) {
+        console.error('Erro ao carregar configuração de Entregas', e);
+    }
+}
+
+btnEntregasGerarChave?.addEventListener('click', async () => {
+    if (!confirm('Gerar uma chave nova? A chave atual para de funcionar na hora — só faça isso se já for atualizar do lado do sistema de entregas também.')) return;
+    try {
+        const res = await fetch('/api/entregas/config', { method: 'PUT' });
+        const data = await res.json();
+        if (entregasWebhookKeyInput) entregasWebhookKeyInput.value = data.webhook_key || '';
+        showToast('Chave gerada!', 'Copie agora e cole no sistema de entregas.', 'success', 4000);
     } catch (e) {
         showToast('Erro', 'Não foi possível gerar uma nova chave.', 'error');
     }
