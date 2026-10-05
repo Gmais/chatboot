@@ -93,4 +93,49 @@ async function atualizarStatusAgendamento(appointmentId, novoStatus) {
     return Array.isArray(linhas) && linhas.length > 0 ? linhas[0] : null;
 }
 
-module.exports = { buscarAgendaDoDia, atualizarStatusAgendamento };
+// GET simples no PostgREST da Agenda com o token de quem chama — usado pela
+// cobrança do MQV, que faz duas leituras seguidas e reaproveita um login só.
+async function agendaGet(accessToken, tabela, params) {
+    const url = new URL(`${AGENDA_SUPABASE_URL}/rest/v1/${tabela}`);
+    Object.entries(params).forEach(([chave, valor]) => url.searchParams.set(chave, valor));
+    const res = await fetch(url, { headers: { apikey: AGENDA_ANON_KEY, Authorization: `Bearer ${accessToken}` } });
+    if (!res.ok) {
+        let mensagem = `Falha ao ler ${tabela} na Agenda (HTTP ${res.status}).`;
+        try {
+            const corpo = await res.json();
+            if (corpo?.message) mensagem = corpo.message;
+        } catch (_) {}
+        throw new Error(mensagem);
+    }
+    return res.json();
+}
+
+// MQVs respondidos desde `desdeIso`, com a matrícula e o WhatsApp do
+// cadastro da Avaliação Física (clients) de cada um — o MQV é ligado a esse
+// cadastro, não ao aluno da agenda (profiles); quem chama cruza os dois pela
+// matrícula/WhatsApp, igual a própria Agenda faz (src/lib/agenda-match.ts).
+async function buscarMQVsRecentes(desdeIso, accessToken = null) {
+    const token = accessToken || await agendaLogin();
+    const linhas = await agendaGet(token, 'mqv_responses', {
+        select: 'created_at,client:clients(pacto_matricula,whatsapp)',
+        created_at: `gte.${desdeIso}`,
+        order: 'created_at.desc',
+        limit: '2000',
+    });
+    return (linhas || []).map(r => ({
+        created_at: r.created_at,
+        matricula: r.client?.pacto_matricula ?? null,
+        whatsapp: r.client?.whatsapp ?? null,
+    }));
+}
+
+// Status/data/hora ATUAIS de alguns agendamentos — a lista local só é
+// atualizada de hora em hora, e um cancelamento/remarcação feito na Agenda
+// nesse meio tempo não pode receber cobrança.
+async function buscarAgendamentosPorIds(ids, accessToken = null) {
+    if (!ids.length) return [];
+    const token = accessToken || await agendaLogin();
+    return agendaGet(token, 'appointments', { select: 'id,status,date,time', id: `in.(${ids.join(',')})` });
+}
+
+module.exports = { agendaLogin, buscarAgendaDoDia, atualizarStatusAgendamento, buscarMQVsRecentes, buscarAgendamentosPorIds };

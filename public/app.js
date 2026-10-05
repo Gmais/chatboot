@@ -5617,8 +5617,55 @@ function respostaAlunoAgendaAvaliacao(i) {
     return '<span style="color:var(--text-3)">-</span>';
 }
 
+// Coluna "MQV": respondeu dentro dos 10 dias antes da avaliação, ou em que
+// ponto está a cobrança (ver processarCobrancaMQV no backend).
+function mqvAgendaAvaliacao(i) {
+    if (!i.telefone) return '<span style="color:var(--text-3)">-</span>';
+    if (i.mqv_valido) {
+        const d = new Date(i.mqv_respondido_em);
+        const quando = isNaN(d) ? '' : d.toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo', day: '2-digit', month: '2-digit' });
+        return `<span style="color:var(--green)">✅ Respondido${quando ? ` (${quando})` : ''}</span>`;
+    }
+    const enviados = i.mqv_enviados || 0;
+    const proxima = i.mqv_proxima ? `<div style="color:var(--text-3);font-size:.72rem">próxima: ${i.mqv_proxima}</div>` : '';
+    if (enviados > 0) return `<span style="color:#f59e0b">📨 Cobrado ${enviados}/${i.mqv_total || 6}</span>${proxima}`;
+    if (i.mqv_proxima) return `<span style="color:var(--text-3)">🕒 1ª cobrança ${i.mqv_proxima}</span>`;
+    return '<span style="color:var(--red)">⚠️ Não respondeu</span>';
+}
+
+const btnMqvCobrancaToggle = document.getElementById('btn-mqv-cobranca-toggle');
+let mqvCobrancaAtiva = true;
+function renderMqvCobrancaToggle() {
+    if (btnMqvCobrancaToggle) btnMqvCobrancaToggle.textContent = `📝 Cobrança do MQV: ${mqvCobrancaAtiva ? 'Ligada' : 'Desligada'}`;
+}
+async function carregarMqvCobrancaConfig() {
+    try {
+        const res = await fetch('/api/agenda-avaliacao/mqv-config');
+        mqvCobrancaAtiva = !!(await res.json()).ativa;
+        renderMqvCobrancaToggle();
+    } catch (e) { /* silencioso — só o rótulo do botão */ }
+}
+btnMqvCobrancaToggle?.addEventListener('click', async () => {
+    const ativar = !mqvCobrancaAtiva;
+    if (!ativar && !confirm('Desligar a cobrança automática do MQV? Ninguém mais recebe as cobranças até ligar de novo.')) return;
+    try {
+        const res = await fetch('/api/agenda-avaliacao/mqv-config', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ativa: ativar }),
+        });
+        if (!res.ok) throw new Error('Falha ao salvar');
+        mqvCobrancaAtiva = !!(await res.json()).ativa;
+        renderMqvCobrancaToggle();
+        showToast('Cobrança do MQV', mqvCobrancaAtiva ? 'Ligada' : 'Desligada', 'success', 2500);
+    } catch (e) {
+        showToast('Erro', 'Não foi possível salvar', 'error');
+    }
+});
+
 async function loadAgendaAvaliacao() {
     if (!agendaAvaliacaoBody) return;
+    carregarMqvCobrancaConfig();
     carregarUltimaAtualizacaoAgenda();
     try {
         const res = await fetch('/api/agenda-avaliacao');
@@ -5636,15 +5683,16 @@ async function loadAgendaAvaliacao() {
                     <td style="color:var(--text-2);font-size:.85rem">${i.horario || '-'}</td>
                     <td style="color:var(--text-2);font-size:.85rem">${i.professor || '-'}</td>
                     <td style="font-size:.8rem;white-space:nowrap">${respostaAlunoAgendaAvaliacao(i)}</td>
+                    <td style="font-size:.8rem;white-space:nowrap">${mqvAgendaAvaliacao(i)}</td>
                     <td style="text-align:right;white-space:nowrap">
                         <button type="button" class="btn-secondary btn-editar-agenda-avaliacao" data-appointment-id="${i.appointment_id}" data-telefone="${i.telefone || ''}" data-nome="${i.nome || ''}" data-matricula="${i.matricula || ''}" data-horario="${i.horario || ''}" data-professor="${i.professor || ''}" style="padding:.35rem .6rem;font-size:.75rem" title="Editar antes de disparar">✏️</button>
                         <button type="button" class="btn-danger btn-excluir-agenda-avaliacao" data-appointment-id="${i.appointment_id}" data-nome="${i.nome || i.telefone || 'esse agendamento'}" style="padding:.35rem .6rem;font-size:.75rem" title="Excluir da lista e remover a etiqueta Agendamento AF">🗑️</button>
                     </td>
                 </tr>
             `).join('')
-            : '<tr><td colspan="7" style="padding:1.5rem;text-align:center;color:var(--text-3)">Nenhuma avaliação agendada pras próximas 24 horas.</td></tr>';
+            : '<tr><td colspan="8" style="padding:1.5rem;text-align:center;color:var(--text-3)">Nenhuma avaliação agendada pras próximas 24 horas.</td></tr>';
     } catch (e) {
-        agendaAvaliacaoBody.innerHTML = '<tr><td colspan="7" style="padding:1.5rem;text-align:center;color:var(--text-3)">Erro ao carregar.</td></tr>';
+        agendaAvaliacaoBody.innerHTML = '<tr><td colspan="8" style="padding:1.5rem;text-align:center;color:var(--text-3)">Erro ao carregar.</td></tr>';
     }
 }
 

@@ -95,7 +95,7 @@ const moment = require('moment-timezone');
 const { buscarAlunoPorMatricula, buscarAlunoPorCodigo, obterParcelasEmAberto, obterContratosPorMatricula, criarCliente, matricularAluno, gerarLinkPagamentoPixSantander } = require('./pacto');
 const { enviarMensagemInstagram, obterNomeUsuarioInstagram, verificarAssinaturaWebhook } = require('./instagram');
 const { enviarMensagemWhatsappCloud, enviarTemplateWhatsappCloud, enviarBotoesWhatsappCloud, criarTemplateWhatsappCloud, listarTemplatesWhatsappCloud, trocarCodigoPorAccessTokenWhatsappCloud, inscreverWebhookWabaWhatsappCloud, consultarStatusNumeroWhatsappCloud, listarNumerosWabaWhatsappCloud } = require('./whatsappCloudApi');
-const { buscarAgendaDoDia, atualizarStatusAgendamento } = require('./agenda');
+const { agendaLogin, buscarAgendaDoDia, atualizarStatusAgendamento, buscarMQVsRecentes, buscarAgendamentosPorIds } = require('./agenda');
 
 // Descobre se um Template aprovado pela Meta REALMENTE tem um componente de
 // cabeçalho com imagem — sem isso, os 3 pontos que montam headerImageUrl (automação,
@@ -589,6 +589,7 @@ async function sincronizarTemplatesAprovados() {
         const templates = await listarTemplatesWhatsappCloud(configWhatsappCloud);
         const statusPorNome = new Map(templates.map(t => [t.name, t.status]));
         await vincularTemplatesBotoesAFAprovados(statusPorNome);
+        await registrarAprovacaoTemplateCobrancaMQV(statusPorNome);
         const pendentes = await db.all(`SELECT * FROM mensagens_personalizadas WHERE template_whatsapp IS NULL AND (media_path IS NULL OR media_path = '')`);
         let aprovados = 0;
         for (const msg of pendentes) {
@@ -669,6 +670,32 @@ async function vincularTemplatesBotoesAFAprovados(statusPorNome) {
         mudou = true;
     }
     if (mudou) await db.run(`UPDATE configuracoes SET valor = ? WHERE chave = 'af_template_botoes_pendentes'`, JSON.stringify(pendentes));
+}
+
+// Template da cobrança do MQV (texto fixo, sem variáveis) — submetido 1x;
+// até aprovar, a cobrança tenta texto livre (ver enviarCobrancaMQV).
+async function submeterTemplateCobrancaMQV() {
+    if (!db) return;
+    try {
+        if (await db.get(`SELECT 1 FROM configuracoes WHERE chave = 'mqv_template_submetido'`)) return;
+        const configWhatsappCloud = await obterConfigWhatsappCloud();
+        if (!configWhatsappCloud.accessToken || !configWhatsappCloud.wabaId) return;
+        await criarTemplateWhatsappCloud(NOME_TEMPLATE_COBRANCA_MQV, 'UTILITY', TEXTO_COBRANCA_MQV, [], configWhatsappCloud);
+        await db.run(`INSERT OR REPLACE INTO configuracoes (chave, valor) VALUES ('mqv_template_submetido', '1')`);
+        console.log(`📨 Template "${NOME_TEMPLATE_COBRANCA_MQV}" (cobrança do MQV) submetido pra aprovação da Meta.`);
+    } catch (e) {
+        console.error('Erro ao submeter o template da cobrança do MQV:', e.message);
+    }
+}
+
+async function registrarAprovacaoTemplateCobrancaMQV(statusPorNome) {
+    const aprovado = statusPorNome.get(NOME_TEMPLATE_COBRANCA_MQV) === 'APPROVED';
+    const atual = (await db.get(`SELECT valor FROM configuracoes WHERE chave = 'mqv_template_aprovado'`))?.valor === '1';
+    if (aprovado === atual) return;
+    await db.run(`INSERT OR REPLACE INTO configuracoes (chave, valor) VALUES ('mqv_template_aprovado', ?)`, aprovado ? '1' : '0');
+    console.log(aprovado
+        ? `✅ Template "${NOME_TEMPLATE_COBRANCA_MQV}" aprovado pela Meta — cobrança do MQV passa a sair por ele.`
+        : `⚠️ Template "${NOME_TEMPLATE_COBRANCA_MQV}" deixou de estar aprovado (${statusPorNome.get(NOME_TEMPLATE_COBRANCA_MQV) || 'não encontrado'}) — cobrança volta pro texto livre.`);
 }
 
 async function initDB() {
@@ -1348,6 +1375,14 @@ async function initDB() {
     try { await db.exec(`ALTER TABLE agenda_avaliacoes_hoje ADD COLUMN resposta_em DATETIME DEFAULT NULL`); } catch (e) { }
     try { await db.exec(`ALTER TABLE agenda_avaliacoes_hoje ADD COLUMN resposta_erro TEXT DEFAULT NULL`); } catch (e) { }
     await submeterTemplatesConfirmacaoAFComBotoes();
+    // Cobrança do MQV (ver processarCobrancaMQV): mqv_respondido_em = data do
+    // MQV que vale pra essa avaliação (null = não respondeu); mqv_ultimo_slot
+    // = último horário de cobrança já tratado (de-dup entre ciclos).
+    try { await db.exec(`ALTER TABLE agenda_avaliacoes_hoje ADD COLUMN mqv_respondido_em TEXT DEFAULT NULL`); } catch (e) { }
+    try { await db.exec(`ALTER TABLE agenda_avaliacoes_hoje ADD COLUMN mqv_enviados INTEGER DEFAULT 0`); } catch (e) { }
+    try { await db.exec(`ALTER TABLE agenda_avaliacoes_hoje ADD COLUMN mqv_ultimo_slot TEXT DEFAULT NULL`); } catch (e) { }
+    try { await db.exec(`ALTER TABLE agenda_avaliacoes_hoje ADD COLUMN mqv_ultimo_envio_em DATETIME DEFAULT NULL`); } catch (e) { }
+    await submeterTemplateCobrancaMQV();
     // Feature "Fluxos" (Flow Builder visual) removida a pedido — limpeza única
     // das tabelas que sobraram de quando ela existia.
     try { await db.exec(`DROP TABLE IF EXISTS fluxos`); } catch (e) { }
@@ -7864,8 +7899,20 @@ async function tratarRespostaConfirmacaoAF({ numLimpo, texto, botaoId, ehBotao, 
                 await enviarTextoRespostaAF(numLimpo, `Obrigado, ${primeiroNome}! Vou pedir pra equipe conferir sua avaliação e já te retornamos por aqui 😉`, nomeContato);
             } else {
                 await enviarTextoRespostaAF(numLimpo, `Prontinho, ${primeiroNome}! Sua avaliação${quando}${comProfessor} está confirmada ✅\nAté lá!`, nomeContato);
-                // O professor precisa do questionário MQV respondido antes da avaliação.
-                await enviarTextoRespostaAF(numLimpo, `Não esqueça de responder ao questionário MQV 📝\nEntre nesse link para responder: ${LINK_AGENDA_AVALIACAO}/mqv/responder`, nomeContato);
+                // O professor precisa do questionário MQV respondido antes da
+                // avaliação — lembra só quem não respondeu nos últimos 10 dias
+                // (mesma regra da cobrança do MQV). Sem conseguir conferir na
+                // Agenda, lembra mesmo assim.
+                let mqvRespondidoEm = null;
+                try {
+                    mqvRespondidoEm = ultimoMQVValido(ag, await buscarMQVsRecentes(inicioBuscaMQV()));
+                    await db.run('UPDATE agenda_avaliacoes_hoje SET mqv_respondido_em = ? WHERE appointment_id = ?', [mqvRespondidoEm, id]);
+                } catch (e) {
+                    console.error(`Agenda de Avaliação: não deu pra conferir o MQV de ${ag.nome || numLimpo} — lembrete enviado mesmo assim:`, e.message);
+                }
+                if (!mqvRespondidoEm) {
+                    await enviarTextoRespostaAF(numLimpo, `Não esqueça de responder ao questionário MQV 📝\nEntre nesse link para responder: ${LINK_MQV_RESPONDER}`, nomeContato);
+                }
             }
             if (erro) await encaminharParaEquipeAF(numLimpo);
             if (erro) console.error(`❌ Agenda de Avaliação: ${ag.nome || numLimpo} confirmou (${origem}), mas não deu pra gravar na Agenda — ${erro}`);
@@ -7913,6 +7960,185 @@ async function tratarRespostaConfirmacaoAF({ numLimpo, texto, botaoId, ehBotao, 
     return true;
 }
 
+// -------------------------------------
+// Cobrança do MQV antes da avaliação
+// -------------------------------------
+// Quem tem avaliação (agendada ou confirmada) e NÃO respondeu o MQV nos 10
+// dias antes dela recebe 6 cobranças, de hora em hora, de 6h até 1h antes
+// da avaliação. Nada sai entre 22:00 e 06:00 — o que cairia nesse intervalo
+// é puxado pra antes das 22:00, mantendo sempre os 6 envios (avaliação às
+// 06:00 → 17h…22h da véspera; às 08:00 → 19h…22h da véspera + 6h e 7h).
+// Antes de CADA envio a Agenda é consultada de novo (MQV e status do
+// agendamento): respondeu, cancelou ou remarcou → não manda.
+const LINK_MQV_RESPONDER = `${LINK_AGENDA_AVALIACAO}/mqv/responder`;
+const TEXTO_COBRANCA_MQV = `Verificamos que você não respondeu ao MQV, favor responder nesse link antes da avaliação: ${LINK_MQV_RESPONDER}`;
+const NOME_TEMPLATE_COBRANCA_MQV = 'cobranca_mqv_avaliacao';
+const MQV_VALIDADE_DIAS = 10;
+const MQV_TOTAL_COBRANCAS = 6;
+const MQV_JANELA_INICIO_MIN = 6 * 60; // 06:00
+const MQV_JANELA_FIM_MIN = 22 * 60;   // 22:00 (22h em ponto ainda pode, como no exemplo das 06:00)
+// Ciclo roda a cada 2 min; horário perdido por mais que isso (servidor fora
+// do ar, aluno entrou na lista depois) não sai atrasado — espera o próximo.
+const MQV_TOLERANCIA_ATRASO_MS = 15 * 60 * 1000;
+
+function momentoAvaliacaoAF(linha) {
+    return moment.tz(`${linha.data} ${linha.horario}`, 'YYYY-MM-DD HH:mm', 'America/Sao_Paulo');
+}
+
+// Os 6 horários de cobrança (em ordem) — volta de hora em hora a partir de
+// 1h antes e fica só com os que caem entre 06:00 e 22:00.
+function horariosCobrancaMQV(linha) {
+    if (!linha.data || !linha.horario) return [];
+    const avaliacao = momentoAvaliacaoAF(linha);
+    if (!avaliacao.isValid()) return [];
+    const horarios = [];
+    for (let h = 1; h <= 24 && horarios.length < MQV_TOTAL_COBRANCAS; h++) {
+        const horario = avaliacao.clone().subtract(h, 'hours');
+        const minutoDoDia = horario.hours() * 60 + horario.minutes();
+        if (minutoDoDia >= MQV_JANELA_INICIO_MIN && minutoDoDia <= MQV_JANELA_FIM_MIN) horarios.unshift(horario);
+    }
+    return horarios;
+}
+
+// Mesma normalização da Agenda: "003938" e "3938" são a mesma matrícula.
+function normalizarMatriculaMQV(valor) {
+    const s = String(valor ?? '').trim();
+    if (!s) return null;
+    return /^\d+$/.test(s) ? (s.replace(/^0+/, '') || '0') : s.toUpperCase().replace(/\s/g, '');
+}
+function chaveTelefoneMQV(valor) {
+    const digitos = String(valor ?? '').replace(/\D/g, '');
+    return digitos.length >= 8 ? digitos.slice(-8) : null;
+}
+
+// Data do MQV mais recente do aluno que ainda vale pra essa avaliação (até
+// 10 dias antes dela), ou null. Cruza pela matrícula; pelo WhatsApp só
+// quando o cadastro do MQV não tem matrícula — nunca conta o MQV de outra
+// pessoa com o mesmo telefone (ex: mãe e filho, cada um com sua matrícula).
+function limiteValidadeMQV(linha) {
+    const avaliacao = momentoAvaliacaoAF(linha);
+    return (avaliacao.isValid() ? avaliacao : moment.tz('America/Sao_Paulo')).clone().subtract(MQV_VALIDADE_DIAS, 'days');
+}
+function ultimoMQVValido(linha, mqvs) {
+    const matricula = normalizarMatriculaMQV(linha.matricula);
+    const telefone = chaveTelefoneMQV(linha.telefone);
+    const limite = limiteValidadeMQV(linha);
+    let ultimo = null;
+    for (const r of mqvs) {
+        const matriculaCadastro = normalizarMatriculaMQV(r.matricula);
+        const bate = matriculaCadastro
+            ? (matricula && matriculaCadastro === matricula)
+            : (telefone && chaveTelefoneMQV(r.whatsapp) === telefone);
+        if (bate && moment(r.created_at).isSameOrAfter(limite) && (!ultimo || moment(r.created_at).isAfter(ultimo))) ultimo = r.created_at;
+    }
+    return ultimo;
+}
+
+function inicioBuscaMQV() {
+    // +1 dia: a lista vai até 24h pra frente, e a validade conta a partir da avaliação.
+    return moment().subtract(MQV_VALIDADE_DIAS + 1, 'days').toISOString();
+}
+
+async function cobrancaMQVAtiva() {
+    const row = await db.get("SELECT valor FROM configuracoes WHERE chave = 'mqv_cobranca_ativa'");
+    return row?.valor !== '0';
+}
+
+// Pelo template aprovado (alcança o aluno fora da janela de 24h da Meta) a
+// partir do número principal — o template só existe na WABA dele. Enquanto
+// a Meta não aprova, tenta texto livre (só chega se o aluno falou com a
+// gente nas últimas 24h, ex: quem acabou de tocar em Confirmar).
+async function enviarCobrancaMQV(linha) {
+    const configPrincipal = await obterConfigWhatsappCloud();
+    if (!configPrincipal.accessToken || !configPrincipal.phoneNumberId) throw new Error('WhatsApp Business API não configurado.');
+    const templateAprovado = (await db.get("SELECT valor FROM configuracoes WHERE chave = 'mqv_template_aprovado'"))?.valor === '1';
+    const resultado = templateAprovado
+        ? await enviarTemplateWhatsappCloud(linha.telefone, NOME_TEMPLATE_COBRANCA_MQV, [], configPrincipal)
+        : await enviarMensagemWhatsappCloud(linha.telefone, TEXTO_COBRANCA_MQV, await obterConfigWhatsappCloudPara(linha.telefone));
+    const nome = await resolverNomeContato(linha.telefone);
+    await registrarMensagemEnviada(linha.telefone, TEXTO_COBRANCA_MQV, nome, resultado?.messages?.[0]?.id || null, false, 'text', null, 'whatsapp_cloud', true);
+}
+
+let cobrancaMQVRodando = false;
+async function processarCobrancaMQV() {
+    if (cobrancaMQVRodando || !db) return;
+    cobrancaMQVRodando = true;
+    try {
+        if (!(await cobrancaMQVAtiva())) return;
+        const agora = moment.tz('America/Sao_Paulo');
+        const linhas = await db.all(`SELECT * FROM agenda_avaliacoes_hoje WHERE telefone IS NOT NULL AND telefone != ''`);
+        const devidas = [];
+        for (const linha of linhas) {
+            if (linha.mqv_respondido_em && moment(linha.mqv_respondido_em).isSameOrAfter(limiteValidadeMQV(linha))) continue;
+            const horarios = horariosCobrancaMQV(linha);
+            const passados = horarios.filter(h => h.isSameOrBefore(agora));
+            if (!passados.length) continue;
+            const horario = passados[passados.length - 1];
+            if (agora.diff(horario) > MQV_TOLERANCIA_ATRASO_MS) continue;
+            if (linha.mqv_ultimo_slot && !moment(linha.mqv_ultimo_slot).isBefore(horario)) continue;
+            devidas.push({ linha, horario, numero: horarios.indexOf(horario) + 1, total: horarios.length });
+        }
+        if (!devidas.length) return;
+
+        // Sem conseguir conferir na Agenda, não manda nada (tenta de novo no
+        // próximo ciclo, dentro da tolerância) — nunca cobra no escuro.
+        const accessToken = await agendaLogin();
+        const [mqvs, agendamentos] = await Promise.all([
+            buscarMQVsRecentes(inicioBuscaMQV(), accessToken),
+            buscarAgendamentosPorIds(devidas.map(d => d.linha.appointment_id), accessToken),
+        ]);
+        const agendamentoPorId = new Map(agendamentos.map(a => [String(a.id), a]));
+
+        for (const { linha, horario, numero, total } of devidas) {
+            const nomeLog = linha.nome || linha.telefone;
+            const atual = agendamentoPorId.get(linha.appointment_id);
+            if (!atual || !['agendado', 'confirmado'].includes(atual.status)) {
+                console.log(`📝 Cobrança do MQV: avaliação de ${nomeLog} não está mais agendada na Agenda (${atual?.status || 'não encontrada'}) — não cobrado.`);
+                continue;
+            }
+            const horarioAtual = (atual.time || '').slice(0, 5);
+            if (atual.date !== linha.data || horarioAtual !== linha.horario) {
+                // Remarcada desde a última varredura: atualiza e recalcula os horários no próximo ciclo.
+                await db.run('UPDATE agenda_avaliacoes_hoje SET data = ?, horario = ? WHERE appointment_id = ?', [atual.date, horarioAtual, linha.appointment_id]);
+                continue;
+            }
+            const respondidoEm = ultimoMQVValido(linha, mqvs);
+            if (respondidoEm) {
+                await db.run('UPDATE agenda_avaliacoes_hoje SET mqv_respondido_em = ? WHERE appointment_id = ?', [respondidoEm, linha.appointment_id]);
+                console.log(`✅ Cobrança do MQV: ${nomeLog} já respondeu o MQV — cobrança encerrada.`);
+                continue;
+            }
+            // Grava o horário ANTES de mandar: se o envio falhar, não insiste
+            // a cada 2 min — o próximo horário tenta de novo.
+            await db.run('UPDATE agenda_avaliacoes_hoje SET mqv_ultimo_slot = ? WHERE appointment_id = ?', [horario.toISOString(), linha.appointment_id]);
+            try {
+                await enviarCobrancaMQV(linha);
+                await db.run('UPDATE agenda_avaliacoes_hoje SET mqv_enviados = COALESCE(mqv_enviados, 0) + 1, mqv_ultimo_envio_em = CURRENT_TIMESTAMP WHERE appointment_id = ?', linha.appointment_id);
+                console.log(`📝 Cobrança do MQV ${numero}/${total} enviada pra ${nomeLog} (avaliação ${linha.data} ${linha.horario}).`);
+            } catch (e) {
+                console.error(`❌ Cobrança do MQV ${numero}/${total} pra ${nomeLog} falhou:`, e.message);
+            }
+        }
+        io.emit('agenda_avaliacao_resposta', {});
+    } catch (e) {
+        console.error('❌ Erro na cobrança do MQV:', e.message);
+    } finally {
+        cobrancaMQVRodando = false;
+    }
+}
+setInterval(() => processarCobrancaMQV().catch(e => console.error('Erro no ciclo da cobrança do MQV:', e.message)), 2 * 60 * 1000);
+
+// Chamado pela varredura de hora em hora: deixa a coluna MQV da tela em dia
+// pra todo mundo da lista (a cobrança confere de novo antes de cada envio).
+async function atualizarMQVRespondidoDaLista() {
+    const linhas = await db.all('SELECT appointment_id, telefone, matricula, data, horario FROM agenda_avaliacoes_hoje');
+    if (!linhas.length) return;
+    const mqvs = await buscarMQVsRecentes(inicioBuscaMQV());
+    for (const linha of linhas) {
+        await db.run('UPDATE agenda_avaliacoes_hoje SET mqv_respondido_em = ? WHERE appointment_id = ?', [ultimoMQVValido(linha, mqvs), linha.appointment_id]);
+    }
+}
+
 let agendaAvaliacaoRunning = false;
 let agendaAvaliacaoProgress = { total: 0, encontrados: 0, sem_whatsapp: 0, running: false, erro: null };
 
@@ -7923,7 +8149,29 @@ app.get('/api/agenda-avaliacao/status', async (req, res) => {
 
 app.get('/api/agenda-avaliacao', async (req, res) => {
     const lista = await db.all('SELECT * FROM agenda_avaliacoes_hoje ORDER BY data ASC, horario ASC');
-    res.json(lista);
+    // Coluna MQV: respondeu (dentro dos 10 dias)? senão, quando sai a próxima cobrança.
+    const agora = moment.tz('America/Sao_Paulo');
+    res.json(lista.map(linha => {
+        const mqvValido = !!linha.mqv_respondido_em && moment(linha.mqv_respondido_em).isSameOrAfter(limiteValidadeMQV(linha));
+        const horarios = horariosCobrancaMQV(linha);
+        const proxima = mqvValido ? null : horarios.find(h => h.isAfter(agora) && (!linha.mqv_ultimo_slot || h.isAfter(moment(linha.mqv_ultimo_slot))));
+        return {
+            ...linha,
+            mqv_valido: mqvValido,
+            mqv_total: horarios.length,
+            mqv_proxima: proxima ? `${proxima.isSame(agora, 'day') ? 'hoje' : 'amanhã'} ${proxima.format('HH:mm')}` : null,
+        };
+    }));
+});
+
+app.get('/api/agenda-avaliacao/mqv-config', async (req, res) => {
+    res.json({ ativa: await cobrancaMQVAtiva() });
+});
+
+app.put('/api/agenda-avaliacao/mqv-config', async (req, res) => {
+    await db.run(`INSERT OR REPLACE INTO configuracoes (chave, valor) VALUES ('mqv_cobranca_ativa', ?)`, req.body?.ativa ? '1' : '0');
+    console.log(`📝 Cobrança do MQV ${req.body?.ativa ? 'LIGADA' : 'DESLIGADA'} pela tela.`);
+    res.json({ ativa: !!req.body?.ativa });
 });
 
 // Chave é appointment_id, não telefone — quem não tem WhatsApp válido cadastrado
@@ -8127,6 +8375,9 @@ async function processarAgendaAvaliacao() {
                 if (c.telefone) await removerEtiquetaContato(c.telefone, etiquetaId);
             }
         }
+
+        // Coluna MQV da tela — falha aqui não pode derrubar a varredura.
+        try { await atualizarMQVRespondidoDaLista(); } catch (e) { console.error('Agenda de Avaliação: não deu pra conferir os MQVs da lista:', e.message); }
 
         const ultimaAtualizacao = new Date().toISOString();
         await db.run('INSERT OR REPLACE INTO configuracoes (chave, valor) VALUES (?, ?)', ['agenda_avaliacao_ultima_atualizacao', ultimaAtualizacao]);
