@@ -94,7 +94,7 @@ const Anthropic = require('@anthropic-ai/sdk').default;
 const moment = require('moment-timezone');
 const { buscarAlunoPorMatricula, buscarAlunoPorCodigo, obterParcelasEmAberto, obterContratosPorMatricula, criarCliente, matricularAluno, gerarLinkPagamentoPixSantander } = require('./pacto');
 const { enviarMensagemInstagram, obterNomeUsuarioInstagram, verificarAssinaturaWebhook } = require('./instagram');
-const { enviarMensagemWhatsappCloud, enviarTemplateWhatsappCloud, enviarBotoesWhatsappCloud, criarTemplateWhatsappCloud, listarTemplatesWhatsappCloud, trocarCodigoPorAccessTokenWhatsappCloud, inscreverWebhookWabaWhatsappCloud, consultarStatusNumeroWhatsappCloud, listarNumerosWabaWhatsappCloud } = require('./whatsappCloudApi');
+const { enviarMensagemWhatsappCloud, enviarTemplateWhatsappCloud, enviarBotoesWhatsappCloud, criarTemplateWhatsappCloud, listarTemplatesWhatsappCloud, trocarCodigoPorAccessTokenWhatsappCloud, inscreverWebhookWabaWhatsappCloud, consultarStatusNumeroWhatsappCloud, listarNumerosWabaWhatsappCloud, baixarMidiaWhatsappCloud } = require('./whatsappCloudApi');
 const { agendaLogin, buscarAgendaDoDia, atualizarStatusAgendamento, buscarMQVsRecentes, buscarAgendamentosPorIds } = require('./agenda');
 
 // Descobre se um Template aprovado pela Meta REALMENTE tem um componente de
@@ -1612,7 +1612,15 @@ async function salvarNaConversa(telefone, nome, direcao, texto, tipo = 'text', t
     // Nesse caso a checagem certa é bater o ts exato (reenvio da mesma
     // mensagem carrega o mesmíssimo timestamp original). Sem tsReal (mensagem
     // gerada agora, ts = new Date().toISOString()), mantém a janela de 2s.
-    if (texto) {
+    // Mídia da API Oficial fica só na guarda primária (o wamid é sempre
+    // único, e o webhook já descarta reentrega pelo mesmo wamid): o texto
+    // dela costuma ser só o selo do tipo ("[imagem]"), igual pra toda foto
+    // sem legenda — duas fotos seguidas (ex: comprovante + print) cairiam
+    // aqui como "duplicata". No Principal continua valendo: lá essa guarda
+    // também segura o eco de mídia mandada pelo painel quando o
+    // whatsapp-web.js não devolveu o id no envio.
+    const midiaCloudComId = canal === 'whatsapp_cloud' && msgId && tipo !== 'text';
+    if (texto && !midiaCloudComId) {
         // ts é gravado em ISO 8601 ("...T...Z"), formato diferente do que
         // datetime('now') devolve ("AAAA-MM-DD HH:MM:SS", com espaço em vez
         // de T) — comparar os dois direto (>=) é comparação de string pura
@@ -2262,21 +2270,38 @@ async function processarEchoWhatsappCloud(echo, phoneNumberIdDestino) {
     if (jaProcessado) return;
     await db.run('INSERT OR IGNORE INTO whatsapp_cloud_mensagens_processadas (wamid) VALUES (?)', wamid);
 
-    // Só texto nessa 1ª versão — mesma limitação do resto da integração com a
-    // API Oficial. "revoke"/"edit" (mensagem apagada/editada no celular) fica
-    // pra uma próxima.
-    if (echo.type !== 'text') {
-        console.log(`ℹ️ Coexistência: eco tipo "${echo.type}" (${numLimpo}) — só texto é suportado nessa 1ª versão, ignorado.`);
+    // Texto e mídia (foto, documento, áudio... mandados pelo celular).
+    // "revoke"/"edit" (mensagem apagada/editada no celular) fica pra uma
+    // próxima.
+    let texto = null;
+    let tipo = 'text';
+    let mediaPath = null;
+    if (echo.type === 'text') {
+        texto = echo.text?.body;
+        if (!texto) return;
+    } else if (TIPOS_MIDIA_WHATSAPP_CLOUD.has(echo.type) && echo[echo.type]?.id) {
+        const midia = echo[echo.type];
+        tipo = echo.type;
+        // Baixa antes de gravar (não em background como na recebida):
+        // registrarMensagemEnviada não devolve o id da linha pra atualizar
+        // depois. Se falhar, a bolha entra só com o selo do tipo.
+        mediaPath = await salvarMidiaWhatsappCloud(midia.id);
+        texto = midia.caption?.trim() || (tipo === 'document' && midia.filename) || TIPO_LABEL_FALLBACK[tipo];
+    } else {
+        console.log(`ℹ️ Coexistência: eco tipo "${echo.type}" (${numLimpo}) — tipo não suportado, ignorado.`);
         return;
     }
-    const texto = echo.text?.body;
-    if (!texto) return;
 
     await registrarRotaWhatsappCloud(numLimpo, phoneNumberIdDestino);
     const nomeContato = await resolverNomeContato(numLimpo);
-    await registrarMensagemEnviada(numLimpo, texto, nomeContato, wamid, true, 'text', null, 'whatsapp_cloud');
+    await registrarMensagemEnviada(numLimpo, texto, nomeContato, wamid, true, tipo, mediaPath, 'whatsapp_cloud');
     console.log(`📱 Coexistência: mensagem enviada pelo WhatsApp Business App do celular pra ${numLimpo} — sincronizada no Bate Papo.`);
 }
+
+// Tipos de mídia do webhook da API Oficial — o objeto da mídia vem numa
+// chave com o mesmo nome do tipo (ex: mensagem.image.id), e os nomes já
+// batem com os tipos usados no Bate Papo (conversas.tipo).
+const TIPOS_MIDIA_WHATSAPP_CLOUD = new Set(['image', 'document', 'audio', 'video', 'sticker']);
 
 // Mesmo fluxo do processarMensagemInstagram (registerLead → salvarNaConversa
 // → conversas_humano → modo humano/robô, entrega via enviarRespostaCanal).
@@ -2303,11 +2328,14 @@ async function processarMensagemWhatsappCloud(mensagem, valor, { phoneNumberIdDe
     // Texto, e toque em botão — de template ("button": payload + texto do
     // botão) ou de mensagem interativa ("interactive"/button_reply: id +
     // título). O botão entra no Bate Papo como o texto dele e, se não for da
-    // confirmação de avaliação, segue pro robô como texto normal. O resto
-    // (mídia, localização...) ainda não é suportado — mesma limitação que o
-    // Instagram já tem hoje.
+    // confirmação de avaliação, segue pro robô como texto normal. Mídia
+    // (imagem, documento, áudio, vídeo, figurinha) entra com o anexo — antes
+    // era descartada, e comprovante de pagamento mandado por foto sumia sem
+    // aparecer no Bate Papo. Localização, contato compartilhado etc. ainda
+    // não são suportados.
     let texto = null;
     let botaoId = null;
+    let midia = null;
     if (mensagem.type === 'text') {
         texto = mensagem.text?.body;
     } else if (mensagem.type === 'button') {
@@ -2316,19 +2344,53 @@ async function processarMensagemWhatsappCloud(mensagem, valor, { phoneNumberIdDe
     } else if (mensagem.type === 'interactive' && mensagem.interactive?.type === 'button_reply') {
         texto = mensagem.interactive.button_reply?.title;
         botaoId = mensagem.interactive.button_reply?.id || null;
+    } else if (TIPOS_MIDIA_WHATSAPP_CLOUD.has(mensagem.type) && mensagem[mensagem.type]?.id) {
+        midia = mensagem[mensagem.type];
+        // Legenda vai pro robô como texto — igual no Principal, onde msg.body
+        // de uma foto já é a legenda.
+        texto = midia.caption?.trim() || null;
     } else {
-        console.log(`ℹ️ WhatsApp Business API: mensagem tipo "${mensagem.type}" de ${numLimpo} — só texto e botão são suportados nessa 1ª versão, ignorada.`);
+        console.log(`ℹ️ WhatsApp Business API: mensagem tipo "${mensagem.type}" de ${numLimpo} — tipo não suportado, ignorada.`);
         return;
     }
-    if (!texto) return;
-    const ehBotao = mensagem.type !== 'text';
+    if (!texto && !midia) return;
+    const ehBotao = mensagem.type === 'button' || mensagem.type === 'interactive';
 
     const nomeContato = valor?.contacts?.[0]?.profile?.name || numLimpo;
-    const textoNormalizado = texto.trim().toLowerCase();
 
     registerLead(numLimpo, 'whatsapp_cloud').catch(e => console.error('Erro ao registrar lead do WhatsApp Business API:', e.message));
-    await salvarNaConversa(numLimpo, nomeContato, 'in', texto, 'text', null, false, null, 'whatsapp_cloud');
-    io.emit('message_in', { from: numLimpo, nome: nomeContato, text: texto, ts: Date.now() });
+    if (midia) {
+        const tipo = mensagem.type; // mesmos nomes de tipo que o Bate Papo já usa
+        let mediaPath = null;
+        // Áudio baixa antes de gravar, pra transcrever e o robô responder pelo
+        // texto (mesmo que o Principal faz). O resto baixa em background
+        // depois de gravar, pra mensagem não esperar o download pra aparecer.
+        if (tipo === 'audio') {
+            mediaPath = await salvarMidiaWhatsappCloud(midia.id);
+            const groqKey = mediaPath ? (await db.get("SELECT valor FROM configuracoes WHERE chave = 'groq_api_key'"))?.valor : null;
+            if (groqKey) {
+                try {
+                    texto = await transcreverArquivoAudio(path.join(__dirname, 'public', mediaPath), groqKey);
+                } catch (e) {
+                    console.error('❌ Erro ao transcrever áudio:', e.message);
+                }
+            }
+        }
+        const textoExibir = tipo === 'audio' && texto
+            ? `🎤 ${texto}`
+            : (texto || (tipo === 'document' && midia.filename) || TIPO_LABEL_FALLBACK[tipo]);
+        const idConversa = await salvarNaConversa(numLimpo, nomeContato, 'in', textoExibir, tipo, null, false, mediaPath, 'whatsapp_cloud', wamid);
+        if (idConversa === null) return;
+        if (tipo !== 'audio') baixarMidiaCloudEAtualizarEmBackground(midia.id, idConversa, numLimpo);
+        io.emit('message_in', { from: numLimpo, nome: nomeContato, text: textoExibir, ts: Date.now() });
+        // Sem legenda nem transcrição não tem o que o robô responder — fica
+        // só no Bate Papo pro atendente (mesmo comportamento do Principal).
+        if (!texto) return;
+    } else {
+        await salvarNaConversa(numLimpo, nomeContato, 'in', texto, 'text', null, false, null, 'whatsapp_cloud');
+        io.emit('message_in', { from: numLimpo, nome: nomeContato, text: texto, ts: Date.now() });
+    }
+    const textoNormalizado = texto.trim().toLowerCase();
 
     const assumidaPorHumano = await db.get('SELECT 1 FROM conversas_humano WHERE telefone = ?', numLimpo);
     // Resposta à confirmação da avaliação física vem antes do robô e do
@@ -10340,20 +10402,25 @@ async function transcreverAudio(msg) {
         tmpPath = path.join(os.tmpdir(), `audio_${Date.now()}_${Math.round(Math.random() * 1e6)}.${ext}`);
         fs.writeFileSync(tmpPath, Buffer.from(media.data, 'base64'));
 
-        const groq = new OpenAI({ apiKey, baseURL: 'https://api.groq.com/openai/v1' });
-        const transcricao = await groq.audio.transcriptions.create({
-            file: fs.createReadStream(tmpPath),
-            model: 'whisper-large-v3',
-            language: 'pt'
-        });
-
-        return transcricao.text ? transcricao.text.trim() : null;
+        return await transcreverArquivoAudio(tmpPath, apiKey);
     } catch (e) {
         console.error('❌ Erro ao transcrever áudio:', e.message);
         return null;
     } finally {
         if (tmpPath && fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
     }
+}
+
+// Parte do Whisper separada do download — o áudio da API Oficial chega por
+// outro caminho (baixarMidiaWhatsappCloud), já salvo em disco.
+async function transcreverArquivoAudio(caminho, apiKey) {
+    const groq = new OpenAI({ apiKey, baseURL: 'https://api.groq.com/openai/v1' });
+    const transcricao = await groq.audio.transcriptions.create({
+        file: fs.createReadStream(caminho),
+        model: 'whisper-large-v3',
+        language: 'pt'
+    });
+    return transcricao.text ? transcricao.text.trim() : null;
 }
 
 const EXTENSAO_POR_MIME_GERAL = {
@@ -10417,12 +10484,41 @@ async function baixarMidiaRecebida(msg) {
     return null;
 }
 
+// Equivalente do baixarMidiaRecebida pra API Oficial: o webhook só traz o id
+// da mídia, o arquivo sai da Graph API. Mesmo destino (public/uploads, no
+// volume) e mesmo retorno — URL pública, ou null se falhar (a mensagem fica
+// no Bate Papo do mesmo jeito, só sem o anexo). Teto de 25MB: comprovante e
+// foto ficam bem abaixo disso, e documento grande encheria o volume.
+const MIDIA_CLOUD_TAMANHO_MAXIMO = 25 * 1024 * 1024;
+async function salvarMidiaWhatsappCloud(mediaId) {
+    try {
+        const config = await obterConfigWhatsappCloud();
+        const { buffer, mimeType } = await baixarMidiaWhatsappCloud(mediaId, config, MIDIA_CLOUD_TAMANHO_MAXIMO);
+        const nomeArquivo = `recebido_${Date.now()}_${Math.round(Math.random() * 1e9)}.${extensaoPorMimetype(mimeType)}`;
+        fs.writeFileSync(path.join(__dirname, 'public', 'uploads', nomeArquivo), buffer);
+        return '/uploads/' + nomeArquivo;
+    } catch (e) {
+        console.error(`Erro ao baixar mídia da API Oficial (${mediaId}):`, e.message);
+        return null;
+    }
+}
+
 // Roda baixarMidiaRecebida em background, sem segurar quem chamou — a
 // mensagem já foi salva e exibida (com media_path nulo); se o download
 // terminar bem, atualiza essa mesma linha em "conversas" e avisa o painel
 // pra trocar o selo de tipo pelo anexo de verdade na bolha já exibida.
 function baixarMidiaEAtualizarEmBackground(msg, idConversa, telefone) {
-    baixarMidiaRecebida(msg).then(async (mediaPath) => {
+    atualizarMidiaDaConversaEmBackground(baixarMidiaRecebida(msg), idConversa, telefone);
+}
+
+// Mesma coisa pra mídia recebida pela API Oficial — só muda de onde o
+// arquivo vem (Graph API em vez do whatsapp-web.js).
+function baixarMidiaCloudEAtualizarEmBackground(mediaId, idConversa, telefone) {
+    atualizarMidiaDaConversaEmBackground(salvarMidiaWhatsappCloud(mediaId), idConversa, telefone);
+}
+
+function atualizarMidiaDaConversaEmBackground(promessaMediaPath, idConversa, telefone) {
+    promessaMediaPath.then(async (mediaPath) => {
         if (!mediaPath || !idConversa) return;
         await db.run('UPDATE conversas SET media_path = ? WHERE id = ?', [mediaPath, idConversa]);
         // Manda a linha inteira (não só media_path) — o painel monta o corpo

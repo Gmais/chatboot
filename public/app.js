@@ -4489,6 +4489,8 @@ const CM = (() => {
             return `<a href="${m.media_path}" target="_blank" rel="noopener" class="bubble-media-link" title="Abrir imagem"><img src="${m.media_path}" class="bubble-image" alt="Imagem" loading="lazy"></a>${legendaHtml}`;
         } else if (m.media_path && m.tipo === 'video') {
             return `<video src="${m.media_path}" class="bubble-video" controls preload="metadata"></video>${legendaHtml}`;
+        } else if (m.media_path && m.tipo === 'audio') {
+            return `<audio src="${m.media_path}" class="bubble-audio" controls preload="none"></audio>${legendaHtml}`;
         } else if (m.media_path) {
             // Documento, figurinha etc. — abre/baixa numa aba nova.
             const rotulo = m.tipo === 'document' ? 'Abrir documento' : 'Abrir anexo';

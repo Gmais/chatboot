@@ -245,6 +245,53 @@ async function listarNumerosWabaWhatsappCloud(wabaId, accessToken) {
     return resultado?.data || [];
 }
 
+// Baixa uma mídia recebida pelo webhook (imagem, documento, áudio, vídeo,
+// figurinha) — o webhook só traz o id dela, não o arquivo. São duas etapas:
+// GET /{media-id} devolve uma URL temporária (vale ~5 min) + mime_type +
+// tamanho, e o arquivo sai dessa URL, que exige o token no header
+// Authorization (não aceita ?access_token= como o resto da Graph API).
+// `tamanhoMaximo` evita encher o volume do Railway com documento grande
+// (a Meta aceita até 100MB) — acima disso rejeita antes de baixar.
+const MIDIA_DOWNLOAD_TIMEOUT_MS = 60000;
+async function baixarMidiaWhatsappCloud(mediaId, { accessToken } = {}, tamanhoMaximo = Infinity) {
+    if (!mediaId || !accessToken) throw new Error('mediaId e accessToken são obrigatórios.');
+    const info = await graphRequest('GET', String(mediaId), { accessToken });
+    if (!info?.url) throw new Error('Graph API não devolveu a URL da mídia.');
+    if (Number(info.file_size) > tamanhoMaximo) {
+        throw new Error(`mídia de ${(Number(info.file_size) / 1048576).toFixed(1)}MB passa do limite de ${(tamanhoMaximo / 1048576).toFixed(0)}MB.`);
+    }
+
+    const baixar = (url, redirecionamentos = 0) => new Promise((resolve, reject) => {
+        const req = https.get(url, {
+            timeout: MIDIA_DOWNLOAD_TIMEOUT_MS,
+            // Sem User-Agent o servidor de mídia da Meta às vezes responde
+            // uma página HTML em vez do arquivo.
+            headers: { Authorization: `Bearer ${accessToken}`, 'User-Agent': 'BotPro/1.0' },
+        }, (res) => {
+            if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location && redirecionamentos < 3) {
+                res.resume();
+                resolve(baixar(new URL(res.headers.location, url), redirecionamentos + 1));
+                return;
+            }
+            if (res.statusCode < 200 || res.statusCode >= 300) {
+                res.resume();
+                reject(new Error(`Erro HTTP ${res.statusCode} ao baixar a mídia.`));
+                return;
+            }
+            const partes = [];
+            res.on('data', (chunk) => partes.push(chunk));
+            res.on('end', () => resolve(Buffer.concat(partes)));
+            res.on('error', reject);
+        });
+        req.on('error', reject);
+        req.on('timeout', () => req.destroy(new Error(`Timeout de ${MIDIA_DOWNLOAD_TIMEOUT_MS / 1000}s ao baixar a mídia.`)));
+    });
+
+    const buffer = await baixar(info.url);
+    if (!buffer.length) throw new Error('mídia veio vazia.');
+    return { buffer, mimeType: info.mime_type || null };
+}
+
 module.exports = {
     enviarMensagemWhatsappCloud,
     enviarTemplateWhatsappCloud,
@@ -255,4 +302,5 @@ module.exports = {
     inscreverWebhookWabaWhatsappCloud,
     consultarStatusNumeroWhatsappCloud,
     listarNumerosWabaWhatsappCloud,
+    baixarMidiaWhatsappCloud,
 };

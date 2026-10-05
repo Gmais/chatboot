@@ -1092,6 +1092,11 @@ header h1 {
     border-radius: 8px;
     display: block;
 }
+.bubble-audio {
+    width: 260px;
+    max-width: 100%;
+    display: block;
+}
 .bubble-doc-link {
     display: flex;
     align-items: center;
