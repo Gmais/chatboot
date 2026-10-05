@@ -5598,6 +5598,25 @@ async function carregarUltimaAtualizacaoAgenda() {
     } catch (e) { /* silencioso — só o texto informativo */ }
 }
 
+// Coluna "Resposta do aluno": acompanha a confirmação desde a fila de envio
+// até o que o aluno respondeu (ver tratarRespostaConfirmacaoAF no backend).
+// Quem cancelou pra remarcar some da lista, igual a qualquer cancelado.
+function respostaAlunoAgendaAvaliacao(i) {
+    if (i.resposta_aluno === 'confirmado') {
+        if (!i.resposta_erro) return '<span style="color:var(--green)">✅ Confirmou</span>';
+        const erro = String(i.resposta_erro).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+        return `<span style="color:var(--green)">✅ Confirmou</span><div style="color:var(--red);font-size:.72rem;cursor:help" title="${erro}">⚠️ Não gravou na Agenda</div>`;
+    }
+    if (i.resposta_aluno === 'remarcar_pendente') {
+        const erroCancelamento = i.resposta_erro
+            ? `<div style="color:var(--red);font-size:.72rem;cursor:help" title="${String(i.resposta_erro).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;')}">⚠️ Não cancelou na Agenda</div>` : '';
+        return `<span style="color:#f59e0b">📅 Quer remarcar</span>${erroCancelamento}`;
+    }
+    if (i.confirmacao_enviada_em) return '<span style="color:var(--text-3)">⏳ Aguardando resposta</span>';
+    if (i.confirmacao_solicitada_em) return '<span style="color:var(--text-3)">🕒 Na fila de envio</span>';
+    return '<span style="color:var(--text-3)">-</span>';
+}
+
 async function loadAgendaAvaliacao() {
     if (!agendaAvaliacaoBody) return;
     carregarUltimaAtualizacaoAgenda();
@@ -5616,15 +5635,16 @@ async function loadAgendaAvaliacao() {
                     <td style="color:var(--text-2);font-size:.85rem">${i.data ? (i.data === hojeYMD ? 'Hoje' : 'Amanhã') : '-'}</td>
                     <td style="color:var(--text-2);font-size:.85rem">${i.horario || '-'}</td>
                     <td style="color:var(--text-2);font-size:.85rem">${i.professor || '-'}</td>
+                    <td style="font-size:.8rem;white-space:nowrap">${respostaAlunoAgendaAvaliacao(i)}</td>
                     <td style="text-align:right;white-space:nowrap">
                         <button type="button" class="btn-secondary btn-editar-agenda-avaliacao" data-appointment-id="${i.appointment_id}" data-telefone="${i.telefone || ''}" data-nome="${i.nome || ''}" data-matricula="${i.matricula || ''}" data-horario="${i.horario || ''}" data-professor="${i.professor || ''}" style="padding:.35rem .6rem;font-size:.75rem" title="Editar antes de disparar">✏️</button>
                         <button type="button" class="btn-danger btn-excluir-agenda-avaliacao" data-appointment-id="${i.appointment_id}" data-nome="${i.nome || i.telefone || 'esse agendamento'}" style="padding:.35rem .6rem;font-size:.75rem" title="Excluir da lista e remover a etiqueta Agendamento AF">🗑️</button>
                     </td>
                 </tr>
             `).join('')
-            : '<tr><td colspan="6" style="padding:1.5rem;text-align:center;color:var(--text-3)">Nenhuma avaliação agendada pras próximas 24 horas.</td></tr>';
+            : '<tr><td colspan="7" style="padding:1.5rem;text-align:center;color:var(--text-3)">Nenhuma avaliação agendada pras próximas 24 horas.</td></tr>';
     } catch (e) {
-        agendaAvaliacaoBody.innerHTML = '<tr><td colspan="6" style="padding:1.5rem;text-align:center;color:var(--text-3)">Erro ao carregar.</td></tr>';
+        agendaAvaliacaoBody.innerHTML = '<tr><td colspan="7" style="padding:1.5rem;text-align:center;color:var(--text-3)">Erro ao carregar.</td></tr>';
     }
 }
 
@@ -5684,6 +5704,8 @@ socket.on('agenda_avaliacao_done', (p) => {
     if (!p.erro) showToast('Agenda atualizada!', `${p.encontrados} aluno(s) etiquetado(s) com "Agendamento AF".`, 'success', 5000);
     loadAgendaAvaliacao();
 });
+
+socket.on('agenda_avaliacao_resposta', () => loadAgendaAvaliacao());
 
 // =====================================
 // SORTEIO RESGATE EX-ALUNOS

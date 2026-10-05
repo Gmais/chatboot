@@ -57,4 +57,40 @@ async function buscarAgendaDoDia({ date, status } = {}) {
     return res.json();
 }
 
-module.exports = { buscarAgendaDoDia };
+// Muda o status de UM agendamento direto na tabela appointments (PostgREST)
+// — a conta do robô é admin na Agenda (enxerga a agenda de todos os
+// professores na função de leitura acima, o que só admin consegue), e a
+// política "Admins full access appointments" já libera o UPDATE; updated_at
+// é atualizado sozinho por trigger do lado de lá. Só mexe em quem ainda está
+// "agendado" ou "confirmado": um agendamento já realizado/cancelado/faltou
+// nunca é sobrescrito por uma resposta atrasada do aluno. Devolve a linha
+// atualizada, ou null quando nada bateu (status já mudou, id sumiu, ou a
+// conta perdeu a permissão — o RLS não dá erro, só não atualiza nada).
+async function atualizarStatusAgendamento(appointmentId, novoStatus) {
+    const accessToken = await agendaLogin();
+    const url = new URL(`${AGENDA_SUPABASE_URL}/rest/v1/appointments`);
+    url.searchParams.set('id', `eq.${appointmentId}`);
+    url.searchParams.set('status', 'in.(agendado,confirmado)');
+    const res = await fetch(url, {
+        method: 'PATCH',
+        headers: {
+            apikey: AGENDA_ANON_KEY,
+            Authorization: `Bearer ${accessToken}`,
+            'Content-Type': 'application/json',
+            Prefer: 'return=representation',
+        },
+        body: JSON.stringify({ status: novoStatus }),
+    });
+    if (!res.ok) {
+        let mensagem = `Falha ao atualizar o agendamento na Agenda (HTTP ${res.status}).`;
+        try {
+            const corpo = await res.json();
+            if (corpo?.message) mensagem = corpo.message;
+        } catch (_) {}
+        throw new Error(mensagem);
+    }
+    const linhas = await res.json();
+    return Array.isArray(linhas) && linhas.length > 0 ? linhas[0] : null;
+}
+
+module.exports = { buscarAgendaDoDia, atualizarStatusAgendamento };

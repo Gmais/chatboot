@@ -83,12 +83,20 @@ async function enviarMensagemWhatsappCloud(telefoneE164, texto, { accessToken, p
 // protegendo essa campanha. Precisa de uma URL pública (a Meta busca ela
 // direto, não aceita path local) — quem chama monta a partir do
 // RAILWAY_PUBLIC_DOMAIN + media_path da mensagem.
-async function enviarTemplateWhatsappCloud(telefoneE164, templateNome, parametrosTexto, { accessToken, phoneNumberId } = {}, headerImageUrl = null) {
+// `payloadsBotoes` (opcional): um payload por botão de resposta rápida do
+// template, na mesma ordem dos botões aprovados — volta no webhook quando o
+// contato toca no botão (ver Agenda de Avaliação, que embute o id do
+// agendamento aqui). Sem ele, a Meta devolve o próprio texto do botão.
+async function enviarTemplateWhatsappCloud(telefoneE164, templateNome, parametrosTexto, { accessToken, phoneNumberId } = {}, headerImageUrl = null, payloadsBotoes = null) {
     if (!accessToken || !phoneNumberId) throw new Error('WhatsApp Business API não configurado: falta o Token de Acesso ou o Phone Number ID (ver Configurações).');
     const parametros = (parametrosTexto || []).map(valor => ({ type: 'text', text: String(valor ?? '').trim() || '-' }));
     const components = [
         ...(headerImageUrl ? [{ type: 'header', parameters: [{ type: 'image', image: { link: headerImageUrl } }] }] : []),
         ...(parametros.length > 0 ? [{ type: 'body', parameters: parametros }] : []),
+        ...(payloadsBotoes || []).map((payload, i) => ({
+            type: 'button', sub_type: 'quick_reply', index: String(i),
+            parameters: [{ type: 'payload', payload: String(payload) }],
+        })),
     ];
     return graphRequest('POST', `${phoneNumberId}/messages`, {
         accessToken,
@@ -119,7 +127,9 @@ const EXEMPLOS_POR_VARIAVEL = {
     parcelas: '2', valor: 'R$ 150,00', dias_atrasados: '5',
     horario: '14:00', professor: 'João', dia: 'hoje', saudacao: 'Bom dia',
 };
-async function criarTemplateWhatsappCloud(nomeTemplate, category, corpoComVariaveisPosicionais, variaveis, { accessToken, wabaId } = {}) {
+// `botoes` (opcional): textos dos botões de resposta rápida (QUICK_REPLY),
+// até 25 caracteres cada, sem emoji.
+async function criarTemplateWhatsappCloud(nomeTemplate, category, corpoComVariaveisPosicionais, variaveis, { accessToken, wabaId } = {}, botoes = []) {
     if (!accessToken || !wabaId) throw new Error('WhatsApp Business API não configurado: falta o Token de Acesso ou o WABA ID (ver Configurações).');
     const exemplos = (variaveis || []).map(v => EXEMPLOS_POR_VARIAVEL[v] || 'Exemplo');
     return graphRequest('POST', `${wabaId}/message_templates`, {
@@ -128,11 +138,35 @@ async function criarTemplateWhatsappCloud(nomeTemplate, category, corpoComVariav
             name: nomeTemplate,
             language: 'pt_BR',
             category,
-            components: [{
-                type: 'BODY',
-                text: corpoComVariaveisPosicionais,
-                ...(exemplos.length > 0 ? { example: { body_text: [exemplos] } } : {}),
-            }],
+            components: [
+                {
+                    type: 'BODY',
+                    text: corpoComVariaveisPosicionais,
+                    ...(exemplos.length > 0 ? { example: { body_text: [exemplos] } } : {}),
+                },
+                ...(botoes.length > 0 ? [{ type: 'BUTTONS', buttons: botoes.map(text => ({ type: 'QUICK_REPLY', text })) }] : []),
+            ],
+        },
+    });
+}
+
+// Mensagem com até 3 botões de resposta (interactive/button) — texto livre,
+// então só funciona DENTRO da janela de 24h (usado como resposta a algo que
+// o contato acabou de mandar). `botoes` = [{ id, titulo }], título com até
+// 20 caracteres; o id volta no webhook em interactive.button_reply.id.
+async function enviarBotoesWhatsappCloud(telefoneE164, texto, botoes, { accessToken, phoneNumberId } = {}) {
+    if (!accessToken || !phoneNumberId) throw new Error('WhatsApp Business API não configurado: falta o Token de Acesso ou o Phone Number ID (ver Configurações).');
+    return graphRequest('POST', `${phoneNumberId}/messages`, {
+        accessToken,
+        body: {
+            messaging_product: 'whatsapp',
+            to: telefoneE164,
+            type: 'interactive',
+            interactive: {
+                type: 'button',
+                body: { text: texto },
+                action: { buttons: botoes.map(b => ({ type: 'reply', reply: { id: b.id, title: b.titulo } })) },
+            },
         },
     });
 }
@@ -214,6 +248,7 @@ async function listarNumerosWabaWhatsappCloud(wabaId, accessToken) {
 module.exports = {
     enviarMensagemWhatsappCloud,
     enviarTemplateWhatsappCloud,
+    enviarBotoesWhatsappCloud,
     criarTemplateWhatsappCloud,
     listarTemplatesWhatsappCloud,
     trocarCodigoPorAccessTokenWhatsappCloud,

@@ -94,8 +94,8 @@ const Anthropic = require('@anthropic-ai/sdk').default;
 const moment = require('moment-timezone');
 const { buscarAlunoPorMatricula, buscarAlunoPorCodigo, obterParcelasEmAberto, obterContratosPorMatricula, criarCliente, matricularAluno, gerarLinkPagamentoPixSantander } = require('./pacto');
 const { enviarMensagemInstagram, obterNomeUsuarioInstagram, verificarAssinaturaWebhook } = require('./instagram');
-const { enviarMensagemWhatsappCloud, enviarTemplateWhatsappCloud, criarTemplateWhatsappCloud, listarTemplatesWhatsappCloud, trocarCodigoPorAccessTokenWhatsappCloud, inscreverWebhookWabaWhatsappCloud, consultarStatusNumeroWhatsappCloud, listarNumerosWabaWhatsappCloud } = require('./whatsappCloudApi');
-const { buscarAgendaDoDia } = require('./agenda');
+const { enviarMensagemWhatsappCloud, enviarTemplateWhatsappCloud, enviarBotoesWhatsappCloud, criarTemplateWhatsappCloud, listarTemplatesWhatsappCloud, trocarCodigoPorAccessTokenWhatsappCloud, inscreverWebhookWabaWhatsappCloud, consultarStatusNumeroWhatsappCloud, listarNumerosWabaWhatsappCloud } = require('./whatsappCloudApi');
+const { buscarAgendaDoDia, atualizarStatusAgendamento } = require('./agenda');
 
 // Descobre se um Template aprovado pela Meta REALMENTE tem um componente de
 // cabeçalho com imagem — sem isso, os 3 pontos que montam headerImageUrl (automação,
@@ -588,6 +588,7 @@ async function sincronizarTemplatesAprovados() {
         if (!configWhatsappCloud.accessToken || !configWhatsappCloud.wabaId) return;
         const templates = await listarTemplatesWhatsappCloud(configWhatsappCloud);
         const statusPorNome = new Map(templates.map(t => [t.name, t.status]));
+        await vincularTemplatesBotoesAFAprovados(statusPorNome);
         const pendentes = await db.all(`SELECT * FROM mensagens_personalizadas WHERE template_whatsapp IS NULL AND (media_path IS NULL OR media_path = '')`);
         let aprovados = 0;
         for (const msg of pendentes) {
@@ -602,6 +603,72 @@ async function sincronizarTemplatesAprovados() {
     } catch (e) {
         console.error('Erro ao sincronizar status de templates da Meta:', e.message);
     }
+}
+
+// Agenda de Avaliação: a confirmação ganha os botões "Confirmar" / "Preciso
+// remarcar" (ver tratarRespostaConfirmacaoAF). Template aprovado não ganha
+// botão editando — precisa de um template NOVO, com o mesmo texto, pra cada
+// mensagem da categoria confirmacao-agendamento. Submete 1x só (a chave em
+// `configuracoes` guarda o que ficou aguardando aprovação); enquanto a Meta
+// não aprova, a mensagem continua saindo pelo template antigo, sem botão
+// (o "sim" digitado já funciona nesse meio tempo). Mídia fica de fora pelo
+// mesmo motivo de submeterMensagemParaAprovacaoMeta — o template antigo
+// (confirmacao_agendamento_1) também não tem cabeçalho.
+const BOTOES_TEMPLATE_CONFIRMACAO_AF = ['Confirmar', 'Preciso remarcar'];
+async function submeterTemplatesConfirmacaoAFComBotoes() {
+    if (!db) return;
+    try {
+        const jaRodou = await db.get(`SELECT valor FROM configuracoes WHERE chave = 'af_template_botoes_pendentes'`);
+        if (jaRodou) return;
+        const configWhatsappCloud = await obterConfigWhatsappCloud();
+        if (!configWhatsappCloud.accessToken || !configWhatsappCloud.wabaId) return;
+        const mensagens = await db.all(`SELECT * FROM mensagens_personalizadas WHERE categoria = 'confirmacao-agendamento'`);
+        const pendentes = {};
+        for (const msg of mensagens) {
+            const variaveis = extrairVariaveisDoTexto(msg.texto);
+            const nomeTemplate = `confirmacao_avaliacao_botoes_${msg.id}`;
+            try {
+                await criarTemplateWhatsappCloud(nomeTemplate, 'UTILITY', montarCorpoTemplate(msg.texto, variaveis), variaveis, configWhatsappCloud, BOTOES_TEMPLATE_CONFIRMACAO_AF);
+                pendentes[msg.id] = { nome: nomeTemplate, variaveis };
+                console.log(`📨 Template "${nomeTemplate}" (com botões Confirmar/Preciso remarcar) submetido pra aprovação da Meta — mensagem "${msg.nome}" (#${msg.id}).`);
+            } catch (e) {
+                console.error(`Erro ao submeter template com botões pra mensagem #${msg.id} (${msg.nome}):`, e.message);
+            }
+            await delay(1000);
+        }
+        // Nada submetido (ex: falha de rede) com mensagem pra submeter: não
+        // grava a chave, tenta de novo no próximo boot.
+        if (mensagens.length > 0 && Object.keys(pendentes).length === 0) return;
+        await db.run(`INSERT OR REPLACE INTO configuracoes (chave, valor) VALUES ('af_template_botoes_pendentes', ?)`, JSON.stringify(pendentes));
+    } catch (e) {
+        console.error('Erro ao submeter templates com botões da Agenda de Avaliação:', e.message);
+    }
+}
+
+// Chamado de dentro de sincronizarTemplatesAprovados (1x/hora, reaproveita a
+// mesma listagem): quando o template com botões aprova, troca o template da
+// mensagem pra ele — botoes_agenda_af avisa o disparo pra mandar o id do
+// agendamento como payload de cada botão.
+async function vincularTemplatesBotoesAFAprovados(statusPorNome) {
+    const row = await db.get(`SELECT valor FROM configuracoes WHERE chave = 'af_template_botoes_pendentes'`);
+    if (!row?.valor) return;
+    const pendentes = JSON.parse(row.valor);
+    let mudou = false;
+    for (const [mensagemId, info] of Object.entries(pendentes)) {
+        const status = statusPorNome.get(info.nome);
+        if (status === 'APPROVED') {
+            await db.run('UPDATE mensagens_personalizadas SET template_whatsapp = ? WHERE id = ?',
+                [JSON.stringify({ nome: info.nome, variaveis: info.variaveis, botoes_agenda_af: true }), Number(mensagemId)]);
+            console.log(`✅ Template com botões "${info.nome}" aprovado pela Meta — mensagem #${mensagemId} passa a sair com Confirmar/Preciso remarcar.`);
+        } else if (status === 'REJECTED') {
+            console.log(`⛔ Template com botões "${info.nome}" foi REJEITADO pela Meta — mensagem #${mensagemId} continua no template antigo, sem botões.`);
+        } else {
+            continue;
+        }
+        delete pendentes[mensagemId];
+        mudou = true;
+    }
+    if (mudou) await db.run(`UPDATE configuracoes SET valor = ? WHERE chave = 'af_template_botoes_pendentes'`, JSON.stringify(pendentes));
 }
 
 async function initDB() {
@@ -1271,6 +1338,16 @@ async function initDB() {
     // de amanhã visto hoje à noite E de novo amanhã de manhã (ainda dentro da
     // janela de 24h) tomaria confirmação duplicada.
     try { await db.exec(`ALTER TABLE agenda_avaliacoes_hoje ADD COLUMN confirmacao_solicitada_em DATETIME DEFAULT NULL`); } catch (e) { }
+    // Resposta do aluno à confirmação (ver tratarRespostaConfirmacaoAF):
+    // confirmacao_enviada_em = a mensagem saiu de fato (solicitada_em é só
+    // "entrou na fila" — pode esperar a janela de horário); resposta_aluno =
+    // null | 'confirmado' | 'remarcar_pendente'; resposta_erro = falha ao
+    // gravar na Agenda, pra aparecer na tela.
+    try { await db.exec(`ALTER TABLE agenda_avaliacoes_hoje ADD COLUMN confirmacao_enviada_em DATETIME DEFAULT NULL`); } catch (e) { }
+    try { await db.exec(`ALTER TABLE agenda_avaliacoes_hoje ADD COLUMN resposta_aluno TEXT DEFAULT NULL`); } catch (e) { }
+    try { await db.exec(`ALTER TABLE agenda_avaliacoes_hoje ADD COLUMN resposta_em DATETIME DEFAULT NULL`); } catch (e) { }
+    try { await db.exec(`ALTER TABLE agenda_avaliacoes_hoje ADD COLUMN resposta_erro TEXT DEFAULT NULL`); } catch (e) { }
+    await submeterTemplatesConfirmacaoAFComBotoes();
     // Feature "Fluxos" (Flow Builder visual) removida a pedido — limpeza única
     // das tabelas que sobraram de quando ela existia.
     try { await db.exec(`DROP TABLE IF EXISTS fluxos`); } catch (e) { }
@@ -2188,13 +2265,28 @@ async function processarMensagemWhatsappCloud(mensagem, valor, { phoneNumberIdDe
     await db.run('INSERT OR IGNORE INTO whatsapp_cloud_mensagens_processadas (wamid) VALUES (?)', wamid);
     await registrarRotaWhatsappCloud(numLimpo, phoneNumberIdDestino);
 
-    // Só texto nessa 1ª versão — mesma limitação que o Instagram já tem hoje.
-    if (mensagem.type !== 'text') {
-        console.log(`ℹ️ WhatsApp Business API: mensagem tipo "${mensagem.type}" de ${numLimpo} — só texto é suportado nessa 1ª versão, ignorada.`);
+    // Texto, e toque em botão — de template ("button": payload + texto do
+    // botão) ou de mensagem interativa ("interactive"/button_reply: id +
+    // título). O botão entra no Bate Papo como o texto dele e, se não for da
+    // confirmação de avaliação, segue pro robô como texto normal. O resto
+    // (mídia, localização...) ainda não é suportado — mesma limitação que o
+    // Instagram já tem hoje.
+    let texto = null;
+    let botaoId = null;
+    if (mensagem.type === 'text') {
+        texto = mensagem.text?.body;
+    } else if (mensagem.type === 'button') {
+        texto = mensagem.button?.text;
+        botaoId = mensagem.button?.payload || null;
+    } else if (mensagem.type === 'interactive' && mensagem.interactive?.type === 'button_reply') {
+        texto = mensagem.interactive.button_reply?.title;
+        botaoId = mensagem.interactive.button_reply?.id || null;
+    } else {
+        console.log(`ℹ️ WhatsApp Business API: mensagem tipo "${mensagem.type}" de ${numLimpo} — só texto e botão são suportados nessa 1ª versão, ignorada.`);
         return;
     }
-    const texto = mensagem.text?.body;
     if (!texto) return;
+    const ehBotao = mensagem.type !== 'text';
 
     const nomeContato = valor?.contacts?.[0]?.profile?.name || numLimpo;
     const textoNormalizado = texto.trim().toLowerCase();
@@ -2204,6 +2296,10 @@ async function processarMensagemWhatsappCloud(mensagem, valor, { phoneNumberIdDe
     io.emit('message_in', { from: numLimpo, nome: nomeContato, text: texto, ts: Date.now() });
 
     const assumidaPorHumano = await db.get('SELECT 1 FROM conversas_humano WHERE telefone = ?', numLimpo);
+    // Resposta à confirmação da avaliação física vem antes do robô e do
+    // horário de atendimento (o aluno pode responder à noite) — ver
+    // tratarRespostaConfirmacaoAF pra quando um atendente assumiu a conversa.
+    if (await tratarRespostaConfirmacaoAF({ numLimpo, texto, botaoId, ehBotao, nomeContato, assumidaPorHumano: !!assumidaPorHumano })) return;
     if (assumidaPorHumano) return;
 
     // Shim: ver comentário equivalente em processarMensagemInstagram — só
@@ -4853,7 +4949,11 @@ async function dispararMensagensDaAutomacao(automacaoId) {
                                         // não prova nada sobre o que foi aprovado na Meta.
                                         const headerImageUrl = (msg.media_path && await templateTemHeaderImagem(template.nome, configWhatsappCloud))
                                             ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}${msg.media_path}` : null;
-                                        const resultadoTemplate = await enviarTemplateWhatsappCloud(numLimpo, template.nome, parametros, configWhatsappCloud, headerImageUrl);
+                                        // Botões Confirmar/Preciso remarcar levam o id do agendamento
+                                        // de volta no webhook (ver tratarRespostaConfirmacaoAF).
+                                        const payloadsBotoes = (template.botoes_agenda_af && agendamentoAF)
+                                            ? [`af:confirmar:${agendamentoAF.appointment_id}`, `af:remarcar:${agendamentoAF.appointment_id}`] : null;
+                                        const resultadoTemplate = await enviarTemplateWhatsappCloud(numLimpo, template.nome, parametros, configWhatsappCloud, headerImageUrl, payloadsBotoes);
                                         await registrarMensagemEnviada(numLimpo, texto, nome, resultadoTemplate?.messages?.[0]?.id || null, false, 'text', null, 'whatsapp_cloud', true);
                                         sucesso = true;
                                         enviadoPelaCloudApi = true;
@@ -4927,6 +5027,11 @@ async function dispararMensagensDaAutomacao(automacaoId) {
                             'INSERT INTO automacao_envios_log (automacao_id, telefone, nome, mensagem_nome) VALUES (?, ?, ?, ?)',
                             [automacaoId, numLimpo, nome, msg.nome]
                         );
+                        // Automação da etiqueta "Agendamento AF": a partir daqui um "sim"/
+                        // "não" digitado pelo aluno conta como resposta à confirmação.
+                        if (agendamentoAF && automacao.etiqueta_id && automacao.etiqueta_id === await garantirEtiquetaAgendamentoAF()) {
+                            await db.run('UPDATE agenda_avaliacoes_hoje SET confirmacao_enviada_em = CURRENT_TIMESTAMP WHERE appointment_id = ?', agendamentoAF.appointment_id);
+                        }
                         // remove_etiqueta_ao_concluir (toggle "Ao enviar, remove a etiqueta do
                         // contato" na tela de etapas) era gravado no banco mas nunca lido em
                         // lugar nenhum — a etiqueta que disparou a automação nunca saía do
@@ -7585,6 +7690,225 @@ async function garantirEtiquetaAgendamentoAF() {
     if (existente) return existente.id;
     const result = await db.run('INSERT INTO etiquetas (nome, cor) VALUES (?, ?)', [NOME_ETIQUETA_AGENDAMENTO_AF, '#14b8a6']);
     return result.lastID;
+}
+
+// -------------------------------------
+// Resposta do aluno à confirmação da avaliação
+// -------------------------------------
+// Fluxo: "Confirmar" → status vira "confirmado" na Agenda. "Preciso remarcar"
+// → pergunta se pode cancelar (botões Sim, cancelar / Não, manter); "Sim,
+// cancelar" → status vira "cancelado" na Agenda e o aluno recebe o link pra
+// reagendar sozinho; "Não, manter" → volta a perguntar se pode confirmar.
+// Botão é a via principal (payload af:<ação>:<appointment_id> — sem
+// interpretação nenhuma); texto digitado só conta quando é uma resposta
+// curta e inequívoca ("sim", "confirmado 👍", "não vou poder") de quem já
+// RECEBEU a confirmação — qualquer outra coisa segue o fluxo normal (robô/
+// atendente), porque gravar um status errado na agenda dos professores é
+// pior do que não gravar nada.
+const LINK_AGENDA_AVALIACAO = 'https://agendaplanetacorpo.vercel.app';
+const AF_ERRO_NAO_ESTA_MAIS_AGENDADO = 'Avaliação não está mais como agendada/confirmada na Agenda (foi alterada lá) — ou a conta do robô perdeu a permissão de admin.';
+
+const AF_FRASES_CORTESIA = ['obrigado', 'obrigada', 'obg', 'brigado', 'brigada', 'valeu', 'vlw', 'bom dia', 'boa tarde', 'boa noite', 'oi', 'ola',
+    'ate amanha', 'ate la', 'ate logo', 'amanha', 'hoje', 'la', 'ir', 'professor', 'professora', 'prof', 'por favor', 'pfv'];
+const AF_FRASES_SIM_CONFIRMACAO = ['sim', 's', 'ss', 'simm', 'confirmo', 'confirmado', 'confirmada', 'confirmar', 'confirma', 'pode confirmar',
+    'pode', 'pode sim', 'pode ser', 'ok', 'okay', 'certo', 'combinado', 'beleza', 'blz', 'claro', 'com certeza', 'positivo', 'perfeito',
+    'estarei la', 'estarei', 'vou sim', 'vou', 'isso', 'ta bom', 'tudo certo', 'joinha', 'show', 'fechado', 'tranquilo', 'opa'];
+const AF_FRASES_NAO_CONFIRMACAO = ['nao', 'n', 'nn', 'nao vou', 'nao vou poder', 'nao vou conseguir', 'nao posso', 'nao consigo', 'nao da',
+    'nao vai dar', 'infelizmente', 'infelizmente nao', 'preciso remarcar', 'quero remarcar', 'remarcar', 'vou precisar remarcar',
+    'preciso desmarcar', 'desmarcar', 'cancelar', 'quero cancelar', 'preciso cancelar'];
+const AF_FRASES_SIM_CANCELAR = ['sim', 's', 'ss', 'simm', 'pode', 'pode sim', 'pode cancelar', 'cancela', 'cancelar', 'quero', 'quero cancelar',
+    'ok', 'isso', 'claro', 'joinha', 'beleza', 'blz', 'certo'];
+const AF_FRASES_NAO_CANCELAR = ['nao', 'n', 'nn', 'nao cancela', 'nao cancele', 'nao precisa', 'manter', 'mantem', 'mantenha', 'pode manter',
+    'deixa', 'deixa assim'];
+
+function normalizarRespostaCurtaAF(texto) {
+    return (texto || '')
+        .normalize('NFD').replace(/[̀-ͯ]/g, '')
+        .toLowerCase()
+        .replace(/[👍👌✅]/gu, ' joinha ')
+        .replace(/[^a-z0-9 ]+/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+}
+
+// 'sim' | 'nao' | null — o texto INTEIRO precisa ser feito só de frases
+// conhecidas (cortesia não decide nada), e de uma polaridade só: "não, pode
+// confirmar" ou "sim, mas dá pra mudar o horário?" voltam null.
+function classificarRespostaAF(texto, frasesSim, frasesNao) {
+    if (!texto || texto.includes('?')) return null;
+    const normalizado = normalizarRespostaCurtaAF(texto);
+    if (!normalizado || normalizado.length > 60) return null;
+    const candidatas = [
+        ...frasesSim.map(f => [f, 'sim']),
+        ...frasesNao.map(f => [f, 'nao']),
+        ...AF_FRASES_CORTESIA.map(f => [f, null]),
+    ].sort((a, b) => b[0].length - a[0].length);
+    // Divide o texto em frases conhecidas tentando as mais longas primeiro,
+    // voltando atrás quando a divisão não fecha ("infelizmente nao" + "vou
+    // poder" não fecha; "infelizmente" + "nao vou poder" fecha). Memo pelo
+    // pedaço restante pra não explodir em combinações.
+    const memo = new Map();
+    const dividir = (resto) => {
+        if (!resto) return [];
+        if (memo.has(resto)) return memo.get(resto);
+        let resultado = null;
+        for (const [frase, polaridade] of candidatas) {
+            if (resto !== frase && !resto.startsWith(frase + ' ')) continue;
+            const depois = dividir(resto.slice(frase.length).trim());
+            if (depois) { resultado = polaridade ? [polaridade, ...depois] : depois; break; }
+        }
+        memo.set(resto, resultado);
+        return resultado;
+    };
+    const polaridades = new Set(dividir(normalizado) || []);
+    return polaridades.size === 1 ? [...polaridades][0] : null;
+}
+
+// Botão tocado → { acao, appointmentId }. Template reenviado sem payload
+// (ex: reenvio manual de falhas) volta com o próprio texto do botão no
+// lugar do payload — aí o agendamento é achado pelo telefone.
+function interpretarBotaoAF(botaoId, texto) {
+    const m = /^af:(confirmar|remarcar|cancelar|manter):(.+)$/.exec(botaoId || '');
+    if (m) return { acao: m[1], appointmentId: m[2] };
+    const t = normalizarRespostaCurtaAF(botaoId || texto);
+    if (t === 'confirmar') return { acao: 'confirmar', appointmentId: null };
+    if (t === 'preciso remarcar') return { acao: 'remarcar', appointmentId: null };
+    return null;
+}
+
+function descreverAgendamentoAF(ag) {
+    const hojeYMD = moment.tz('America/Sao_Paulo').format('YYYY-MM-DD');
+    const amanhaYMD = moment.tz('America/Sao_Paulo').add(1, 'day').format('YYYY-MM-DD');
+    const dia = ag.data === hojeYMD ? 'hoje' : ag.data === amanhaYMD ? 'amanhã' : '';
+    const quando = [dia, ag.horario ? `às ${ag.horario}` : ''].filter(Boolean).join(' ');
+    return {
+        primeiroNome: (ag.nome || '').trim().split(' ')[0] || '',
+        quando: quando ? ` ${quando}` : '',
+        comProfessor: ag.professor ? ` com o professor(a) ${ag.professor}` : '',
+    };
+}
+
+async function enviarTextoRespostaAF(numLimpo, texto, nomeContato) {
+    const config = await obterConfigWhatsappCloudPara(numLimpo);
+    const resultado = await enviarMensagemWhatsappCloud(numLimpo, texto, config);
+    await registrarMensagemEnviada(numLimpo, texto, nomeContato, resultado?.messages?.[0]?.id || null, false, 'text', null, 'whatsapp_cloud');
+}
+
+async function enviarBotoesRespostaAF(numLimpo, texto, botoes, nomeContato) {
+    const config = await obterConfigWhatsappCloudPara(numLimpo);
+    const resultado = await enviarBotoesWhatsappCloud(numLimpo, texto, botoes, config);
+    const textoExibir = `${texto}\n\n${botoes.map(b => `[ ${b.titulo} ]`).join('  ')}`;
+    await registrarMensagemEnviada(numLimpo, textoExibir, nomeContato, resultado?.messages?.[0]?.id || null, false, 'text', null, 'whatsapp_cloud');
+}
+
+async function encaminharParaEquipeAF(numLimpo) {
+    await db.run('INSERT OR IGNORE INTO conversas_humano (telefone) VALUES (?)', numLimpo);
+    io.emit('conversa_assumida', { telefone: numLimpo, assumida: true });
+}
+
+// Devolve true quando a mensagem era resposta à confirmação da avaliação (e
+// já foi tratada aqui — quem chama não passa pro robô). Só roda na API
+// Oficial: é por ela que a confirmação sai (Principal desabilitado). Botão
+// vale mesmo com a conversa assumida por um atendente (é uma ação explícita
+// do aluno); texto digitado não — o "sim" pode ser resposta ao atendente.
+async function tratarRespostaConfirmacaoAF({ numLimpo, texto, botaoId, ehBotao, nomeContato, assumidaPorHumano }) {
+    const botao = ehBotao ? interpretarBotaoAF(botaoId, texto) : null;
+    if (ehBotao && !botao) return false;
+    if (!ehBotao && assumidaPorHumano) return false;
+
+    const ag = botao?.appointmentId
+        ? await db.get('SELECT * FROM agenda_avaliacoes_hoje WHERE appointment_id = ?', botao.appointmentId)
+        : await db.get(
+            `SELECT * FROM agenda_avaliacoes_hoje WHERE telefone = ? AND confirmacao_solicitada_em IS NOT NULL
+             ORDER BY (resposta_aluno = 'remarcar_pendente') DESC, data ASC, horario ASC LIMIT 1`,
+            numLimpo
+        );
+    // Agendamento já saiu da lista (horário passou, foi cancelado/remarcado
+    // na Agenda) — segue como mensagem normal.
+    if (!ag) return false;
+
+    let acao = botao?.acao || null;
+    if (!acao) {
+        if (!ag.confirmacao_enviada_em) return false;
+        if (ag.resposta_aluno === 'remarcar_pendente') {
+            const r = classificarRespostaAF(texto, AF_FRASES_SIM_CANCELAR, AF_FRASES_NAO_CANCELAR);
+            acao = r === 'sim' ? 'cancelar' : r === 'nao' ? 'manter' : null;
+        } else if (!ag.resposta_aluno) {
+            const r = classificarRespostaAF(texto, AF_FRASES_SIM_CONFIRMACAO, AF_FRASES_NAO_CONFIRMACAO);
+            acao = r === 'sim' ? 'confirmar' : r === 'nao' ? 'remarcar' : null;
+        }
+        if (!acao) return false;
+    }
+
+    const { primeiroNome, quando, comProfessor } = descreverAgendamentoAF(ag);
+    const id = ag.appointment_id;
+    const origem = ehBotao ? 'botão' : `texto "${texto}"`;
+    try {
+        if (acao === 'confirmar') {
+            let erro = null;
+            let mudouNaAgenda = false;
+            try {
+                if (!(await atualizarStatusAgendamento(id, 'confirmado'))) {
+                    mudouNaAgenda = true;
+                    erro = AF_ERRO_NAO_ESTA_MAIS_AGENDADO;
+                }
+            } catch (e) {
+                erro = e.message;
+            }
+            await db.run(`UPDATE agenda_avaliacoes_hoje SET resposta_aluno = 'confirmado', resposta_em = CURRENT_TIMESTAMP, resposta_erro = ? WHERE appointment_id = ?`, [erro, id]);
+            // Falha técnica ao gravar (rede, login) não muda o fato de o aluno
+            // ter confirmado — ele recebe a confirmação, e a equipe vê o erro
+            // na tela + a conversa em "Aguardando" pra ajustar na Agenda. Só
+            // quando a avaliação já mudou lá a resposta pro aluno é neutra.
+            if (mudouNaAgenda) {
+                await enviarTextoRespostaAF(numLimpo, `Obrigado, ${primeiroNome}! Vou pedir pra equipe conferir sua avaliação e já te retornamos por aqui 😉`, nomeContato);
+            } else {
+                await enviarTextoRespostaAF(numLimpo, `Prontinho, ${primeiroNome}! Sua avaliação${quando}${comProfessor} está confirmada ✅\nAté lá!`, nomeContato);
+            }
+            if (erro) await encaminharParaEquipeAF(numLimpo);
+            if (erro) console.error(`❌ Agenda de Avaliação: ${ag.nome || numLimpo} confirmou (${origem}), mas não deu pra gravar na Agenda — ${erro}`);
+            else console.log(`✅ Agenda de Avaliação: ${ag.nome || numLimpo} confirmou (${origem}) — status "confirmado" gravado na Agenda.`);
+        } else if (acao === 'remarcar') {
+            await db.run(`UPDATE agenda_avaliacoes_hoje SET resposta_aluno = 'remarcar_pendente', resposta_em = CURRENT_TIMESTAMP WHERE appointment_id = ?`, id);
+            await enviarBotoesRespostaAF(numLimpo,
+                `Sem problemas, ${primeiroNome}! Posso cancelar sua avaliação${quando}${comProfessor} pra você escolher um novo horário?`,
+                [{ id: `af:cancelar:${id}`, titulo: 'Sim, cancelar' }, { id: `af:manter:${id}`, titulo: 'Não, manter' }],
+                nomeContato);
+            console.log(`📅 Agenda de Avaliação: ${ag.nome || numLimpo} quer remarcar (${origem}) — perguntado se pode cancelar.`);
+        } else if (acao === 'manter') {
+            await db.run(`UPDATE agenda_avaliacoes_hoje SET resposta_aluno = NULL, resposta_em = CURRENT_TIMESTAMP WHERE appointment_id = ?`, id);
+            await enviarBotoesRespostaAF(numLimpo,
+                `Combinado, ${primeiroNome}! Sua avaliação continua${quando}${comProfessor}. Podemos confirmar?`,
+                [{ id: `af:confirmar:${id}`, titulo: 'Confirmar' }, { id: `af:remarcar:${id}`, titulo: 'Preciso remarcar' }],
+                nomeContato);
+            console.log(`↩️ Agenda de Avaliação: ${ag.nome || numLimpo} desistiu de cancelar (${origem}) — perguntado de novo se pode confirmar.`);
+        } else if (acao === 'cancelar') {
+            let erro = null;
+            try {
+                if (!(await atualizarStatusAgendamento(id, 'cancelado'))) erro = AF_ERRO_NAO_ESTA_MAIS_AGENDADO;
+            } catch (e) {
+                erro = e.message;
+            }
+            const instrucoesLink = `Pra escolher um novo dia e horário é só entrar em ${LINK_AGENDA_AVALIACAO}, digitar seu nome "${primeiroNome}" e sua matrícula "${ag.matricula || ''}".`;
+            if (!erro) {
+                // Mesmo efeito do 🗑️ da tela: sai da lista e perde a etiqueta (a
+                // próxima varredura também tiraria, já que cancelado não volta).
+                await db.run('DELETE FROM agenda_avaliacoes_hoje WHERE appointment_id = ?', id);
+                if (ag.telefone) await removerEtiquetaContato(ag.telefone, await garantirEtiquetaAgendamentoAF());
+                await enviarTextoRespostaAF(numLimpo, `Pronto, ${primeiroNome}! Sua avaliação${quando} foi cancelada.\n${instrucoesLink}`, nomeContato);
+                console.log(`🗓️ Agenda de Avaliação: ${ag.nome || numLimpo} cancelou pra remarcar (${origem}) — status "cancelado" gravado na Agenda e link enviado.`);
+            } else {
+                await db.run('UPDATE agenda_avaliacoes_hoje SET resposta_erro = ? WHERE appointment_id = ?', [`Cancelamento: ${erro}`, id]);
+                await encaminharParaEquipeAF(numLimpo);
+                await enviarTextoRespostaAF(numLimpo, `${primeiroNome}, não consegui cancelar sua avaliação automaticamente agora — já pedi pra equipe cancelar pra você.\n${instrucoesLink}`, nomeContato);
+                console.error(`❌ Agenda de Avaliação: ${ag.nome || numLimpo} pediu pra cancelar (${origem}), mas não deu pra gravar na Agenda — ${erro} (conversa encaminhada pra equipe)`);
+            }
+        }
+    } catch (e) {
+        console.error(`❌ Agenda de Avaliação: erro ao tratar resposta de ${ag.nome || numLimpo} (${acao}, ${origem}):`, e.message);
+    }
+    io.emit('agenda_avaliacao_resposta', { appointment_id: id, acao });
+    return true;
 }
 
 let agendaAvaliacaoRunning = false;
