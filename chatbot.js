@@ -7864,6 +7864,8 @@ async function tratarRespostaConfirmacaoAF({ numLimpo, texto, botaoId, ehBotao, 
                 await enviarTextoRespostaAF(numLimpo, `Obrigado, ${primeiroNome}! Vou pedir pra equipe conferir sua avaliação e já te retornamos por aqui 😉`, nomeContato);
             } else {
                 await enviarTextoRespostaAF(numLimpo, `Prontinho, ${primeiroNome}! Sua avaliação${quando}${comProfessor} está confirmada ✅\nAté lá!`, nomeContato);
+                // O professor precisa do questionário MQV respondido antes da avaliação.
+                await enviarTextoRespostaAF(numLimpo, `Não esqueça de responder ao questionário MQV 📝\nEntre nesse link para responder: ${LINK_AGENDA_AVALIACAO}/mqv/responder`, nomeContato);
             }
             if (erro) await encaminharParaEquipeAF(numLimpo);
             if (erro) console.error(`❌ Agenda de Avaliação: ${ag.nome || numLimpo} confirmou (${origem}), mas não deu pra gravar na Agenda — ${erro}`);
