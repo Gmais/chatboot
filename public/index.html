@@ -1400,6 +1400,10 @@ Sempre tente agendar uma aula experimental."></textarea>
                             <h3 style="margin-bottom:.3rem">🛵 Entregas (aviso de nova entrega pro entregador)</h3>
                             <p style="color:var(--text-2);font-size:.85rem;max-width:560px">Quando entra uma entrega nova, o sistema de entregas chama a URL abaixo (POST, JSON com <code>telefone</code>, <code>valor</code> e <code>endereco</code>) e o BotPro manda o modelo aprovado <code>nova_entrega_entregador</code> pro WhatsApp do entregador pela API Oficial.</p>
                         </div>
+                        <div style="display:flex;align-items:center;gap:.6rem">
+                            <span id="entregas-ativa-rotulo" style="color:var(--text-2);font-size:.82rem;font-weight:600">…</span>
+                            <button type="button" class="toggle-btn off" id="btn-entregas-ativa" title="Liga/desliga o aviso de nova entrega pro entregador" aria-label="Ligar ou desligar a integração de Entregas"></button>
+                        </div>
                     </div>
 
                     <div class="form-group">

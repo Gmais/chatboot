@@ -1327,6 +1327,17 @@ btnGympulseGerarChave?.addEventListener('click', async () => {
 const entregasWebhookUrlInput = document.getElementById('entregas-webhook-url');
 const entregasWebhookKeyInput = document.getElementById('entregas-webhook-key');
 const btnEntregasGerarChave = document.getElementById('btn-entregas-gerar-chave');
+const btnEntregasAtiva = document.getElementById('btn-entregas-ativa');
+const entregasAtivaRotulo = document.getElementById('entregas-ativa-rotulo');
+let entregasAtiva = true;
+
+function renderEntregasAtiva() {
+    if (btnEntregasAtiva) btnEntregasAtiva.className = `toggle-btn ${entregasAtiva ? 'on' : 'off'}`;
+    if (entregasAtivaRotulo) {
+        entregasAtivaRotulo.textContent = entregasAtiva ? 'Ligada' : 'Desligada';
+        entregasAtivaRotulo.style.color = entregasAtiva ? 'var(--green)' : 'var(--text-3)';
+    }
+}
 
 async function loadEntregasConfig() {
     if (!entregasWebhookUrlInput) return;
@@ -1335,10 +1346,30 @@ async function loadEntregasConfig() {
         const res = await fetch('/api/entregas/config');
         const config = await res.json();
         if (entregasWebhookKeyInput) entregasWebhookKeyInput.value = config.webhook_key || '';
+        entregasAtiva = config.ativa !== false;
+        renderEntregasAtiva();
     } catch (e) {
         console.error('Erro ao carregar configuração de Entregas', e);
     }
 }
+
+btnEntregasAtiva?.addEventListener('click', async () => {
+    const ativar = !entregasAtiva;
+    if (!ativar && !confirm('Desligar a integração de Entregas? Os entregadores param de receber o aviso de nova entrega até ligar de novo.')) return;
+    try {
+        const res = await fetch('/api/entregas/ativa', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ativa: ativar }),
+        });
+        if (!res.ok) throw new Error('Falha ao salvar');
+        entregasAtiva = !!(await res.json()).ativa;
+        renderEntregasAtiva();
+        showToast('Entregas', entregasAtiva ? 'Integração ligada' : 'Integração desligada', 'success', 2500);
+    } catch (e) {
+        showToast('Erro', 'Não foi possível salvar', 'error');
+    }
+});
 
 btnEntregasGerarChave?.addEventListener('click', async () => {
     if (!confirm('Gerar uma chave nova? A chave atual para de funcionar na hora — só faça isso se já for atualizar do lado do sistema de entregas também.')) return;

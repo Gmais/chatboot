@@ -3061,15 +3061,28 @@ async function obterChaveWebhookEntregas() {
     return novaChave;
 }
 
+// Liga/desliga da tela — ligada por padrão (a integração já rodava antes do
+// botão existir, então ausência da chave = ligada).
+async function entregasAtiva() {
+    const row = await db.get("SELECT valor FROM configuracoes WHERE chave = 'entregas_ativa'");
+    return row?.valor !== '0';
+}
+
 app.get('/api/entregas/config', async (req, res) => {
     const webhookKey = await obterChaveWebhookEntregas();
-    res.json({ webhook_key: mascararSegredo(webhookKey) });
+    res.json({ webhook_key: mascararSegredo(webhookKey), ativa: await entregasAtiva() });
 });
 
 app.put('/api/entregas/config', async (req, res) => {
     const novaChave = require('crypto').randomBytes(24).toString('hex');
     await db.run('INSERT OR REPLACE INTO configuracoes (chave, valor) VALUES (?, ?)', ['entregas_webhook_key', novaChave]);
     res.json({ success: true, webhook_key: novaChave });
+});
+
+app.put('/api/entregas/ativa', async (req, res) => {
+    await db.run(`INSERT OR REPLACE INTO configuracoes (chave, valor) VALUES ('entregas_ativa', ?)`, req.body?.ativa ? '1' : '0');
+    console.log(`🛵 Integração de Entregas ${req.body?.ativa ? 'LIGADA' : 'DESLIGADA'} pela tela.`);
+    res.json({ ativa: !!req.body?.ativa });
 });
 
 // Chamado pelo sistema de entregas quando entra uma entrega nova. Sai sempre
@@ -3085,6 +3098,14 @@ app.post('/webhooks/nova-entrega', async (req, res) => {
         const tokenRecebido = auth.startsWith('Bearer ') ? auth.slice('Bearer '.length) : '';
         if (!webhookKey || tokenRecebido !== webhookKey) {
             return res.status(401).json({ error: 'Não autorizado.' });
+        }
+
+        // Desligada na tela: responde 200 (chamada aceita, nada a reenviar) sem
+        // mandar nada — a chave continua sendo conferida antes, pra não virar
+        // um jeito de descobrir se a integração está ligada sem autenticar.
+        if (!(await entregasAtiva())) {
+            console.log('🛵 Entregas: aviso de nova entrega recebido com a integração desligada — não enviado.');
+            return res.json({ success: true, enviado: false, motivo: 'Integração de Entregas desligada no BotPro.' });
         }
 
         const { telefone, valor, endereco, nome } = req.body || {};
