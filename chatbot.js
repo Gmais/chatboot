@@ -110,16 +110,38 @@ const { agendaLogin, buscarAgendaDoDia, atualizarStatusAgendamento, buscarMQVsRe
 // quase nunca muda (só quando alguém cria/edita um no Business Manager), não
 // vale a pena 1 chamada à Graph API por envio.
 const TEMPLATE_HEADER_CACHE_MS = 10 * 60 * 1000;
-let templatesHeaderCache = null;
-let templatesHeaderCacheEm = 0;
-async function templateTemHeaderImagem(nomeTemplate, config) {
+let templatesCache = null;
+let templatesCacheEm = 0;
+async function obterTemplatesAprovados(config) {
     const agora = Date.now();
-    if (!templatesHeaderCache || (agora - templatesHeaderCacheEm) > TEMPLATE_HEADER_CACHE_MS) {
+    if (!templatesCache || (agora - templatesCacheEm) > TEMPLATE_HEADER_CACHE_MS) {
         const templates = await listarTemplatesWhatsappCloud(config);
-        templatesHeaderCache = new Map(templates.map(t => [t.name, (t.components || []).some(c => c.type === 'HEADER' && c.format === 'IMAGE')]));
-        templatesHeaderCacheEm = agora;
+        templatesCache = new Map(templates.map(t => [t.name, t]));
+        templatesCacheEm = agora;
     }
-    return templatesHeaderCache.get(nomeTemplate) ?? false;
+    return templatesCache;
+}
+async function templateTemHeaderImagem(nomeTemplate, config) {
+    const template = (await obterTemplatesAprovados(config)).get(nomeTemplate);
+    return (template?.components || []).some(c => c.type === 'HEADER' && c.format === 'IMAGE');
+}
+
+// Corpo do Template aprovado com os parâmetros no lugar de {{1}}, {{2}}… — é o
+// que o contato recebe de verdade quando o envio sai pelo Template. Sem isso o
+// Bate Papo ao Vivo mostrava o texto livre que NÃO foi mandado (07/10: resumo
+// do Gympulse aparecia "Resumo do seu treino" e o aluno tinha recebido
+// "Resumo do seu cárdio" do Template). null quando não dá pra saber (Template
+// fora da lista, Graph API fora) — quem chama fica com o texto que tinha.
+async function textoEnviadoPeloTemplate(nomeTemplate, parametros, config) {
+    try {
+        const template = (await obterTemplatesAprovados(config)).get(nomeTemplate);
+        const corpo = (template?.components || []).find(c => c.type === 'BODY')?.text;
+        if (!corpo) return null;
+        return corpo.replace(/\{\{(\d+)\}\}/g, (marcador, n) => parametros?.[Number(n) - 1] ?? marcador);
+    } catch (e) {
+        console.log(`ℹ️ Não deu pra montar o texto do Template "${nomeTemplate}" pro Bate Papo (${e.message}).`);
+        return null;
+    }
 }
 
 // Matrículas da carteira da consultora Juliana, extraídas de um relatório
@@ -2192,7 +2214,8 @@ async function tentarRetryTemplateGympulse(wamid) {
     try {
         const config = await obterConfigWhatsappCloud();
         const resultado = await enviarTemplateWhatsappCloud(retry.telefone, retry.template, retry.parametros, config);
-        await registrarMensagemEnviada(retry.telefone, retry.mensagem, retry.nomeExibir, resultado?.messages?.[0]?.id || null, false, 'text', null, 'whatsapp_cloud');
+        const textoEnviado = (await textoEnviadoPeloTemplate(retry.template, retry.parametros, config)) || retry.mensagem;
+        await registrarMensagemEnviada(retry.telefone, textoEnviado, retry.nomeExibir, resultado?.messages?.[0]?.id || null, false, 'text', null, 'whatsapp_cloud');
         console.log(`✅ [Gympulse] Reenvio via template "${retry.template}" deu certo pra ${retry.telefone} (a tentativa em texto livre tinha falhado assíncrono).`);
     } catch (e) {
         console.log(`ℹ️ [Gympulse] Reenvio via template "${retry.template}" também falhou pra ${retry.telefone}: ${e.message}`);
@@ -2974,7 +2997,8 @@ app.post('/webhooks/gympulse-daily-report', async (req, res) => {
             if (!templateCandidato) return false;
             try {
                 const resultadoTemplate = await enviarTemplateWhatsappCloud(telefoneLimpo, templateCandidato.template, templateCandidato.parametros, configWhatsappCloud);
-                await registrarMensagemEnviada(telefoneLimpo, mensagem, nomeExibir, resultadoTemplate?.messages?.[0]?.id || null, false, 'text', null, 'whatsapp_cloud');
+                const textoEnviado = (await textoEnviadoPeloTemplate(templateCandidato.template, templateCandidato.parametros, configWhatsappCloud)) || mensagem;
+                await registrarMensagemEnviada(telefoneLimpo, textoEnviado, nomeExibir, resultadoTemplate?.messages?.[0]?.id || null, false, 'text', null, 'whatsapp_cloud');
                 console.log(`✅ Gympulse: entregue via template "${templateCandidato.template}" pra ${telefoneLimpo}.`);
                 return true;
             } catch (e) {
