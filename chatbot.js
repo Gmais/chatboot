@@ -2899,7 +2899,7 @@ app.post('/webhooks/gympulse-daily-report', async (req, res) => {
         if (typeof message === 'string' && message.trim().length > 0) {
             mensagem = message;
         } else {
-            mensagem = `Oi ${primeiroNome}! 💪 Resumo do seu treino de hoje:\n`;
+            mensagem = `Oi ${primeiroNome}! 💪 Resumo do seu cárdio de hoje:\n`;
             mensagem += `🔥 ${totalCalories ?? '-'} kcal\n`;
             mensagem += `🏆 ${totalPoints ?? '-'} pontos\n`;
             mensagem += `⏱️ ${totalDurationMin ?? '-'} min\n`;
