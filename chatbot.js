@@ -1724,6 +1724,33 @@ async function revelarHistoricoOculto(telefone) {
     }
 }
 
+// "Finalizada" = o operador encerrou o atendimento. O robô/IA só responde
+// conversa que está aberta no Bate Papo ao Vivo: cliente que escreve numa
+// conversa finalizada (o "muito obrigada!", "até amanhã" depois do
+// encerramento) reabre a conversa pro atendente ver (salvarNaConversa), mas
+// essa mensagem fica sem resposta automática. Exceção: disparo/automação
+// oculto esperando resposta — aí o cliente está respondendo a esse disparo,
+// não ao atendimento encerrado, e o robô atende normal. Precisa ser chamada
+// ANTES de salvarNaConversa, que reabre a conversa e revela o oculto.
+async function clienteEscreveuEmConversaFinalizada(telefone) {
+    const status = await db.get('SELECT status FROM conversas_status WHERE telefone = ?', telefone);
+    if (status?.status !== 'fechada') return false;
+    const disparoOculto = await db.get('SELECT 1 FROM conversas WHERE telefone = ? AND oculto = 1 LIMIT 1', telefone);
+    return !disparoOculto;
+}
+
+// Rechecagem na hora de ENVIAR uma resposta automática: entre decidir
+// responder e enviar passam de alguns segundos (chamada da IA) a ~1min
+// (Delay configurável + simulação de digitação). Se nesse meio tempo o
+// operador assumiu ou finalizou a conversa, o robô não manda mais nada —
+// checar só no início do processamento da mensagem não basta.
+async function motivoCancelarRespostaAutomatica(telefone) {
+    if (await db.get('SELECT 1 FROM conversas_humano WHERE telefone = ?', telefone)) return 'foi assumida por humano';
+    const status = await db.get('SELECT status FROM conversas_status WHERE telefone = ?', telefone);
+    if (status?.status === 'fechada') return 'foi finalizada';
+    return null;
+}
+
 // =====================================
 // IA — APRENDER COM RESPOSTAS REAIS DAS CONSULTORAS (RAG, sem fine-tuning)
 // =====================================
@@ -1967,11 +1994,16 @@ async function processarMensagemInstagram(evento) {
     const textoNormalizado = texto.trim().toLowerCase();
 
     registerLead(igsid, 'instagram').catch(e => console.error('Erro ao registrar lead do Instagram:', e.message));
+    const estavaFinalizada = await clienteEscreveuEmConversaFinalizada(igsid);
     await salvarNaConversa(igsid, nomeContato, 'in', texto, 'text', null, false, null, 'instagram');
     io.emit('message_in', { from: igsid, nome: nomeContato, text: texto, ts: Date.now() });
 
     const assumidaPorHumano = await db.get('SELECT 1 FROM conversas_humano WHERE telefone = ?', igsid);
     if (assumidaPorHumano) return;
+    if (estavaFinalizada) {
+        console.log(`🔕 ${igsid} escreveu numa conversa finalizada — reaberta pro atendente, robô não responde.`);
+        return;
+    }
 
     // Shim: processarComoRobo/agendarFallbackHumano só leem UMA propriedade
     // do objeto "msg" (msg.body) — tudo o mais que fariam com um Message de
@@ -2382,6 +2414,7 @@ async function processarMensagemWhatsappCloud(mensagem, valor, { phoneNumberIdDe
     const nomeContato = valor?.contacts?.[0]?.profile?.name || numLimpo;
 
     registerLead(numLimpo, 'whatsapp_cloud').catch(e => console.error('Erro ao registrar lead do WhatsApp Business API:', e.message));
+    const estavaFinalizada = await clienteEscreveuEmConversaFinalizada(numLimpo);
     if (midia) {
         const tipo = mensagem.type; // mesmos nomes de tipo que o Bate Papo já usa
         let mediaPath = null;
@@ -2421,6 +2454,10 @@ async function processarMensagemWhatsappCloud(mensagem, valor, { phoneNumberIdDe
     // tratarRespostaConfirmacaoAF pra quando um atendente assumiu a conversa.
     if (await tratarRespostaConfirmacaoAF({ numLimpo, texto, botaoId, ehBotao, nomeContato, assumidaPorHumano: !!assumidaPorHumano })) return;
     if (assumidaPorHumano) return;
+    if (estavaFinalizada) {
+        console.log(`🔕 ${numLimpo} escreveu numa conversa finalizada — reaberta pro atendente, robô não responde.`);
+        return;
+    }
 
     // Shim: ver comentário equivalente em processarMensagemInstagram — só
     // msg.body é lido por processarComoRobo/agendarFallbackHumano.
@@ -10147,13 +10184,10 @@ async function enviarEregistrar(telefone, conteudo) {
         await simularDigitando(client.getChatById(chatId));
         await delay(calcularDelayDigitacao(conteudo));
     }
-    // Rechecagem: entre decidir responder e chegar aqui pode ter se passado até
-    // ~1min (Delay configurável + simulação de digitação) — se o operador
-    // assumiu a conversa nesse meio tempo, o robô não pode mais mandar nada
-    // (checar isso só no início do processamento da mensagem não é suficiente
-    // com o Delay configurável habilitado).
-    if (await db.get('SELECT 1 FROM conversas_humano WHERE telefone = ?', numLimpoCheck)) {
-        console.log(`⏸️ Envio cancelado — conversa com ${numLimpoCheck} foi assumida por humano durante o atraso configurado.`);
+    // Rechecagem — ver motivoCancelarRespostaAutomatica.
+    const motivoCancelar = await motivoCancelarRespostaAutomatica(numLimpoCheck);
+    if (motivoCancelar) {
+        console.log(`⏸️ Envio cancelado — conversa com ${numLimpoCheck} ${motivoCancelar} durante o atraso configurado.`);
         return null;
     }
     const resultado = await client.sendMessage(chatId, conteudo);
@@ -10795,15 +10829,12 @@ async function enviarResposta(msg, conteudo, opcoes = {}) {
             await simularDigitando(msg.getChat());
             await delay(calcularDelayDigitacao(conteudo));
         }
-        // Rechecagem: entre decidir responder e chegar aqui pode ter se passado
-        // até ~1min (Delay configurável + simulação de digitação) — se o
-        // operador assumiu a conversa nesse meio tempo, o robô não pode mais
-        // mandar nada (checar isso só no início do processamento da mensagem
-        // não é suficiente com o Delay configurável habilitado).
+        // Rechecagem — ver motivoCancelarRespostaAutomatica.
         const telefoneCheck = await resolvePhone(msg);
         const numLimpoCheck = telefoneCheck.replace('@c.us', '').replace('@lid', '');
-        if (await db.get('SELECT 1 FROM conversas_humano WHERE telefone = ?', numLimpoCheck)) {
-            console.log(`⏸️ Envio cancelado — conversa com ${numLimpoCheck} foi assumida por humano durante o atraso configurado.`);
+        const motivoCancelar = await motivoCancelarRespostaAutomatica(numLimpoCheck);
+        if (motivoCancelar) {
+            console.log(`⏸️ Envio cancelado — conversa com ${numLimpoCheck} ${motivoCancelar} durante o atraso configurado.`);
             return null;
         }
         const sent = await msg.reply(conteudo, undefined, opcoes);
@@ -10833,8 +10864,9 @@ async function enviarRespostaPeloClientePrincipal(telefoneReal, conteudo, opcoes
         if (typeof conteudo === 'string') {
             await delay(calcularDelayDigitacao(conteudo));
         }
-        if (await db.get('SELECT 1 FROM conversas_humano WHERE telefone = ?', numLimpo)) {
-            console.log(`⏸️ Envio cancelado — conversa com ${numLimpo} foi assumida por humano durante o atraso configurado.`);
+        const motivoCancelar = await motivoCancelarRespostaAutomatica(numLimpo);
+        if (motivoCancelar) {
+            console.log(`⏸️ Envio cancelado — conversa com ${numLimpo} ${motivoCancelar} durante o atraso configurado.`);
             return null;
         }
         const chatId = await resolverChatId(client, numLimpo);
@@ -10859,6 +10891,17 @@ async function enviarRespostaPeloClientePrincipal(telefoneReal, conteudo, opcoes
 // mensagem que chegou por um número de disparo — responde pelo principal.
 async function enviarRespostaCanal(canal, msg, telefoneReal, conteudo, opcoes = {}) {
     if (canal === 'whatsapp_pool') return enviarRespostaPeloClientePrincipal(telefoneReal, conteudo, opcoes);
+
+    // WhatsApp Web recheca isso depois do Delay configurado (enviarResposta /
+    // enviarRespostaPeloClientePrincipal). API Oficial e Instagram não têm
+    // esse atraso, mas a chamada da IA leva alguns segundos — mesmo motivo.
+    if (canal === 'whatsapp_cloud' || canal === 'instagram') {
+        const motivoCancelar = await motivoCancelarRespostaAutomatica(telefoneReal);
+        if (motivoCancelar) {
+            console.log(`⏸️ Envio cancelado — conversa com ${telefoneReal} ${motivoCancelar} enquanto o robô preparava a resposta.`);
+            return null;
+        }
+    }
 
     if (canal === 'whatsapp_cloud') {
         if (typeof conteudo !== 'string') {
@@ -11293,8 +11336,8 @@ async function agendarFallbackHumano(msg, numLimpo, texto, telefoneReal, nomeCon
         try {
             // Recheca tudo na hora de disparar, não na hora de agendar — muita
             // coisa pode ter mudado nesses N segundos.
-            const assumida = await db.get('SELECT 1 FROM conversas_humano WHERE telefone = ?', numLimpo);
-            if (assumida) return; // alguém assumiu de propósito nesse meio tempo — não atravessa
+            // Alguém assumiu de propósito ou finalizou nesse meio tempo — não atravessa.
+            if (await motivoCancelarRespostaAutomatica(numLimpo)) return;
             // >= (não só >): garante que uma resposta no mesmo instante do
             // marcador ainda conte como "já respondida".
             const jaRespondida = await db.get(
@@ -11408,6 +11451,7 @@ async function processarMensagemRecebida(msg, canal = 'whatsapp') {
         // painel. A mídia entra depois, em background, atualizando o balão já
         // exibido assim que (e se) o download terminar.
         const textoExibir = transcricaoAudio ? `🎤 ${transcricaoAudio}` : (msg.body || TIPO_LABEL_FALLBACK[tipoMsg] || '[mensagem sem texto]');
+        const estavaFinalizada = await clienteEscreveuEmConversaFinalizada(numLimpo);
         const idConversa = await salvarNaConversa(numLimpo, nomeContato, 'in', textoExibir, tipoMsg, msg.timestamp, false, null, canal, msg.id?._serialized);
         // salvarNaConversa devolve null quando detecta duplicata (mesmo msg_id
         // ou mesmo texto/ts já salvo) — reenvio de histórico do WhatsApp Web
@@ -11486,6 +11530,14 @@ async function processarMensagemRecebida(msg, canal = 'whatsapp') {
         // atravessando uma conversa assim que motivou essa distinção.
         const assumidaPorHumano = await db.get('SELECT 1 FROM conversas_humano WHERE telefone = ?', numLimpo);
         if (assumidaPorHumano) return;
+
+        // Conversa finalizada: o robô só responde conversa aberta no Bate
+        // Papo ao Vivo — ver clienteEscreveuEmConversaFinalizada. Também não
+        // manda a mensagem de fora do horário nem agenda a rede de segurança.
+        if (estavaFinalizada) {
+            console.log(`🔕 ${numLimpo} escreveu numa conversa finalizada — reaberta pro atendente, robô não responde.`);
+            return;
+        }
 
         // Modo Humano (Horário de Funcionamento): a mensagem já foi salva em
         // "conversas" (o operador pode responder manualmente pelo painel), e o
