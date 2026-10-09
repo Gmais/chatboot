@@ -94,7 +94,7 @@ const Anthropic = require('@anthropic-ai/sdk').default;
 const moment = require('moment-timezone');
 const { buscarAlunoPorMatricula, buscarAlunoPorCodigo, obterParcelasEmAberto, obterContratosPorMatricula, criarCliente, matricularAluno, gerarLinkPagamentoPixSantander } = require('./pacto');
 const { enviarMensagemInstagram, obterNomeUsuarioInstagram, verificarAssinaturaWebhook } = require('./instagram');
-const { enviarMensagemWhatsappCloud, enviarTemplateWhatsappCloud, enviarBotoesWhatsappCloud, criarTemplateWhatsappCloud, listarTemplatesWhatsappCloud, trocarCodigoPorAccessTokenWhatsappCloud, inscreverWebhookWabaWhatsappCloud, consultarStatusNumeroWhatsappCloud, listarNumerosWabaWhatsappCloud, baixarMidiaWhatsappCloud } = require('./whatsappCloudApi');
+const { enviarMensagemWhatsappCloud, enviarTemplateWhatsappCloud, enviarBotoesWhatsappCloud, enviarArquivoWhatsappCloud, criarTemplateWhatsappCloud, listarTemplatesWhatsappCloud, trocarCodigoPorAccessTokenWhatsappCloud, inscreverWebhookWabaWhatsappCloud, consultarStatusNumeroWhatsappCloud, listarNumerosWabaWhatsappCloud, baixarMidiaWhatsappCloud } = require('./whatsappCloudApi');
 const { agendaLogin, buscarAgendaDoDia, atualizarStatusAgendamento, buscarMQVsRecentes, buscarAgendamentosPorIds } = require('./agenda');
 
 // Descobre se um Template aprovado pela Meta REALMENTE tem um componente de
@@ -6414,6 +6414,44 @@ app.get('/api/conversas/:telefone', async (req, res) => {
     }
 });
 
+// Por onde sai um envio manual do Bate Papo — texto (/enviar) e arquivo
+// (/enviar-arquivo) usam a MESMA decisão. Antes só o texto tinha isso: com o
+// Principal desligado, texto saía pela API Oficial e anexo dava "WhatsApp não
+// está conectado". Devolve { canal, configCloud } (sai pela API Oficial),
+// { canal: 'instagram' }, { canal } (sai pelo Principal) ou { erro }.
+async function escolherCanalEnvioManual(telefone) {
+    // Canal do contato decide COMO entregar — mesma fonte usada no despacho
+    // automático (enviarRespostaCanal/automação). Sem essa checagem, uma
+    // resposta manual pra contato do Instagram/WhatsApp Business API tentava
+    // sair pelo whatsapp-web.js de qualquer jeito.
+    const leadRow = await db.get('SELECT canal FROM leads WHERE telefone = ?', telefone);
+    const canalContato = leadRow?.canal || 'whatsapp';
+
+    // Contato que falou pelo número em Coexistência responde por ele,
+    // independente do canal do lead — ex-aluno importado do Pacto fica com
+    // canal 'whatsapp' e caía no fallback abaixo, que usa sempre o número
+    // principal da API ("Re-engagement message", sem janela de 24h nele).
+    const configCloudContato = await obterConfigWhatsappCloudPara(telefone);
+    const { phoneNumberId: phoneNumberIdPrincipal } = await obterConfigWhatsappCloud();
+    if (configCloudContato.accessToken && configCloudContato.phoneNumberId && configCloudContato.phoneNumberId !== phoneNumberIdPrincipal) {
+        return { canal: 'whatsapp_cloud', configCloud: configCloudContato };
+    }
+    if (canalContato === 'instagram') return { canal: 'instagram' };
+    if (canalContato === 'whatsapp_cloud') return { canal: 'whatsapp_cloud', configCloud: configCloudContato };
+
+    if (!isConnected) {
+        // Principal caiu/desligado — só continua se o checkbox "Habilitar a
+        // API como Bate Papo" (Números de Envio) estiver ligado pro número da
+        // WhatsApp Business API; senão é o mesmo erro de sempre. Sai por um
+        // número físico diferente do que o aluno está acostumado (é a troca
+        // consciente que o checkbox liga).
+        const configFallback = await obterFallbackBatePapoCloudApi();
+        if (configFallback) return { canal: 'whatsapp_cloud', configCloud: configFallback };
+        return { erro: 'WhatsApp não está conectado.' };
+    }
+    return { canal: canalContato };
+}
+
 // Envia mensagem manual pelo dashboard para um contato
 app.post('/api/conversas/:telefone/enviar', async (req, res) => {
     // Normaliza ANTES de gravar (mesmo se o painel do atendente ainda tiver
@@ -6432,57 +6470,20 @@ app.post('/api/conversas/:telefone/enviar', async (req, res) => {
         const textoFinal = await substituirPlaceholdersPessoais(texto.trim(), telefone);
         const nome = await resolverNomeContato(telefone);
 
-        // Canal do contato decide COMO entregar — mesma fonte usada no despacho
-        // automático (enviarRespostaCanal/automação). Sem essa checagem, uma
-        // resposta manual pra contato do Instagram/WhatsApp Business API tentava
-        // sair pelo whatsapp-web.js de qualquer jeito (bug pré-existente: o
-        // Instagram nunca teve esse branch aqui, então resposta manual pra lead
-        // de Instagram já vinha quebrada).
-        const leadRow = await db.get('SELECT canal FROM leads WHERE telefone = ?', telefone);
-        const canalContato = leadRow?.canal || 'whatsapp';
-
-        // Contato que falou pelo número em Coexistência responde por ele,
-        // independente do canal do lead — ex-aluno importado do Pacto fica com
-        // canal 'whatsapp' e caía no fallback abaixo, que usa sempre o número
-        // principal da API ("Re-engagement message", sem janela de 24h nele).
-        const configCloudContato = await obterConfigWhatsappCloudPara(telefone);
-        const { phoneNumberId: phoneNumberIdPrincipal } = await obterConfigWhatsappCloud();
-        if (configCloudContato.accessToken && configCloudContato.phoneNumberId && configCloudContato.phoneNumberId !== phoneNumberIdPrincipal) {
-            const resultado = await enviarMensagemWhatsappCloud(telefone, textoFinal, configCloudContato);
+        const envio = await escolherCanalEnvioManual(telefone);
+        if (envio.erro) return res.status(400).json({ error: envio.erro });
+        if (envio.canal === 'instagram') {
+            const { pageAccessToken } = await obterConfigInstagram();
+            const resultado = await enviarMensagemInstagram(telefone, textoFinal, pageAccessToken);
+            await registrarMensagemEnviada(telefone, textoFinal, nome, resultado?.message_id || null, true, 'text', null, 'instagram');
+            return res.json({ success: true });
+        }
+        if (envio.configCloud) {
+            const resultado = await enviarMensagemWhatsappCloud(telefone, textoFinal, envio.configCloud);
             await registrarMensagemEnviada(telefone, textoFinal, nome, resultado?.messages?.[0]?.id || null, true, 'text', null, 'whatsapp_cloud');
             return res.json({ success: true });
         }
-
-        if (canalContato === 'instagram' || canalContato === 'whatsapp_cloud') {
-            let resultado, msgId;
-            if (canalContato === 'instagram') {
-                const { pageAccessToken } = await obterConfigInstagram();
-                resultado = await enviarMensagemInstagram(telefone, textoFinal, pageAccessToken);
-                msgId = resultado?.message_id || null;
-            } else {
-                const configWhatsappCloud = await obterConfigWhatsappCloudPara(telefone);
-                resultado = await enviarMensagemWhatsappCloud(telefone, textoFinal, configWhatsappCloud);
-                msgId = resultado?.messages?.[0]?.id || null;
-            }
-            await registrarMensagemEnviada(telefone, textoFinal, nome, msgId, true, 'text', null, canalContato);
-            return res.json({ success: true });
-        }
-
-        if (!isConnected) {
-            // Principal caiu — só continua se o checkbox "Habilitar a API como
-            // Bate Papo" (Números de Envio) estiver ligado pro número da
-            // WhatsApp Business API; senão é o mesmo erro de sempre. Sai por um
-            // número físico diferente do que o aluno está acostumado (é a troca
-            // consciente que o checkbox liga), só texto — mídia continua sem
-            // suporte na API Oficial, mesma limitação de todo outro envio por ela.
-            const configFallback = await obterFallbackBatePapoCloudApi();
-            if (configFallback) {
-                const resultado = await enviarMensagemWhatsappCloud(telefone, textoFinal, configFallback);
-                await registrarMensagemEnviada(telefone, textoFinal, nome, resultado?.messages?.[0]?.id || null, true, 'text', null, 'whatsapp_cloud');
-                return res.json({ success: true });
-            }
-            return res.status(400).json({ error: 'WhatsApp não está conectado.' });
-        }
+        const canalContato = envio.canal;
         const chatId = telefone.includes('@') ? telefone : await resolverChatId(client, telefone);
         // waitUntilMsgSent:true — sem isso o sendMessage() resolve assim que o
         // WhatsApp Web adiciona a mensagem LOCALMENTE ao chat (eco otimista da
@@ -6629,18 +6630,26 @@ app.delete('/api/conversas/:telefone', async (req, res) => {
 app.post('/api/conversas/:telefone/enviar-arquivo', upload.single('arquivo'), async (req, res) => {
     const telefone = normalizarTelefoneBR(req.params.telefone); // ver comentário na rota /enviar
     if (!req.file) return res.status(400).json({ error: 'Nenhum arquivo enviado.' });
-    if (!isConnected) return res.status(400).json({ error: 'WhatsApp não está conectado.' });
+    // Arquivo que não chegou a sair não fica ocupando o volume (que já anda
+    // perto de encher) — só o que foi enviado de verdade fica em uploads.
+    const descartarArquivo = () => fs.promises.unlink(req.file.path).catch(() => { });
+    // multer decodifica o nome do arquivo como latin1 — "relatório.pdf"
+    // chegava "relatÃ³rio.pdf" (no balão e, pela API Oficial, pro aluno).
+    const nomeArquivo = Buffer.from(req.file.originalname, 'latin1').toString('utf8');
     try {
-        const chatId = telefone.includes('@') ? telefone : await resolverChatId(client, telefone);
-        const media = MessageMedia.fromFilePath(req.file.path);
+        const envio = await escolherCanalEnvioManual(telefone);
+        if (envio.erro) {
+            await descartarArquivo();
+            return res.status(400).json({ error: envio.erro });
+        }
+        if (envio.canal === 'instagram') {
+            await descartarArquivo();
+            return res.status(400).json({ error: 'Envio de arquivo pelo Instagram ainda não é suportado.' });
+        }
         const legendaBruta = (req.body.legenda || '').trim();
         // Mesma substituição de {nome}/{matricula}/{saudacao} do envio manual de
         // texto — legenda de arquivo é digitada pelo mesmo operador do mesmo jeito.
         const legenda = legendaBruta ? await substituirPlaceholdersPessoais(legendaBruta, telefone) : legendaBruta;
-        // waitUntilMsgSent:true — mesmo motivo da rota /enviar (texto): sem isso
-        // o envio "sucede" só com o eco local do WhatsApp Web, sem confirmar que
-        // saiu pela rede de verdade.
-        const sentMsg = await client.sendMessage(chatId, media, { ...(legenda ? { caption: legenda } : {}), waitUntilMsgSent: true });
         // Mantém o arquivo em public/uploads (não apaga mais) — é o que permite
         // reabrir a imagem/documento clicando na bolha depois.
         const mediaUrl = '/uploads/' + req.file.filename;
@@ -6651,15 +6660,36 @@ app.post('/api/conversas/:telefone/enviar-arquivo', upload.single('arquivo'), as
                     : 'document';
         const nome = await resolverNomeContato(telefone);
         const numeroLimpo = telefone.replace('@c.us', '').replace('@lid', '');
+
+        if (envio.configCloud) {
+            const resultado = await enviarArquivoWhatsappCloud(numeroLimpo, {
+                buffer: await fs.promises.readFile(req.file.path),
+                mimeType: req.file.mimetype,
+                nomeArquivo,
+                legenda,
+            }, envio.configCloud);
+            await salvarNaConversa(numeroLimpo, nome, 'out', legenda || nomeArquivo, tipo, null, true, mediaUrl, 'whatsapp_cloud', resultado?.messages?.[0]?.id || null);
+            io.emit('stats', stats);
+            return res.json({ success: true });
+        }
+
+        const chatId = telefone.includes('@') ? telefone : await resolverChatId(client, telefone);
+        const media = MessageMedia.fromFilePath(req.file.path);
+        media.filename = nomeArquivo;
+        // waitUntilMsgSent:true — mesmo motivo da rota /enviar (texto): sem isso
+        // o envio "sucede" só com o eco local do WhatsApp Web, sem confirmar que
+        // saiu pela rede de verdade.
+        const sentMsg = await client.sendMessage(chatId, media, { ...(legenda ? { caption: legenda } : {}), waitUntilMsgSent: true });
         // Chave de conteúdo usa "legenda" crua (o que msg.body de verdade vai
         // trazer no message_create, vazio se não teve legenda) — não o nome do
         // arquivo, que só é usado como texto de exibição quando falta legenda.
         marcarMensagemComoDoSistema(idSerializado(sentMsg), numeroLimpo, legenda);
-        await salvarNaConversa(numeroLimpo, nome, 'out', legenda || req.file.originalname, tipo, null, true, mediaUrl, 'whatsapp', idSerializado(sentMsg));
+        await salvarNaConversa(numeroLimpo, nome, 'out', legenda || nomeArquivo, tipo, null, true, mediaUrl, 'whatsapp', idSerializado(sentMsg));
         io.emit('stats', stats);
         res.json({ success: true });
     } catch (err) {
         console.error('Erro ao enviar arquivo:', err.message);
+        await descartarArquivo();
         res.status(500).json({ error: err.message });
     }
 });

@@ -171,6 +171,51 @@ async function enviarBotoesWhatsappCloud(telefoneE164, texto, botoes, { accessTo
     });
 }
 
+// Arquivo mandado pelo atendente no Bate Papo. Sobe pra Meta primeiro
+// (POST /{phone-number-id}/media) e manda a mensagem pelo id devolvido — em
+// vez de por link, como o cabeçalho de imagem dos templates — pra um formato
+// que a Meta não aceita dar erro NA HORA, no toast do painel, e não
+// "enviar" e falhar depois. Texto livre: mesma regra da janela de 24h.
+// Multipart via fetch/FormData nativos do Node (>= 18) — montar isso na mão
+// em cima do graphRequest não compensa.
+const MIDIA_UPLOAD_TIMEOUT_MS = 60000;
+
+// Imagem só jpeg/png até 5MB; vídeo mp4/3gpp e áudio até 16MB (limites da
+// Meta pra cada tipo). Fora disso vai como documento, que aceita mais
+// formatos e até 100MB.
+function tipoMensagemMidiaWhatsappCloud(mimeType, tamanho) {
+    const mb = tamanho / 1048576;
+    if (['image/jpeg', 'image/png'].includes(mimeType) && mb <= 5) return 'image';
+    if (['video/mp4', 'video/3gpp'].includes(mimeType) && mb <= 16) return 'video';
+    if (/^audio\/(aac|amr|mpeg|mp4|ogg)$/.test(mimeType) && mb <= 16) return 'audio';
+    return 'document';
+}
+
+async function enviarArquivoWhatsappCloud(telefoneE164, { buffer, mimeType, nomeArquivo, legenda }, { accessToken, phoneNumberId } = {}) {
+    if (!accessToken || !phoneNumberId) throw new Error('WhatsApp Business API não configurado: falta o Token de Acesso ou o Phone Number ID (ver Configurações).');
+    const form = new FormData();
+    form.append('messaging_product', 'whatsapp');
+    form.append('type', mimeType);
+    form.append('file', new Blob([buffer], { type: mimeType }), nomeArquivo);
+    const resp = await fetch(`https://graph.facebook.com/${GRAPH_API_VERSION}/${phoneNumberId}/media`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${accessToken}` },
+        body: form,
+        signal: AbortSignal.timeout(MIDIA_UPLOAD_TIMEOUT_MS),
+    });
+    const upload = await resp.json().catch(() => null);
+    if (!resp.ok || !upload?.id) throw new Error(upload?.error?.message || `Erro HTTP ${resp.status} ao subir o arquivo pra Meta.`);
+
+    const tipo = tipoMensagemMidiaWhatsappCloud(mimeType, buffer.length);
+    const midia = { id: upload.id };
+    if (legenda && tipo !== 'audio') midia.caption = legenda; // áudio não aceita legenda
+    if (tipo === 'document') midia.filename = nomeArquivo;
+    return graphRequest('POST', `${phoneNumberId}/messages`, {
+        accessToken,
+        body: { messaging_product: 'whatsapp', to: telefoneE164, type: tipo, [tipo]: midia },
+    });
+}
+
 // Lista os templates da conta com nome/status/categoria — usado pra checar se
 // um template submetido já foi aprovado (a Meta não avisa por conta própria
 // nesse fluxo, só dá pra saber perguntando).
@@ -296,6 +341,7 @@ module.exports = {
     enviarMensagemWhatsappCloud,
     enviarTemplateWhatsappCloud,
     enviarBotoesWhatsappCloud,
+    enviarArquivoWhatsappCloud,
     criarTemplateWhatsappCloud,
     listarTemplatesWhatsappCloud,
     trocarCodigoPorAccessTokenWhatsappCloud,
