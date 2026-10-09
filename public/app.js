@@ -4921,6 +4921,32 @@ const CM = (() => {
             anexoInput.value = '';
         });
 
+        // Colar imagem/arquivo (Ctrl+V de um print, ou arquivo copiado no
+        // Explorer) envia como anexo, igual o 📎 — antes o campo de texto
+        // simplesmente ignorava. Vale com o cursor no campo OU na área da
+        // conversa; em outro campo (busca, modal) fica a colagem normal dele.
+        // Se a área de transferência tem texto, é colagem de texto: copiar
+        // células do Excel, por exemplo, traz uma imagem junto e não pode
+        // virar anexo. Pergunta antes — um Ctrl+V sem querer não pode
+        // mandar um print pro aluno direto.
+        document.addEventListener('paste', async (e) => {
+            if (!activePhone || !chatInputBar || chatInputBar.offsetParent === null) return;
+            const alvo = e.target;
+            const outroCampo = alvo !== chatInput && (alvo.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(alvo.tagName));
+            if (outroCampo) return;
+            const dados = e.clipboardData;
+            if (!dados || dados.getData('text/plain')) return;
+            const arquivos = [...dados.files];
+            if (!arquivos.length) return;
+            e.preventDefault();
+            const nome = contacts.get(activePhone)?.nome || activePhone;
+            const descricao = arquivos.length > 1 ? `${arquivos.length} arquivos`
+                : arquivos[0].type.startsWith('image/') ? 'a imagem colada'
+                    : `o arquivo "${arquivos[0].name}"`;
+            if (!confirm(`Enviar ${descricao} para ${nome}?`)) return;
+            for (const arquivo of arquivos) await enviarArquivo(arquivo);
+        });
+
         // Nova conversa
         btnNovaConversa?.addEventListener('click', () => {
             modalNovaConversa?.classList.add('open');
