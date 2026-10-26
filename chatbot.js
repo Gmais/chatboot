@@ -6604,6 +6604,12 @@ app.post('/api/conversas/:telefone/status', async (req, res) => {
         if (status === 'fechada') {
             const liberou = await db.run('DELETE FROM conversas_humano WHERE telefone = ?', telefone);
             if (liberou.changes > 0) io.emit('conversa_assumida', { telefone, assumida: false });
+
+            // Finalizada também significa "lida": sem isso, mensagem que
+            // chegou e nunca foi aberta ficava contando no selo do menu
+            // mesmo com a conversa fora da aba Abertas.
+            await db.run('UPDATE conversas SET lida = 1 WHERE telefone = ? AND direcao = "in" AND lida = 0', telefone);
+            io.emit('conversa_lida', { telefone });
         }
         res.json({ success: true, status });
     } catch (err) {

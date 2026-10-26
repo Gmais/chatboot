@@ -4184,7 +4184,9 @@ const CM = (() => {
     // ---- Atualiza badge global de não lidas ----
     function updateGlobalBadge() {
         totalNaoLidas = 0;
-        contacts.forEach(c => { totalNaoLidas += (c.nao_lidas || 0); });
+        // Só conta quem está na aba "Abertas" — o selo não pode indicar
+        // mensagem que o atendente não enxerga na lista.
+        contacts.forEach(c => { if (c.status !== 'fechada') totalNaoLidas += (c.nao_lidas || 0); });
         if (badgeNaoLidas) {
             if (totalNaoLidas > 0) {
                 badgeNaoLidas.textContent = totalNaoLidas > 99 ? '99+' : totalNaoLidas;
@@ -4351,7 +4353,8 @@ const CM = (() => {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ status: 'fechada' })
             });
-            upsertContact({ telefone: telefoneFinalizado, status: 'fechada' });
+            upsertContact({ telefone: telefoneFinalizado, status: 'fechada', nao_lidas: 0 });
+            updateGlobalBadge();
             if (proximo) {
                 await openChat(proximo.telefone);
             } else {
@@ -4975,6 +4978,7 @@ const CM = (() => {
         socket.on('conversa_status_atualizada', ({ telefone, status }) => {
             const c = contacts.get(telefone);
             if (c) upsertContact({ ...c, status });
+            updateGlobalBadge();
             renderContactList();
         });
 
