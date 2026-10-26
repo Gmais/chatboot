@@ -396,7 +396,7 @@ async function mesclarConversasDuplicadas() {
                     await db.run('UPDATE mensagens_enviadas SET telefone = ? WHERE telefone = ?', [canonico, variante]);
                     // Chave única em telefone — só migra se o canônico ainda não
                     // tiver linha; senão descarta a duplicata (mantém a do canônico).
-                    for (const tabela of ['conversas_status', 'conversas_humano', 'vinculo_pacto']) {
+                    for (const tabela of ['conversas_status', 'conversas_humano', 'conversas_robo_ativo', 'vinculo_pacto']) {
                         const existeCanonico = await db.get(`SELECT 1 FROM ${tabela} WHERE telefone = ?`, canonico);
                         if (existeCanonico) await db.run(`DELETE FROM ${tabela} WHERE telefone = ?`, variante);
                         else await db.run(`UPDATE ${tabela} SET telefone = ? WHERE telefone = ?`, [canonico, variante]);
@@ -800,6 +800,10 @@ async function initDB() {
             telefone TEXT PRIMARY KEY,
             status TEXT NOT NULL DEFAULT 'aberta',
             atualizado_em DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE IF NOT EXISTS conversas_robo_ativo (
+            telefone TEXT PRIMARY KEY,
+            ativado_em DATETIME DEFAULT CURRENT_TIMESTAMP
         );
         CREATE TABLE IF NOT EXISTS automacoes (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1744,6 +1748,13 @@ async function clienteEscreveuEmConversaFinalizada(telefone) {
 // (Delay configurável + simulação de digitação). Se nesse meio tempo o
 // operador assumiu ou finalizou a conversa, o robô não manda mais nada —
 // checar só no início do processamento da mensagem não basta.
+// "Robô nesta conversa" (botão do cabeçalho do Bate Papo) e "conversa
+// assumida" são excludentes: quem assume/finaliza desliga o robô da conversa.
+async function desligarRoboNaConversa(telefone) {
+    const r = await db.run('DELETE FROM conversas_robo_ativo WHERE telefone = ?', telefone);
+    if (r.changes > 0) io.emit('conversa_robo', { telefone, ativo: false });
+}
+
 async function motivoCancelarRespostaAutomatica(telefone) {
     if (await db.get('SELECT 1 FROM conversas_humano WHERE telefone = ?', telefone)) return 'foi assumida por humano';
     const status = await db.get('SELECT status FROM conversas_status WHERE telefone = ?', telefone);
@@ -2011,7 +2022,7 @@ async function processarMensagemInstagram(evento) {
     // shim. Ver comentário em cima de enviarRespostaCanal.
     const msgShim = { body: texto };
 
-    const { modo, mensagemHumano, timezone } = await obterModoAtual();
+    const { modo, mensagemHumano, timezone } = await obterModoAtual(igsid);
     if (modo === 'humano') {
         const hoje = moment.tz(timezone || 'America/Sao_Paulo').format('YYYY-MM-DD');
         if (mensagemHumano && ultimaMsgModoHumano.get(igsid) !== hoje) {
@@ -2463,7 +2474,7 @@ async function processarMensagemWhatsappCloud(mensagem, valor, { phoneNumberIdDe
     // msg.body é lido por processarComoRobo/agendarFallbackHumano.
     const msgShim = { body: texto };
 
-    const { modo, mensagemHumano, timezone } = await obterModoAtual();
+    const { modo, mensagemHumano, timezone } = await obterModoAtual(numLimpo);
     if (modo === 'humano') {
         const hoje = moment.tz(timezone || 'America/Sao_Paulo').format('YYYY-MM-DD');
         if (mensagemHumano && ultimaMsgModoHumano.get(numLimpo) !== hoje) {
@@ -2524,9 +2535,15 @@ function faixaCobreAgora(faixa, diaAtual, diaAnterior, minutoAtual) {
 
 // Resolve quem deve atender agora: o override manual manda mais que tudo; na
 // ausência dele, consulta as faixas cadastradas e cai no modo padrão se nenhuma bater.
-async function obterModoAtual() {
+async function obterModoAtual(telefone) {
     const override = await obterOverrideRobo();
     if (override.ativo) return { modo: 'robo', mensagemHumano: '' };
+
+    // Botão "Robô" do cabeçalho do Bate Papo: liga o robô só pra essa conversa,
+    // mesmo fora do horário dele — o override global acima vale pra todas.
+    if (telefone && await db.get('SELECT 1 FROM conversas_robo_ativo WHERE telefone = ?', telefone)) {
+        return { modo: 'robo', mensagemHumano: '' };
+    }
 
     const confRows = await db.all('SELECT * FROM configuracoes');
     const config = {};
@@ -4378,6 +4395,7 @@ async function moverTodasTabelasDoTelefone(de, canonico) {
     await moverLinhaSimples('ia_exemplos_consultoras', de, canonico);
     await moverLinhaPkTelefone('vinculo_pacto', de, canonico);
     await moverLinhaPkTelefone('conversas_humano', de, canonico);
+    await moverLinhaPkTelefone('conversas_robo_ativo', de, canonico);
     await moverLinhaPkTelefone('conversas_status', de, canonico);
     await moverLinhaPkTelefone('pacto_inadimplentes', de, canonico);
     await moverLinhaPkTelefone('pacto_vencem_hoje', de, canonico);
@@ -6244,6 +6262,7 @@ async function listarConversasComEtiquetas() {
                 c.ts AS ultimo_ts,
                 (SELECT COUNT(*) FROM conversas WHERE telefone = c.telefone AND lida = 0 AND direcao = 'in') AS nao_lidas,
                 (CASE WHEN ch.telefone IS NULL THEN 0 ELSE 1 END) AS assumida_humano,
+                (CASE WHEN ra.telefone IS NULL THEN 0 ELSE 1 END) AS robo_ativo,
                 COALESCE(cs.status, 'aberta') AS status,
                 COALESCE(c.canal, 'whatsapp') AS canal
             FROM conversas c
@@ -6260,6 +6279,7 @@ async function listarConversasComEtiquetas() {
             ) mn ON mn.telefone = c.telefone
             LEFT JOIN leads ld ON REPLACE(REPLACE(ld.telefone, '@c.us', ''), '@lid', '') = c.telefone
             LEFT JOIN conversas_humano ch ON ch.telefone = c.telefone
+            LEFT JOIN conversas_robo_ativo ra ON ra.telefone = c.telefone
             LEFT JOIN conversas_status cs ON cs.telefone = c.telefone
             GROUP BY c.telefone
         )
@@ -6379,8 +6399,36 @@ app.delete('/api/conversas/fantasmas', async (req, res) => {
 app.post('/api/conversas/:telefone/assumir', async (req, res) => {
     const { telefone } = req.params;
     await db.run('INSERT OR IGNORE INTO conversas_humano (telefone) VALUES (?)', telefone);
+    await desligarRoboNaConversa(telefone);
     io.emit('conversa_assumida', { telefone, assumida: true });
     res.json({ success: true });
+});
+
+// Liga/desliga o robô SÓ nessa conversa (botão "Robô" do cabeçalho do Bate
+// Papo) — diferente do "Ativar Robô" do topo, que vale pra todas. Ligar tira
+// a conversa de "assumida" e a reabre se estava finalizada, senão o robô
+// continuaria bloqueado pelas regras de assumida/finalizada.
+app.post('/api/conversas/:telefone/robo', async (req, res) => {
+    const { telefone } = req.params;
+    const ativo = !!req.body?.ativo;
+    try {
+        if (!ativo) {
+            await desligarRoboNaConversa(telefone);
+            return res.json({ success: true, ativo: false });
+        }
+        await db.run('INSERT OR IGNORE INTO conversas_robo_ativo (telefone) VALUES (?)', telefone);
+        const liberou = await db.run('DELETE FROM conversas_humano WHERE telefone = ?', telefone);
+        if (liberou.changes > 0) io.emit('conversa_assumida', { telefone, assumida: false });
+        const status = await db.get('SELECT status FROM conversas_status WHERE telefone = ?', telefone);
+        if (status?.status === 'fechada') {
+            await db.run("UPDATE conversas_status SET status = 'aberta', atualizado_em = CURRENT_TIMESTAMP WHERE telefone = ?", telefone);
+            io.emit('conversa_status_atualizada', { telefone, status: 'aberta' });
+        }
+        io.emit('conversa_robo', { telefone, ativo: true });
+        res.json({ success: true, ativo: true });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
 app.post('/api/conversas/:telefone/liberar', async (req, res) => {
@@ -6604,6 +6652,7 @@ app.post('/api/conversas/:telefone/status', async (req, res) => {
         if (status === 'fechada') {
             const liberou = await db.run('DELETE FROM conversas_humano WHERE telefone = ?', telefone);
             if (liberou.changes > 0) io.emit('conversa_assumida', { telefone, assumida: false });
+            await desligarRoboNaConversa(telefone);
 
             // Finalizada também significa "lida": sem isso, mensagem que
             // chegou e nunca foi aberta ficava contando no selo do menu
@@ -6624,6 +6673,7 @@ app.delete('/api/conversas/:telefone', async (req, res) => {
     try {
         await db.run('DELETE FROM conversas WHERE telefone = ?', telefone);
         await db.run('DELETE FROM conversas_humano WHERE telefone = ?', telefone);
+        await db.run('DELETE FROM conversas_robo_ativo WHERE telefone = ?', telefone);
         await db.run('DELETE FROM conversas_status WHERE telefone = ?', telefone);
         io.emit('conversa_excluida', { telefone });
         res.json({ success: true });
@@ -8018,6 +8068,7 @@ async function enviarBotoesRespostaAF(numLimpo, texto, botoes, nomeContato) {
 
 async function encaminharParaEquipeAF(numLimpo) {
     await db.run('INSERT OR IGNORE INTO conversas_humano (telefone) VALUES (?)', numLimpo);
+    await desligarRoboNaConversa(numLimpo);
     io.emit('conversa_assumida', { telefone: numLimpo, assumida: true });
 }
 
@@ -11016,6 +11067,7 @@ async function encaminharParaHumanoSeEncerrou(texto, numLimpo) {
     if (!PADRAO_ENCERRAMENTO_ATENDIMENTO.test(texto || '')) return;
     try {
         await db.run('INSERT OR IGNORE INTO conversas_humano (telefone) VALUES (?)', numLimpo);
+        await desligarRoboNaConversa(numLimpo);
         io.emit('conversa_assumida', { telefone: numLimpo, assumida: true });
         console.log(`🙋 Conversa com ${numLimpo} encaminhada pra "Aguardando" — robô identificou encerramento/transferência.`);
     } catch (e) {
@@ -11580,7 +11632,7 @@ async function processarMensagemRecebida(msg, canal = 'whatsapp') {
         // robô não dispara regras/IA na hora — MAS agenda uma rede de segurança:
         // se ninguém responder dentro do prazo configurado, o robô assume mesmo
         // fora da janela dele (ver agendarFallbackHumano).
-        const { modo, mensagemHumano, timezone } = await obterModoAtual();
+        const { modo, mensagemHumano, timezone } = await obterModoAtual(numLimpo);
         if (modo === 'humano') {
             const hoje = moment.tz(timezone || 'America/Sao_Paulo').format('YYYY-MM-DD');
             if (mensagemHumano && ultimaMsgModoHumano.get(numLimpo) !== hoje) {

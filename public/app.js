@@ -4094,6 +4094,7 @@ const CM = (() => {
     const chatHeaderAddTag = document.getElementById('chat-header-add-tag');
     const btnChatVoltarMobile = document.getElementById('btn-chat-voltar-mobile');
     const btnChatAssumir = document.getElementById('btn-chat-assumir');
+    const btnChatRobo    = document.getElementById('btn-chat-robo');
     const btnChatResolver = document.getElementById('btn-chat-resolver');
     const btnChatExcluir = document.getElementById('btn-chat-excluir');
     const chatMessages   = document.getElementById('chat-messages');
@@ -4314,7 +4315,37 @@ const CM = (() => {
         const assumida = !!c?.assumida_humano;
         btnChatAssumir.textContent = assumida ? '🤖 Devolver ao Robô' : '🙋 Assumir Conversa';
         btnChatAssumir.className = assumida ? 'btn-danger' : 'btn-secondary';
+        renderChatRoboButton();
     }
+
+    // ---- Robô só nesta conversa (o "Ativar Robô" do topo vale pra todas) ----
+    function renderChatRoboButton() {
+        if (!btnChatRobo || !activePhone) return;
+        const ligado = !!contacts.get(activePhone)?.robo_ativo;
+        btnChatRobo.textContent = ligado ? '🤖 Robô ligado' : '🤖 Robô';
+        btnChatRobo.className = ligado ? 'btn-primary' : 'btn-secondary';
+        btnChatRobo.title = ligado ? 'O robô está respondendo esta conversa — clique pra desligar' : 'Ligar o robô só nesta conversa';
+    }
+
+    btnChatRobo?.addEventListener('click', async () => {
+        if (!activePhone) return;
+        const telefone = activePhone;
+        const ligar = !contacts.get(telefone)?.robo_ativo;
+        try {
+            const res = await fetch(`/api/conversas/${encodeURIComponent(telefone)}/robo`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ ativo: ligar })
+            });
+            if (!res.ok) throw new Error('Falha ao atualizar');
+            upsertContact({ telefone, robo_ativo: ligar ? 1 : 0, ...(ligar ? { assumida_humano: 0, status: 'aberta' } : {}) });
+            renderChatAssumirButton();
+            renderContactList();
+            showToast(ligar ? 'Robô ligado nesta conversa' : 'Robô desligado nesta conversa', ligar ? 'Ele responde só este contato; as outras conversas seguem como estão.' : '', 'success', 3000);
+        } catch (e) {
+            showToast('Erro', 'Não foi possível atualizar o robô da conversa', 'error');
+        }
+    });
 
     btnChatVoltarMobile?.addEventListener('click', () => {
         document.querySelector('.chat-layout')?.classList.remove('mobile-chat-open');
@@ -5102,6 +5133,13 @@ const CM = (() => {
             upsertContact({ telefone, assumida_humano: assumida ? 1 : 0 });
             renderContactList();
             if (activePhone === telefone) renderChatAssumirButton();
+        });
+
+        socket.on('conversa_robo', ({ telefone, ativo }) => {
+            if (!contacts.has(telefone)) return;
+            upsertContact({ telefone, robo_ativo: ativo ? 1 : 0 });
+            renderContactList();
+            if (activePhone === telefone) renderChatRoboButton();
         });
 
         socket.on('conversa_lida', ({ telefone }) => {
