@@ -4397,9 +4397,9 @@ const CM = (() => {
 
     // ---- Etiquetas do contato ativo ----
     async function renderChatHeaderTags(telefone) {
-        if (!chatHeaderTags || !chatHeaderAddTag) return;
+        if (!chatHeaderTags) return;
         chatHeaderTags.innerHTML = '';
-        chatHeaderAddTag.innerHTML = '<option value="">🏷️ Etiqueta...</option>';
+        if (chatHeaderAddTag) chatHeaderAddTag.innerHTML = '<option value="">🏷️ Etiqueta...</option>';
         try {
             const [res] = await Promise.all([fetch(`/api/contatos/${encodeURIComponent(telefone)}/etiquetas`), loadEtiquetas()]);
             const aplicadas = await res.json();
@@ -4407,16 +4407,18 @@ const CM = (() => {
 
             chatHeaderTags.innerHTML = aplicadas.map(e => etiquetaChipHtml(e, true)).join('');
             const aplicadasIds = new Set(aplicadas.map(e => e.id));
-            todasEtiquetas.filter(e => !aplicadasIds.has(e.id)).forEach(e => {
-                const opt = document.createElement('option');
-                opt.value = e.id;
-                opt.textContent = e.nome;
-                chatHeaderAddTag.appendChild(opt);
-            });
-            const optNova = document.createElement('option');
-            optNova.value = '__nova__';
-            optNova.textContent = '➕ Criar nova etiqueta...';
-            chatHeaderAddTag.appendChild(optNova);
+            if (chatHeaderAddTag) {
+                todasEtiquetas.filter(e => !aplicadasIds.has(e.id)).forEach(e => {
+                    const opt = document.createElement('option');
+                    opt.value = e.id;
+                    opt.textContent = e.nome;
+                    chatHeaderAddTag.appendChild(opt);
+                });
+                const optNova = document.createElement('option');
+                optNova.value = '__nova__';
+                optNova.textContent = '➕ Criar nova etiqueta...';
+                chatHeaderAddTag.appendChild(optNova);
+            }
         } catch (e) {
             console.error('Erro ao carregar etiquetas do contato', e);
         }
