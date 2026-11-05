@@ -2640,12 +2640,35 @@ function ehValorMascarado(valor) {
 // Consulta somente leitura para o GymFit (indicador "Grupo de risco": alunos sem contato nos últimos N dias).
 // Protegida por chave (GYMFIT_API_KEY no ambiente, enviada como "Authorization: Bearer ..."); sem a variável a rota fica desligada.
 // Devolve, por telefone, o último contato: mensagem da recepção (manual = painel ou celular pareado) ou disparo automático respondido pelo aluno. Sem o texto das mensagens.
-app.get('/api/gymfit/contatos', async (req, res) => {
+function autorizadoGymfit(req, res) {
     const chave = process.env.GYMFIT_API_KEY;
     const recebida = (req.headers.authorization || '').replace(/^Bearer\s+/i, '');
-    if (!chave) return res.status(503).json({ error: 'GYMFIT_API_KEY não configurada' });
+    if (!chave) { res.status(503).json({ error: 'GYMFIT_API_KEY não configurada' }); return false; }
     const a = Buffer.from(recebida), b = Buffer.from(chave);
-    if (a.length !== b.length || !require('crypto').timingSafeEqual(a, b)) return res.status(401).json({ error: 'não autorizado' });
+    if (a.length !== b.length || !require('crypto').timingSafeEqual(a, b)) { res.status(401).json({ error: 'não autorizado' }); return false; }
+    return true;
+}
+
+// Leads do GymFit: números que perguntaram de valores ou planos. Devolve, por telefone, o dia da PRIMEIRA pergunta (de todo o histórico).
+// Mesmas palavras da resposta automática de preços do bot (valor, preço, plano(s), mensalidade, quanto custa). `_` casa o "ç" e o "c" de preço/preco.
+app.get('/api/gymfit/leads', async (req, res) => {
+    if (!autorizadoGymfit(req, res)) return;
+    try {
+        const rows = await db.all(
+            `SELECT telefone, MAX(nome) AS nome, MIN(ts) AS primeira_pergunta
+             FROM conversas
+             WHERE direcao = 'in' AND tipo = 'text' AND canal IN ('whatsapp', 'whatsapp_cloud')
+               AND (texto LIKE '%valor%' OR texto LIKE '%pre_o%' OR texto LIKE '%plano%' OR texto LIKE '%mensalidade%' OR texto LIKE '%quanto custa%')
+             GROUP BY telefone`
+        );
+        res.json({ total: rows.length, perguntas: rows });
+    } catch (e) {
+        res.status(500).json({ error: 'falha ao consultar conversas' });
+    }
+});
+
+app.get('/api/gymfit/contatos', async (req, res) => {
+    if (!autorizadoGymfit(req, res)) return;
     const dias = Math.min(Math.max(parseInt(req.query.dias, 10) || 15, 1), 90);
     try {
         const rows = await db.all(
