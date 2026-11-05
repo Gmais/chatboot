@@ -2639,7 +2639,7 @@ function ehValorMascarado(valor) {
 
 // Consulta somente leitura para o GymFit (indicador "Grupo de risco": alunos sem contato nos últimos N dias).
 // Protegida por chave (GYMFIT_API_KEY no ambiente, enviada como "Authorization: Bearer ..."); sem a variável a rota fica desligada.
-// Devolve, por telefone, a última mensagem enviada pela recepção (manual = painel ou celular pareado), sem o texto das mensagens.
+// Devolve, por telefone, o último contato: mensagem da recepção (manual = painel ou celular pareado) ou disparo automático respondido pelo aluno. Sem o texto das mensagens.
 app.get('/api/gymfit/contatos', async (req, res) => {
     const chave = process.env.GYMFIT_API_KEY;
     const recebida = (req.headers.authorization || '').replace(/^Bearer\s+/i, '');
@@ -2649,10 +2649,14 @@ app.get('/api/gymfit/contatos', async (req, res) => {
     const dias = Math.min(Math.max(parseInt(req.query.dias, 10) || 15, 1), 90);
     try {
         const rows = await db.all(
-            `SELECT telefone, MAX(ts) AS ultimo_contato, COUNT(*) AS mensagens
-             FROM conversas
-             WHERE direcao = 'out' AND manual = 1 AND tipo != 'reaction' AND datetime(ts) >= datetime('now', ?)
-             GROUP BY telefone`,
+            // Conta como contato: mensagem manual da recepção OU disparo automático que o aluno respondeu depois (texto/mídia; reação não vale).
+            `SELECT o.telefone, MAX(o.ts) AS ultimo_contato, COUNT(*) AS mensagens
+             FROM conversas o
+             WHERE o.direcao = 'out' AND o.tipo != 'reaction' AND datetime(o.ts) >= datetime('now', ?)
+               AND (o.manual = 1 OR EXISTS (
+                 SELECT 1 FROM conversas i
+                 WHERE i.telefone = o.telefone AND i.direcao = 'in' AND i.tipo != 'reaction' AND datetime(i.ts) >= datetime(o.ts)))
+             GROUP BY o.telefone`,
             [`-${dias} days`]
         );
         res.json({ dias, total: rows.length, contatos: rows });
