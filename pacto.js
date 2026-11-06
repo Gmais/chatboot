@@ -118,6 +118,28 @@ async function obterContratosPorMatricula(matricula) {
     return Array.isArray(content) ? content : [];
 }
 
+// Detalhe de um contrato pelo código (inclui contratoDuracao.carencia = dias de
+// carência/férias que o plano dá). Mesmo header empresaId e mesmo limite de
+// 1 req/s de obterContratosPorMatricula.
+async function obterDetalheContrato(codigoContrato) {
+    const { content } = await pactoRequest('GET', `/contratos/${codigoContrato}`, {
+        headers: { empresaId: String(PACTO_EMPRESA_CODIGO) }
+    });
+    return content || null;
+}
+
+// Operações lançadas no contrato (bônus, trancamento, atestado, carência/férias,
+// transferência...). Cada item tem tipoOperacao (sigla), tipoOperacaoApresentar
+// (nome legível), diasOperacao, dataInicioEfetivacaoOperacao/dataFimEfetivacaoOperacao
+// (epoch ms). ATENÇÃO: o payload devolve o contrato e a empresa aninhados, com
+// tokens de integração da academia — NUNCA logue o objeto cru, só os campos acima.
+async function obterOperacoesContrato(codigoContrato) {
+    const { content } = await pactoRequest('GET', `/contratos/${codigoContrato}/operacoes`, {
+        headers: { empresaId: String(PACTO_EMPRESA_CODIGO) }
+    });
+    return Array.isArray(content) ? content : [];
+}
+
 // Cria um novo cliente (cadastro). Não informe "codigo" — a API usa a ausência
 // dele para diferenciar criação de atualização. Retorna o cliente já com
 // matrícula e código gerados pela Pacto.
@@ -187,6 +209,7 @@ async function gerarLinkPagamentoPixSantander({ movparcela, nrParcelas = 1, conv
 
 module.exports = {
     buscarAlunoPorMatricula, buscarAlunoPorCodigo, obterParcelasEmAberto, obterContratosPorMatricula,
+    obterDetalheContrato, obterOperacoesContrato,
     criarCliente, matricularAluno,
     gerarLinkPagamentoPixSantander
 };

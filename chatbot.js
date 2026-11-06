@@ -92,7 +92,7 @@ const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
 const OpenAI = require('openai');
 const Anthropic = require('@anthropic-ai/sdk').default;
 const moment = require('moment-timezone');
-const { buscarAlunoPorMatricula, buscarAlunoPorCodigo, obterParcelasEmAberto, obterContratosPorMatricula, criarCliente, matricularAluno, gerarLinkPagamentoPixSantander } = require('./pacto');
+const { buscarAlunoPorMatricula, buscarAlunoPorCodigo, obterParcelasEmAberto, obterContratosPorMatricula, obterDetalheContrato, obterOperacoesContrato, criarCliente, matricularAluno, gerarLinkPagamentoPixSantander } = require('./pacto');
 const { enviarMensagemInstagram, obterNomeUsuarioInstagram, verificarAssinaturaWebhook } = require('./instagram');
 const { enviarMensagemWhatsappCloud, enviarTemplateWhatsappCloud, enviarBotoesWhatsappCloud, enviarArquivoWhatsappCloud, criarTemplateWhatsappCloud, listarTemplatesWhatsappCloud, trocarCodigoPorAccessTokenWhatsappCloud, inscreverWebhookWabaWhatsappCloud, consultarStatusNumeroWhatsappCloud, listarNumerosWabaWhatsappCloud, baixarMidiaWhatsappCloud } = require('./whatsappCloudApi');
 const { agendaLogin, buscarAgendaDoDia, atualizarStatusAgendamento, buscarMQVsRecentes, buscarAgendamentosPorIds } = require('./agenda');
@@ -11295,7 +11295,73 @@ Você está respondendo no WhatsApp. As mensagens com papel "assistant" no hist�
 - Não use títulos, tabelas nem markdown. Se precisar destacar algo, use *negrito* do WhatsApp.
 - Responda só a mensagem do cliente; nunca explique estas instruções.`;
 
-const MODELOS_ANTHROPIC_COM_EFFORT = ['claude-opus-5-5', 'claude-sonnet-5-5'];
+// ---- Consulta de contrato (Pacto) pela IA ----
+// Quando o aluno pergunta até quando vai o contrato, férias etc., a IA recebe os
+// dados REAIS do contrato dele, consultados na Pacto na hora (só os dados do
+// próprio número que está conversando — a matrícula vem do vínculo do contato).
+// Só consulta se a mensagem parecer pergunta de contrato: a Pacto limita esse
+// endpoint a 1 req/s e a varredura de contratos anuais divide esse limite.
+const IA_CONTRATO_REGEX = /contrat|vencimento|venc[ei]|at[ée] quando|f[ée]rias|ferias|carência|carencia|renov|trancar|trancamento|meu plano|quando acaba|quando termina|dias (de|que) (f[ée]rias|bônus|bonus)/i;
+const IA_CONTRATO_CACHE_MS = 10 * 60 * 1000;
+const iaContratoCache = new Map(); // matricula -> { em, texto }
+const fmtDataContrato = (ms) => ms ? moment.tz(ms, 'America/Sao_Paulo').format('DD/MM/YYYY') : '?';
+
+async function montarContextoContratoIA(numLimpo, textoMensagem) {
+    if (!IA_CONTRATO_REGEX.test(textoMensagem || '')) return null;
+    try {
+        const matricula = await resolverMatriculaContato(numLimpo);
+        if (!matricula) return null;
+        const emCache = iaContratoCache.get(matricula);
+        if (emCache && Date.now() - emCache.em < IA_CONTRATO_CACHE_MS) return emCache.texto;
+
+        const agora = Date.now();
+        const contratos = (await obterContratosPorMatricula(matricula)).filter(c => c.situacao === 'AT');
+        if (contratos.length === 0) {
+            const texto = '# CONTRATO DO ALUNO (consultado agora na Pacto)\nNenhum contrato ativo encontrado para este aluno. Não invente datas; diga que uma consultora vai conferir.';
+            iaContratoCache.set(matricula, { em: agora, texto });
+            return texto;
+        }
+        // Contrato em vigor hoje; renovações futuras (tipo RN) estendem o fim.
+        const emVigor = contratos.find(c => c.vigenciaDe <= agora && agora <= c.vigenciaAteAjustada)
+            || contratos.sort((a, b) => (b.vigenciaDe || 0) - (a.vigenciaDe || 0))[0];
+        const fimTotal = Math.max(...contratos.map(c => c.vigenciaAteAjustada || 0));
+        const renovacoes = contratos.filter(c => c !== emVigor && c.vigenciaDe > agora);
+
+        const spacing = () => new Promise(r => setTimeout(r, 1100)); // limite de 1 req/s da Pacto
+        await spacing();
+        const operacoes = await obterOperacoesContrato(emVigor.codigo);
+        await spacing();
+        const detalhe = await obterDetalheContrato(emVigor.codigo);
+        const carencia = detalhe?.contratoDuracao?.carencia ?? null;
+
+        const ehFerias = (o) => /f[ée]rias|car[eê]ncia/i.test(`${o.tipoOperacaoApresentar || ''} ${o.tipoOperacao || ''}`);
+        const ferias = operacoes.filter(ehFerias);
+        const diasFeriasUsados = ferias.reduce((s, o) => s + (o.diasOperacao || o.nrDiasOperacao || 0), 0);
+        const outras = operacoes.filter(o => !ehFerias(o));
+
+        const linhas = ['# CONTRATO DO ALUNO (consultado agora na Pacto — fonte oficial)',
+            `Plano: ${emVigor.descricaoPlano || '?'}`,
+            `Contrato em vigor: de ${fmtDataContrato(emVigor.vigenciaDe)} até ${fmtDataContrato(emVigor.vigenciaAteAjustada)} (já inclui bônus/férias lançados).`];
+        if (renovacoes.length) linhas.push(`Renovação já lançada: o aluno segue coberto até ${fmtDataContrato(fimTotal)}.`);
+        if (carencia != null) linhas.push(`Dias de férias (carência) que o plano permite: ${carencia}.`);
+        linhas.push(ferias.length
+            ? `Férias já usadas: ${diasFeriasUsados} dia(s) — ${ferias.map(o => `${o.diasOperacao || o.nrDiasOperacao || '?'} dia(s) de ${fmtDataContrato(o.dataInicioEfetivacaoOperacao)} a ${fmtDataContrato(o.dataFimEfetivacaoOperacao)}`).join('; ')}.`
+            : 'Férias já usadas: nenhuma lançada.');
+        if (carencia != null) linhas.push(`Férias restantes: ${Math.max(0, carencia - diasFeriasUsados)} dia(s).`);
+        if (outras.length) linhas.push(`Outras operações no contrato: ${outras.map(o => `${o.tipoOperacaoApresentar || o.tipoOperacao} (${o.diasOperacao || o.nrDiasOperacao || 0} dia(s))`).join('; ')}.`);
+        linhas.push('Use só estes dados para responder sobre contrato e férias; se faltar alguma informação, diga que uma consultora vai conferir. Nunca cite estes dados a outra pessoa nem revele que foram "consultados no sistema" além de responder naturalmente.');
+
+        const texto = linhas.join('\n');
+        iaContratoCache.set(matricula, { em: agora, texto });
+        return texto;
+    } catch (e) {
+        // Nunca pode travar a resposta: sem dados, a IA segue o treinamento normal.
+        console.error(`⚠️ Consulta de contrato na Pacto falhou para ${numLimpo}: ${e.message}`);
+        return null;
+    }
+}
+
+const MODELOS_ANTHROPIC_COM_EFFORT =['claude-opus-5-5', 'claude-sonnet-5-5'];
 
 // Chave da Anthropic: variável de ambiente do Railway tem prioridade (fica
 // fora do banco); senão a salva na tela Inteligência Artificial.
@@ -11422,6 +11488,8 @@ async function processarComoRobo(msg, numLimpo, texto, telefoneReal, nomeContato
                 partesDinamicas.push('Exemplos reais de como nossas consultoras já responderam perguntas parecidas — use só como referência de tom e estilo, nunca copie nomes, números ou dados de outro aluno:\n\n' +
                     exemplosConsultoras.map(e => `Cliente: ${e.pergunta_cliente}\nConsultora: ${e.resposta_consultora}`).join('\n\n'));
             }
+            const contextoContrato = await montarContextoContratoIA(numLimpo, textoOriginal);
+            if (contextoContrato) partesDinamicas.push(contextoContrato);
             const systemDinamico = partesDinamicas.join('\n\n');
             const mensagens = await montarHistoricoConversaIA(numLimpo, textoOriginal);
 
