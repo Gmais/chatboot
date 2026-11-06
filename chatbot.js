@@ -2688,6 +2688,56 @@ app.get('/api/gymfit/contatos', async (req, res) => {
     }
 });
 
+// Histórico da conversa de um número, para o GymFit (roteiro "Leads sem atendimento": botão WhatsApp). Somente leitura, mesma chave.
+// Devolve as últimas mensagens em ordem cronológica: direcao 'in' (do contato) ou 'out' (do bot ou da recepção; manual = recepção). Mensagens ocultas ficam de fora.
+app.get('/api/gymfit/conversa/:telefone', async (req, res) => {
+    if (!autorizadoGymfit(req, res)) return;
+    const telefone = String(req.params.telefone || '').replace(/\D/g, '');
+    if (telefone.length < 8 || telefone.length > 15) return res.status(400).json({ error: 'telefone inválido' });
+    const limite = Math.min(Math.max(parseInt(req.query.limite, 10) || 100, 1), 300);
+    try {
+        const desc = await db.all(
+            `SELECT ts, direcao, tipo, texto, manual FROM conversas WHERE telefone = ? AND oculto = 0 ORDER BY ts DESC LIMIT ?`,
+            [telefone, limite]
+        );
+        res.json({ telefone, mensagens: desc.reverse().map(m => ({ ...m, manual: !!m.manual })) });
+    } catch (e) {
+        res.status(500).json({ error: 'falha ao consultar conversas' });
+    }
+});
+
+// Envio de UMA cobrança pedido pelo GymFit (meta "Alunos com pagamento atrasado", botão "Enviar Cobrança"): manda a Mensagem Personalizada
+// "Cobrança N" (N de 1 a 5, escolhida pelo GymFit) para o número, pelo mesmo caminho dos Disparos (pool de números, template aprovado, placeholders).
+// Responde assim que o envio entra na fila; falha de entrega fica em disparo_envios_log como em qualquer disparo.
+app.post('/api/gymfit/cobranca', async (req, res) => {
+    if (!autorizadoGymfit(req, res)) return;
+    const telefone = String(req.body?.telefone || '').replace(/\D/g, '');
+    const sequencia = parseInt(req.body?.sequencia, 10);
+    if (telefone.length < 10 || telefone.length > 15) return res.status(400).json({ error: 'telefone inválido' });
+    if (!(sequencia >= 1 && sequencia <= 5)) return res.status(400).json({ error: 'sequencia deve ser de 1 a 5' });
+    try {
+        const msg = await db.get('SELECT id, nome, texto, categoria FROM mensagens_personalizadas WHERE nome = ?', `Cobrança ${sequencia}`);
+        if (!msg) return res.status(404).json({ error: `Mensagem "Cobrança ${sequencia}" não encontrada em Mensagens Personalizadas` });
+        const algumPoolConectado = [...poolClients.values()].some(e => e.status === 'connected');
+        if (!algumPoolConectado && !isConnected && !(await cloudApiDisponivelParaDisparo())) {
+            return res.status(503).json({ error: 'Nenhum número de disparo conectado no Chatboot.' });
+        }
+        const dadosJob = montarJobDisparo({ body: { numeros: telefone, mensagem: msg.texto, categoria: msg.categoria || 'inadimplentes', descricao: msg.nome, mensagemId: msg.id, delay_ms: 2000 } });
+        const { listaNumeros, mensagem, delay_ms, delay_modo, delay_velocidade, categoria, mensagemId, descricaoFinal } = dadosJob;
+        const { numerosPermitidosIds, templateWhatsapp, templateMediaPath } = await resolverRoteamentoETemplate(categoria, mensagemId);
+        const job = { listaNumeros, mensagem, mediaFile: null, delay_ms, delay_modo, delay_velocidade, numerosPermitidosIds, descricao: descricaoFinal, templateWhatsapp, templateMediaPath };
+        if (broadcastRunning) {
+            filaDisparos.push(job);
+            io.emit('broadcast_fila_atualizada', { tamanho: filaDisparos.length });
+            return res.json({ ok: true, queued: true, mensagem: msg.nome });
+        }
+        iniciarBroadcast(job);
+        res.json({ ok: true, queued: false, mensagem: msg.nome });
+    } catch (e) {
+        res.status(500).json({ error: 'falha ao enviar a cobrança' });
+    }
+});
+
 app.get('/api/configuracoes', async (req, res) => {
     const rows = await db.all('SELECT * FROM configuracoes');
     const config = {};
