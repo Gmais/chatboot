@@ -2738,6 +2738,58 @@ app.post('/api/gymfit/cobranca', async (req, res) => {
     }
 });
 
+// Quem já recebeu mensagem de ANIVERSÁRIO (automação "Aniversariante" ou mensagens "Aniversário N") nos últimos dias, para o GymFit (CRM > Aniversariantes:
+// o aluno que recebeu fica verde como realizado). Somente leitura, mesma chave. Sem o texto das mensagens: só telefone, nome da mensagem e horário (UTC).
+app.get('/api/gymfit/aniversarios', async (req, res) => {
+    if (!autorizadoGymfit(req, res)) return;
+    const dias = Math.min(Math.max(parseInt(req.query.dias, 10) || 3, 1), 31);
+    try {
+        const envios = await db.all(
+            `SELECT l.telefone, l.mensagem_nome, l.enviado_em
+             FROM automacao_envios_log l LEFT JOIN automacoes a ON a.id = l.automacao_id
+             WHERE datetime(l.enviado_em) >= datetime('now', ?)
+               AND (a.nome LIKE '%Aniversari%' OR l.mensagem_nome LIKE 'Aniversário%' OR l.mensagem_nome LIKE 'Aniversario%')
+             ORDER BY l.enviado_em DESC`,
+            [`-${dias} days`]
+        );
+        res.json({ dias, total: envios.length, envios });
+    } catch (e) {
+        res.status(500).json({ error: 'falha ao consultar os envios' });
+    }
+});
+
+// Envio de UMA Mensagem Personalizada pedido pelo GymFit (CRM > Pós Vendas: botões "WhatsApp" = Orientação e "Avaliação Física"/"MQV" = Agendamento+MQV; Faltosos: botão "Enviar Mensagem" = Mensagem Faltosos 2).
+// Só aceita os nomes da lista abaixo (a chave do GymFit não dispara qualquer mensagem). Mesmo caminho dos Disparos: pool, template aprovado, placeholders.
+const MENSAGENS_PERMITIDAS_GYMFIT = new Set(['Orientação', 'Agendamento+MQV', 'Mensagem Faltosos 2', 'A Vencer 30 Dias', 'A Vencer 20 Dias', 'A Vencer 10 Dias']);
+app.post('/api/gymfit/enviar-mensagem', async (req, res) => {
+    if (!autorizadoGymfit(req, res)) return;
+    const telefone = String(req.body?.telefone || '').replace(/\D/g, '');
+    const nome = String(req.body?.nome || '');
+    if (telefone.length < 10 || telefone.length > 15) return res.status(400).json({ error: 'telefone inválido' });
+    if (!MENSAGENS_PERMITIDAS_GYMFIT.has(nome)) return res.status(400).json({ error: 'mensagem não permitida para o GymFit' });
+    try {
+        const msg = await db.get('SELECT id, nome, texto, categoria FROM mensagens_personalizadas WHERE nome = ?', nome);
+        if (!msg) return res.status(404).json({ error: `Mensagem "${nome}" não encontrada em Mensagens Personalizadas` });
+        const algumPoolConectado = [...poolClients.values()].some(e => e.status === 'connected');
+        if (!algumPoolConectado && !isConnected && !(await cloudApiDisponivelParaDisparo())) {
+            return res.status(503).json({ error: 'Nenhum número de disparo conectado no Chatboot.' });
+        }
+        const dadosJob = montarJobDisparo({ body: { numeros: telefone, mensagem: msg.texto, categoria: msg.categoria || '', descricao: msg.nome, mensagemId: msg.id, delay_ms: 2000 } });
+        const { listaNumeros, mensagem, delay_ms, delay_modo, delay_velocidade, categoria, mensagemId, descricaoFinal } = dadosJob;
+        const { numerosPermitidosIds, templateWhatsapp, templateMediaPath } = await resolverRoteamentoETemplate(categoria, mensagemId);
+        const job = { listaNumeros, mensagem, mediaFile: null, delay_ms, delay_modo, delay_velocidade, numerosPermitidosIds, descricao: descricaoFinal, templateWhatsapp, templateMediaPath };
+        if (broadcastRunning) {
+            filaDisparos.push(job);
+            io.emit('broadcast_fila_atualizada', { tamanho: filaDisparos.length });
+            return res.json({ ok: true, queued: true, mensagem: msg.nome });
+        }
+        iniciarBroadcast(job);
+        res.json({ ok: true, queued: false, mensagem: msg.nome });
+    } catch (e) {
+        res.status(500).json({ error: 'falha ao enviar a mensagem' });
+    }
+});
+
 app.get('/api/configuracoes', async (req, res) => {
     const rows = await db.all('SELECT * FROM configuracoes');
     const config = {};
