@@ -2650,17 +2650,35 @@ function autorizadoGymfit(req, res) {
 }
 
 // Leads do GymFit: números que perguntaram de valores ou planos. Devolve, por telefone, o dia da PRIMEIRA pergunta (de todo o histórico).
-// Mesmas palavras da resposta automática de preços do bot (valor, preço, plano(s), mensalidade, quanto custa). `_` casa o "ç" e o "c" de preço/preco.
+// Critério (mais rígido, para não trazer quem só conversa sobre contrato, catraca, ticket etc.): a mensagem recebida precisa ter a PALAVRA INTEIRA
+// valor(es), preço(s), plano(s), mensalidade(s) ou "quanto custa/fica/sai", NÃO pode tratar de assunto de quem já é aluno (contrato, catraca, ticket, boleto,
+// cancelamento, transferência, pagamento, renovação...) e não pode ser um textão (mais de 400 caracteres). O número só entra se tiver ao menos uma mensagem assim.
+const LEAD_INTENCAO_PRECO = /(quantos+(custa|fica|sai|cobram|cobra)|valor(es)?|preco(s)?|mensalidade(s)?|plano(s)?)/;
+const LEAD_ASSUNTO_DE_ALUNO = /(contrato(s)?|ticket(s)?|catraca|cancelw*|transferw*|boleto(s)?|fatura(s)?|parcela(s)?|pagamento(s)?|cobranca(s)?|renovw*|reembolso|estorno|notas+fiscal|segundas+via|trancar|trancamento|acesso)/;
+function mensagemEhPerguntaDeValores(texto) {
+    const t = String(texto || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+    return t.length <= 400 && LEAD_INTENCAO_PRECO.test(t) && !LEAD_ASSUNTO_DE_ALUNO.test(t);
+}
 app.get('/api/gymfit/leads', async (req, res) => {
     if (!autorizadoGymfit(req, res)) return;
     try {
-        const rows = await db.all(
-            `SELECT telefone, MAX(nome) AS nome, MIN(ts) AS primeira_pergunta
+        const msgs = await db.all(
+            `SELECT telefone, nome, texto, ts
              FROM conversas
              WHERE direcao = 'in' AND tipo = 'text' AND canal IN ('whatsapp', 'whatsapp_cloud')
-               AND (texto LIKE '%valor%' OR texto LIKE '%pre_o%' OR texto LIKE '%plano%' OR texto LIKE '%mensalidade%' OR texto LIKE '%quanto custa%')
-             GROUP BY telefone`
+               AND (texto LIKE '%valor%' OR texto LIKE '%pre_o%' OR texto LIKE '%plano%' OR texto LIKE '%mensalidade%' OR texto LIKE '%quanto custa%' OR texto LIKE '%quanto fica%' OR texto LIKE '%quanto sai%' OR texto LIKE '%quanto cobra%')`
         );
+        const porTelefone = new Map();
+        for (const m of msgs) {
+            if (!mensagemEhPerguntaDeValores(m.texto)) continue;
+            const cur = porTelefone.get(m.telefone);
+            if (!cur) porTelefone.set(m.telefone, { telefone: m.telefone, nome: m.nome || null, primeira_pergunta: m.ts });
+            else {
+                if (m.ts < cur.primeira_pergunta) cur.primeira_pergunta = m.ts;
+                if (!cur.nome && m.nome) cur.nome = m.nome;
+            }
+        }
+        const rows = [...porTelefone.values()];
         res.json({ total: rows.length, perguntas: rows });
     } catch (e) {
         res.status(500).json({ error: 'falha ao consultar conversas' });
