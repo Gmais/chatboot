@@ -92,7 +92,9 @@ const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
 const OpenAI = require('openai');
 const Anthropic = require('@anthropic-ai/sdk').default;
 const moment = require('moment-timezone');
-const { buscarAlunoPorMatricula, buscarAlunoPorCodigo, obterParcelasEmAberto, obterContratosPorMatricula, obterDetalheContrato, obterOperacoesContrato, criarCliente, matricularAluno, gerarLinkPagamentoPixSantander } = require('./pacto');
+// Consultas (aluno, parcelas, contratos, operações) vêm do GymFit; cadastro/matrícula e Pix ainda passam pela Pacto (próxima etapa da migração).
+const { buscarAlunoPorMatricula, buscarAlunoPorCodigo, obterParcelasEmAberto, obterContratosPorMatricula, obterDetalheContrato, obterOperacoesContrato } = require('./gymfit');
+const { criarCliente, matricularAluno, gerarLinkPagamentoPixSantander } = require('./pacto');
 const { enviarMensagemInstagram, obterNomeUsuarioInstagram, verificarAssinaturaWebhook } = require('./instagram');
 const { enviarMensagemWhatsappCloud, enviarTemplateWhatsappCloud, enviarBotoesWhatsappCloud, enviarArquivoWhatsappCloud, criarTemplateWhatsappCloud, listarTemplatesWhatsappCloud, trocarCodigoPorAccessTokenWhatsappCloud, inscreverWebhookWabaWhatsappCloud, consultarStatusNumeroWhatsappCloud, listarNumerosWabaWhatsappCloud, baixarMidiaWhatsappCloud } = require('./whatsappCloudApi');
 const { agendaLogin, buscarAgendaDoDia, atualizarStatusAgendamento, buscarMQVsRecentes, buscarAgendamentosPorIds } = require('./agenda');
@@ -8857,7 +8859,7 @@ setTimeout(() => processarAgendaAvaliacao().catch(e => console.error('Erro no ci
 // mais de 1 hora.
 const CONTRATOS_ANUAIS_DURACAO_MINIMA_DIAS = 300;
 const CONTRATOS_ANUAIS_MARCOS = [30, 20, 10];
-const CONTRATOS_ANUAIS_DELAY_MS = 1100;
+const CONTRATOS_ANUAIS_DELAY_MS = 150; // o GymFit não tem o limite de 1 req/s da Pacto; só um respiro entre as chamadas
 
 async function garantirEtiquetaContratoVence(marco) {
     const nome = `Falta${marco}`;
@@ -8932,9 +8934,10 @@ async function processarContratosAnuaisVencendo() {
 
                 let marcoAtual = null;
                 if (vigente && vigente.vigenciaDe && vigente.vigenciaAteAjustada) {
-                    const duracaoDias = Math.round((vigente.vigenciaAteAjustada - vigente.vigenciaDe) / 86400000);
+                    const duracaoDias = Math.round((vigente.vigenciaAteAjustada - vigente.vigenciaDe) / 86400000); // fim = último instante do dia, então já conta o dia final
                     if (duracaoDias >= CONTRATOS_ANUAIS_DURACAO_MINIMA_DIAS) {
-                        const diasRestantes = Math.round((vigente.vigenciaAteAjustada - Date.now()) / 86400000);
+                        // Diferença em DIAS DE CALENDÁRIO (não em 24h corridas): não depende do horário em que a varredura roda.
+                        const diasRestantes = moment.tz(vigente.vigenciaAteAjustada, 'America/Sao_Paulo').startOf('day').diff(moment.tz('America/Sao_Paulo').startOf('day'), 'days');
                         if (CONTRATOS_ANUAIS_MARCOS.includes(diasRestantes)) marcoAtual = diasRestantes;
                     }
                 }
@@ -10514,7 +10517,9 @@ async function handlePactoFlow(telefone, texto) {
     const vinculo = await getVinculo(telefone);
     if (vinculo) {
         try {
-            const aluno = await buscarAlunoPorCodigo(vinculo.codigo_cliente);
+            // Vínculos antigos guardam códigos da Pacto; no GymFit o aluno é identificado pela matrícula.
+            const aluno = await buscarAlunoPorMatricula(vinculo.matricula);
+            if (!aluno) throw new Error(`matrícula ${vinculo.matricula} não encontrada no GymFit`);
             await enviarRespostaPacto(telefone, aluno);
         } catch (err) {
             console.error('❌ Erro ao consultar aluno vinculado na Pacto:', err.message);
@@ -11315,10 +11320,9 @@ Você está respondendo no WhatsApp. As mensagens com papel "assistant" no hist�
 
 // ---- Consulta de contrato (Pacto) pela IA ----
 // Quando o aluno pergunta até quando vai o contrato, férias etc., a IA recebe os
-// dados REAIS do contrato dele, consultados na Pacto na hora (só os dados do
+// dados REAIS do contrato dele, consultados no GymFit na hora (só os dados do
 // próprio número que está conversando — a matrícula vem do vínculo do contato).
-// Só consulta se a mensagem parecer pergunta de contrato: a Pacto limita esse
-// endpoint a 1 req/s e a varredura de contratos anuais divide esse limite.
+// Só consulta se a mensagem parecer pergunta de contrato: evita consulta à toa a cada mensagem do aluno.
 const IA_CONTRATO_REGEX = /contrat|vencimento|venc[ei]|at[ée] quando|f[ée]rias|ferias|carência|carencia|renov|trancar|trancamento|meu plano|quando acaba|quando termina|dias (de|que) (f[ée]rias|bônus|bonus)/i;
 const IA_CONTRATO_CACHE_MS = 10 * 60 * 1000;
 const iaContratoCache = new Map(); // matricula -> { em, texto }
@@ -11335,7 +11339,7 @@ async function montarContextoContratoIA(numLimpo, textoMensagem) {
         const agora = Date.now();
         const contratos = (await obterContratosPorMatricula(matricula)).filter(c => c.situacao === 'AT');
         if (contratos.length === 0) {
-            const texto = '# CONTRATO DO ALUNO (consultado agora na Pacto)\nNenhum contrato ativo encontrado para este aluno. Não invente datas; diga que uma consultora vai conferir.';
+            const texto = '# CONTRATO DO ALUNO (consultado agora no GymFit)\nNenhum contrato ativo encontrado para este aluno. Não invente datas; diga que uma consultora vai conferir.';
             iaContratoCache.set(matricula, { em: agora, texto });
             return texto;
         }
@@ -11345,10 +11349,7 @@ async function montarContextoContratoIA(numLimpo, textoMensagem) {
         const fimTotal = Math.max(...contratos.map(c => c.vigenciaAteAjustada || 0));
         const renovacoes = contratos.filter(c => c !== emVigor && c.vigenciaDe > agora);
 
-        const spacing = () => new Promise(r => setTimeout(r, 1100)); // limite de 1 req/s da Pacto
-        await spacing();
         const operacoes = await obterOperacoesContrato(emVigor.codigo);
-        await spacing();
         const detalhe = await obterDetalheContrato(emVigor.codigo);
         const carencia = detalhe?.contratoDuracao?.carencia ?? null;
 
@@ -11357,7 +11358,7 @@ async function montarContextoContratoIA(numLimpo, textoMensagem) {
         const diasFeriasUsados = ferias.reduce((s, o) => s + (o.diasOperacao || o.nrDiasOperacao || 0), 0);
         const outras = operacoes.filter(o => !ehFerias(o));
 
-        const linhas = ['# CONTRATO DO ALUNO (consultado agora na Pacto — fonte oficial)',
+        const linhas = ['# CONTRATO DO ALUNO (consultado agora no GymFit — fonte oficial)',
             `Plano: ${emVigor.descricaoPlano || '?'}`,
             `Contrato em vigor: de ${fmtDataContrato(emVigor.vigenciaDe)} até ${fmtDataContrato(emVigor.vigenciaAteAjustada)} (já inclui bônus/férias lançados).`];
         if (renovacoes.length) linhas.push(`Renovação já lançada: o aluno segue coberto até ${fmtDataContrato(fimTotal)}.`);
@@ -11374,7 +11375,7 @@ async function montarContextoContratoIA(numLimpo, textoMensagem) {
         return texto;
     } catch (e) {
         // Nunca pode travar a resposta: sem dados, a IA segue o treinamento normal.
-        console.error(`⚠️ Consulta de contrato na Pacto falhou para ${numLimpo}: ${e.message}`);
+        console.error(`⚠️ Consulta de contrato no GymFit falhou para ${numLimpo}: ${e.message}`);
         return null;
     }
 }
