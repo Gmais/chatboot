@@ -93,7 +93,7 @@ const OpenAI = require('openai');
 const Anthropic = require('@anthropic-ai/sdk').default;
 const moment = require('moment-timezone');
 // Tudo que era da Pacto agora vem do GymFit: consultas (aluno, parcelas, contratos, operações), matrícula de aluno novo e Pix de parcela.
-const { buscarAlunoPorMatricula, obterParcelasEmAberto, obterContratosPorMatricula, obterDetalheContrato, obterOperacoesContrato, obterOrcamentoMatricula, matricularAlunoNovo, gerarPixParcela, GymfitErroDefinitivo } = require('./gymfit');
+const { buscarAlunoPorMatricula, obterParcelasEmAberto, obterContratosPorMatricula, obterDetalheContrato, obterOperacoesContrato, obterOrcamentoMatricula, matricularAlunoNovo, gerarPixParcela, obterAlertasCrm, GymfitErroDefinitivo } = require('./gymfit');
 const { enviarMensagemInstagram, obterNomeUsuarioInstagram, verificarAssinaturaWebhook } = require('./instagram');
 const { enviarMensagemWhatsappCloud, enviarTemplateWhatsappCloud, enviarBotoesWhatsappCloud, enviarArquivoWhatsappCloud, criarTemplateWhatsappCloud, listarTemplatesWhatsappCloud, trocarCodigoPorAccessTokenWhatsappCloud, inscreverWebhookWabaWhatsappCloud, consultarStatusNumeroWhatsappCloud, listarNumerosWabaWhatsappCloud, baixarMidiaWhatsappCloud } = require('./whatsappCloudApi');
 const { agendaLogin, buscarAgendaDoDia, atualizarStatusAgendamento, buscarMQVsRecentes, buscarAgendamentosPorIds } = require('./agenda');
@@ -1690,6 +1690,14 @@ async function salvarNaConversa(telefone, nome, direcao, texto, tipo = 'text', t
     // /api/conversas resolve certo).
     const matriculaEvento = await resolverMatriculaContato(num);
     io.emit('nova_mensagem', { id: resultado.lastID, telefone: num, nome: nome || num, texto, direcao, tipo, ts, nao_lidas: naoLidas.c, manual, media_path: mediaPath, canal, ack: ackInicial, matricula: matriculaEvento });
+
+    // ALERTA CRM: o aluno escreveu AGORA (mensagens antigas reenviadas pelo WhatsApp na reconexão não contam) e está pendente numa esteira do CRM
+    // do GymFit — o painel mostra o aviso amarelo. Em segundo plano: nunca atrasa nem derruba o recebimento da mensagem.
+    if (direcao === 'in' && (!tsReal || (Date.now() - tsReal * 1000) < 5 * 60 * 1000)) {
+        alertasCrmDoContato(num).then(alertas => {
+            if (alertas.length) io.emit('crm_alerta', { telefone: num, nome: nome || num, alertas });
+        }).catch(() => { });
+    }
 
     // Qualquer mensagem nova (do cliente OU pro cliente — bot, automação,
     // envio manual) reabre a conversa se ela tinha sido finalizada. "Finalizada"
@@ -6488,6 +6496,34 @@ async function listarConversasComEtiquetas() {
 }
 
 // Lista todas as conversas (uma por contato, com o último texto e count de não lidas)
+// ALERTA CRM — em quais esteiras (metas) do CRM do GymFit o aluno desta conversa está pendente (a equipe ainda não concluiu o atendimento).
+// Vazio = não é aluno com matrícula, não está em nenhuma esteira, ou o GymFit não respondeu (o aviso é um extra: nunca quebra o Bate Papo).
+const ALERTA_CRM_CACHE_MS = 45 * 1000;
+const alertaCrmCache = new Map(); // matricula -> { em, alertas }
+async function alertasCrmDoContato(telefone) {
+    const num = String(telefone).replace('@c.us', '').replace('@lid', '');
+    const matricula = await resolverMatriculaContato(num);
+    if (!matricula) return [];
+    const emCache = alertaCrmCache.get(matricula);
+    if (emCache && Date.now() - emCache.em < ALERTA_CRM_CACHE_MS) return emCache.alertas;
+    try {
+        const alertas = await obterAlertasCrm(matricula);
+        alertaCrmCache.set(matricula, { em: Date.now(), alertas });
+        return alertas;
+    } catch (e) {
+        console.error(`⚠️ Alerta CRM: não consegui consultar o GymFit para a matrícula ${matricula}: ${e.message}`);
+        return [];
+    }
+}
+
+app.get('/api/conversas/:telefone/alerta-crm', async (req, res) => {
+    try {
+        res.json({ alertas: await alertasCrmDoContato(req.params.telefone) });
+    } catch (err) {
+        res.json({ alertas: [] });
+    }
+});
+
 app.get('/api/conversas', async (req, res) => {
     try {
         const conversas = await listarConversasComEtiquetas();

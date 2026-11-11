@@ -4092,6 +4092,7 @@ const CM = (() => {
     const chatHeaderStatus = document.getElementById('chat-header-status');
     const chatHeaderTags = document.getElementById('chat-header-tags');
     const chatHeaderAddTag = document.getElementById('chat-header-add-tag');
+    const chatHeaderAlertaCrm = document.getElementById('chat-header-alerta-crm');
     const btnChatVoltarMobile = document.getElementById('btn-chat-voltar-mobile');
     const btnChatAssumir = document.getElementById('btn-chat-assumir');
     const btnChatRobo    = document.getElementById('btn-chat-robo');
@@ -4251,7 +4252,7 @@ const CM = (() => {
             item.innerHTML = `
                 <div class="chat-contact-avatar">${avatarLetter(c.nome)}</div>
                 <div class="chat-contact-body">
-                    <div class="chat-contact-name">${c.canal === 'instagram' ? '📷 ' : ''}${c.nome}${c.matricula ? ` <span class="chat-contact-matricula">#${c.matricula}</span>` : ''}${c.assumida_humano ? ' 🙋' : ''}</div>
+                    <div class="chat-contact-name">${c.canal === 'instagram' ? '📷 ' : ''}${c.nome}${c.matricula ? ` <span class="chat-contact-matricula">#${c.matricula}</span>` : ''}${c.assumida_humano ? ' 🙋' : ''}${c.alerta_crm ? ' <span class="chat-contact-alerta-crm" title="Aluno pendente numa esteira do CRM">ALERTA CRM</span>' : ''}</div>
                     <div class="${previewClass}">${previewPrefix}${previewText}</div>
                 </div>
                 <div class="chat-contact-meta">
@@ -4288,6 +4289,8 @@ const CM = (() => {
         if (chatHeaderStatus)   chatHeaderStatus.textContent = telefone;
         renderChatHeaderTags(telefone);
         renderChatAssumirButton();
+        renderChatAlertaCrm(telefone);
+        if (c?.alerta_crm) upsertContact({ ...c, alerta_crm: false }); // o aviso agora está no cabeçalho: tira o marcador da lista
         if (chatMessages)       { chatMessages.style.display = 'flex'; chatMessages.innerHTML = '<div style="text-align:center;color:var(--text-3);padding:2rem;font-size:.82rem">Carregando...</div>'; }
         if (chatInputBar)       chatInputBar.style.display = 'flex';
         if (chatTypingBar)      chatTypingBar.style.display = 'none';
@@ -4306,6 +4309,40 @@ const CM = (() => {
 
         // Carrega histórico
         await loadHistory(telefone);
+    }
+
+    // ---- ALERTA CRM (amarelo neon no cabeçalho) ----
+    // O aluno desta conversa está pendente em uma ou mais esteiras do CRM do GymFit (a equipe ainda não concluiu o atendimento).
+    // "alertas" = [{ esteira, fase, fase_key, etapas_feitas, etapas_total }]. Sem alertas, o aviso some.
+    function montarAlertaCrmHtml(alertas) {
+        const meta = (a) => a.fase_key === 'fidelizacao' ? 'Meta de Fidelização' : `Meta ${a.fase}`;
+        const prog = (a) => a.etapas_feitas > 0 && a.etapas_total > 0 ? ` <span class="alerta-crm-prog">(${a.etapas_feitas}/${a.etapas_total} ações feitas)</span>` : '';
+        const linha = (a) => `Aluno está na esteira <b>${escapeHtml(a.esteira)}</b> da ${escapeHtml(meta(a))}${prog(a)}`;
+        return `<div class="alerta-crm-titulo">⚠️ ALERTA CRM</div>` +
+            alertas.map(a => `<div class="alerta-crm-linha">${linha(a)}</div>`).join('');
+    }
+
+    function mostrarAlertaCrmNoCabecalho(alertas) {
+        if (!chatHeaderAlertaCrm) return;
+        if (!alertas || alertas.length === 0) {
+            chatHeaderAlertaCrm.style.display = 'none';
+            chatHeaderAlertaCrm.innerHTML = '';
+            return;
+        }
+        chatHeaderAlertaCrm.innerHTML = montarAlertaCrmHtml(alertas);
+        chatHeaderAlertaCrm.style.display = 'block';
+    }
+
+    // Ao abrir a conversa: some o aviso da conversa anterior e consulta o do contato aberto (o servidor guarda 45 s em cache).
+    async function renderChatAlertaCrm(telefone) {
+        mostrarAlertaCrmNoCabecalho(null);
+        if (!chatHeaderAlertaCrm) return;
+        try {
+            const r = await fetch(`/api/conversas/${encodeURIComponent(telefone)}/alerta-crm`);
+            if (!r.ok) return;
+            const { alertas } = await r.json();
+            if (activePhone === telefone) mostrarAlertaCrmNoCabecalho(alertas); // o usuário pode ter trocado de conversa enquanto carregava
+        } catch (_) { /* o aviso é um extra: sem resposta, o chat funciona normalmente */ }
     }
 
     // ---- Assumir/liberar a conversa ativa ----
@@ -5027,6 +5064,21 @@ const CM = (() => {
             }
             renderContactList();
             updateGlobalBadge();
+        });
+
+        // ALERTA CRM em tempo real: o aluno acabou de escrever e está pendente numa esteira do CRM do GymFit.
+        socket.on('crm_alerta', ({ telefone, nome, alertas }) => {
+            if (!alertas || alertas.length === 0) return;
+            if (activePhone === telefone) {
+                mostrarAlertaCrmNoCabecalho(alertas); // conversa aberta: o aviso aparece (ou se atualiza) no cabeçalho
+                return;
+            }
+            // Outra conversa aberta: marca o contato na lista e avisa na tela
+            const existing = contacts.get(telefone);
+            if (existing) { upsertContact({ ...existing, alerta_crm: true }); renderContactList(); }
+            const a = alertas[0];
+            const resumo = alertas.length > 1 ? `${alertas.length} esteiras do CRM` : `esteira ${escapeHtml(a.esteira)}`;
+            showToast('⚠️ ALERTA CRM', `${escapeHtml(nome || telefone)} acabou de escrever e está na ${resumo}`, 'info', 9000);
         });
 
         socket.on('nova_mensagem', (data) => {

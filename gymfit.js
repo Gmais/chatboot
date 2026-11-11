@@ -209,6 +209,20 @@ async function matricularAlunoNovo({ nome, celular, cpf, email, consultor }) {
     });
 }
 
+// Alerta CRM: em quais esteiras (metas) do CRM do GymFit o aluno está pendente agora (a equipe ainda não concluiu o atendimento).
+// Devolve [{ esteira, fase, fase_key, meta_key, etapas_feitas, etapas_total }]; vazio = em nenhuma (ou matrícula desconhecida).
+async function obterAlertasCrm(matricula) {
+    const numero = String(matricula ?? '').replace(/\D/g, '');
+    if (!numero) return [];
+    try {
+        const r = await gymfitGet(`/integrations/chatbot/alunos/${numero}/alerta-crm`);
+        return r?.alertas || [];
+    } catch (e) {
+        if (e instanceof GymfitNaoEncontrado) return [];
+        throw e;
+    }
+}
+
 // Gera o Pix (Santander, o mesmo da recepção) de uma parcela em aberto (use o .id de obterParcelasEmAberto). Devolve { valor_centavos, vencimento, expira_em, copia_cola }.
 async function gerarPixParcela(idParcela) {
     return gymfitRequest('POST', `/integrations/chatbot/parcelas/${encodeURIComponent(idParcela)}/pix`);
@@ -218,6 +232,6 @@ module.exports = {
     buscarAlunoPorMatricula, buscarAlunoPorCodigo, obterParcelasEmAberto,
     obterContratosPorMatricula: obterContratosPorMatriculaComCache,
     obterDetalheContrato, obterOperacoesContrato,
-    obterOrcamentoMatricula, matricularAlunoNovo, gerarPixParcela,
+    obterOrcamentoMatricula, matricularAlunoNovo, gerarPixParcela, obterAlertasCrm,
     GymfitErroDefinitivo
 };
