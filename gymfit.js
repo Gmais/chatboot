@@ -1,7 +1,7 @@
 // =====================================
-// CONSULTA AO GYMFIT (substitui as consultas de leitura que eram feitas na Pacto)
+// INTEGRAÇÃO COM O GYMFIT (substitui tudo o que o chatbot fazia na Pacto: consultas, matrícula de aluno novo e Pix)
 // =====================================
-// Fala com /integrations/chatbot do GymFit (somente leitura, chave GYMFIT_API_KEY) e devolve os dados NO MESMO FORMATO que pacto.js
+// Fala com /integrations/chatbot do GymFit (chave GYMFIT_API_KEY) e devolve os dados NO MESMO FORMATO que pacto.js
 // devolvia (aluno.pessoa.nome, situacao.codigo === 'AT', parcelas com valor/vencida/dataVencimentoDt, contratos com vigenciaDe/
 // vigenciaAteAjustada em epoch ms...), para o resto do chatbot continuar igual. Nomes das funções idênticos aos de pacto.js.
 //
@@ -16,35 +16,42 @@ const GYMFIT_ACCESS_KEY = process.env.GYMFIT_API_KEY;
 const GYMFIT_REQUEST_TIMEOUT_MS = 20000;
 
 class GymfitNaoEncontrado extends Error {}
-class GymfitErroDefinitivo extends Error {}
+class GymfitErroDefinitivo extends Error {
+    constructor(mensagem, status, detalhes) { super(mensagem); this.status = status; this.detalhes = detalhes; }
+}
 
 const esperar = (ms) => new Promise((r) => setTimeout(r, ms));
 
-// GET com 1 nova tentativa para falha de rede ou 502/503/504 (a API do GymFit "acorda" na Vercel). 404 vira GymfitNaoEncontrado.
-async function gymfitGet(path) {
-    if (!GYMFIT_ACCESS_KEY) throw new GymfitErroDefinitivo('GymFit não configurado: defina GYMFIT_API_KEY.');
+// Chamada ao GymFit. GET tenta 1 vez mais em falha de rede ou 502/503/504 (a API "acorda" na Vercel); POST NUNCA repete (não duplica cadastro).
+// GET 404 vira GymfitNaoEncontrado; qualquer outra recusa do GymFit vira GymfitErroDefinitivo (com .status e .detalhes, ex.: CPF já cadastrado).
+async function gymfitRequest(method, path, body) {
+    if (!GYMFIT_ACCESS_KEY) throw new GymfitErroDefinitivo('GymFit não configurado: defina GYMFIT_API_KEY.', 0);
+    const tentativas = method === 'GET' ? 2 : 1;
     let ultimoErro;
-    for (let tentativa = 0; tentativa < 2; tentativa++) {
+    for (let tentativa = 0; tentativa < tentativas; tentativa++) {
         if (tentativa > 0) await esperar(800);
         try {
             const res = await fetch(`${GYMFIT_BASE_URL}${path}`, {
-                headers: { Authorization: `Bearer ${GYMFIT_ACCESS_KEY}`, Accept: 'application/json' },
+                method,
+                headers: { Authorization: `Bearer ${GYMFIT_ACCESS_KEY}`, Accept: 'application/json', ...(body ? { 'Content-Type': 'application/json' } : {}) },
+                body: body ? JSON.stringify(body) : undefined,
                 signal: AbortSignal.timeout(GYMFIT_REQUEST_TIMEOUT_MS)
             });
-            if (res.status === 404) throw new GymfitNaoEncontrado('Aluno não encontrado no GymFit');
+            if (res.status === 404 && method === 'GET') throw new GymfitNaoEncontrado('Aluno não encontrado no GymFit');
             if ([502, 503, 504].includes(res.status)) { ultimoErro = new Error(`GymFit indisponível (HTTP ${res.status})`); continue; }
             const texto = await res.text();
             let corpo = null;
             try { corpo = texto ? JSON.parse(texto) : null; } catch (_) { /* corpo não-JSON: segue com o texto cru na mensagem */ }
-            if (!res.ok) throw new GymfitErroDefinitivo(corpo?.erro || texto || `Erro HTTP ${res.status} ao consultar o GymFit`);
+            if (!res.ok) throw new GymfitErroDefinitivo(corpo?.erro || texto || `Erro HTTP ${res.status} ao falar com o GymFit`, res.status, corpo?.detalhes);
             return corpo;
         } catch (e) {
             if (e instanceof GymfitNaoEncontrado || e instanceof GymfitErroDefinitivo) throw e; // resposta do GymFit (não repete)
-            ultimoErro = e; // rede/timeout: tenta de novo uma vez
+            ultimoErro = e; // rede/timeout
         }
     }
     throw ultimoErro;
 }
+const gymfitGet = (path) => gymfitRequest('GET', path);
 
 // 'YYYY-MM-DD' -> epoch ms em America/Sao_Paulo (sem horário de verão desde 2019: -03:00). fimDoDia=true vale o último instante do dia.
 const dataParaMs = (ymd, fimDoDia = false) => ymd ? new Date(`${String(ymd).slice(0, 10)}T${fimDoDia ? '23:59:59.999' : '00:00:00.000'}-03:00`).getTime() : null;
@@ -100,6 +107,7 @@ async function obterParcelasEmAberto(codigoPessoa) {
     try {
         const { parcelas } = await gymfitGet(`/integrations/chatbot/alunos/${numero}/parcelas`);
         return (parcelas || []).map(p => ({
+            id: p.id, // usado para gerar o Pix da parcela (gerarPixParcela)
             descricao: p.descricao,
             valor: p.valor_centavos / 100,
             dataVencimento: dataBR(p.vencimento),
@@ -179,8 +187,37 @@ async function obterOperacoesContrato(codigoContrato) {
     }));
 }
 
+// =====================================
+// MATRÍCULA DE ALUNO NOVO E PIX (antes: criarCliente/matricularAluno e gerarLinkPagamentoPixSantander, da Pacto)
+// =====================================
+// Plano do autocadastro: o GymFit escolhe o plano ativo com a duração pedida (padrão: PACTO_PLANO_DURACAO_MESES, 1 mês). Só se houver mais de um
+// plano com essa duração é preciso fixar o nome em GYMFIT_PLANO.
+const PLANO_NOME = process.env.GYMFIT_PLANO || undefined;
+const PLANO_MESES = Number(process.env.GYMFIT_PLANO_MESES || process.env.PACTO_PLANO_DURACAO_MESES || 1);
+const consultaPlano = () => `meses=${PLANO_MESES}${PLANO_NOME ? `&plano=${encodeURIComponent(PLANO_NOME)}` : ''}`;
+
+// O que o aluno novo paga (valores do GymFit, em centavos): { plano, meses, mensal_centavos, taxa_matricula_centavos, total_centavos }.
+async function obterOrcamentoMatricula() {
+    return gymfitRequest('GET', `/integrations/chatbot/orcamento-matricula?${consultaPlano()}`);
+}
+
+// Cadastra o aluno e já lança o contrato de matrícula. Devolve { matricula, plano, inicio, fim, ... }. Erros: GymfitErroDefinitivo com
+// .status 409 (CPF já cadastrado; .detalhes.matricula) ou 400 (dado inválido, ex.: CPF).
+async function matricularAlunoNovo({ nome, celular, cpf, email, consultor }) {
+    return gymfitRequest('POST', '/integrations/chatbot/matriculas', {
+        nome, celular, cpf, email: email || null, consultor: consultor || null, meses: PLANO_MESES, ...(PLANO_NOME ? { plano: PLANO_NOME } : {})
+    });
+}
+
+// Gera o Pix (Santander, o mesmo da recepção) de uma parcela em aberto (use o .id de obterParcelasEmAberto). Devolve { valor_centavos, vencimento, expira_em, copia_cola }.
+async function gerarPixParcela(idParcela) {
+    return gymfitRequest('POST', `/integrations/chatbot/parcelas/${encodeURIComponent(idParcela)}/pix`);
+}
+
 module.exports = {
     buscarAlunoPorMatricula, buscarAlunoPorCodigo, obterParcelasEmAberto,
     obterContratosPorMatricula: obterContratosPorMatriculaComCache,
-    obterDetalheContrato, obterOperacoesContrato
+    obterDetalheContrato, obterOperacoesContrato,
+    obterOrcamentoMatricula, matricularAlunoNovo, gerarPixParcela,
+    GymfitErroDefinitivo
 };

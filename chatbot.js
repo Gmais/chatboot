@@ -92,9 +92,8 @@ const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
 const OpenAI = require('openai');
 const Anthropic = require('@anthropic-ai/sdk').default;
 const moment = require('moment-timezone');
-// Consultas (aluno, parcelas, contratos, operações) vêm do GymFit; cadastro/matrícula e Pix ainda passam pela Pacto (próxima etapa da migração).
-const { buscarAlunoPorMatricula, buscarAlunoPorCodigo, obterParcelasEmAberto, obterContratosPorMatricula, obterDetalheContrato, obterOperacoesContrato } = require('./gymfit');
-const { criarCliente, matricularAluno, gerarLinkPagamentoPixSantander } = require('./pacto');
+// Tudo que era da Pacto agora vem do GymFit: consultas (aluno, parcelas, contratos, operações), matrícula de aluno novo e Pix de parcela.
+const { buscarAlunoPorMatricula, obterParcelasEmAberto, obterContratosPorMatricula, obterDetalheContrato, obterOperacoesContrato, obterOrcamentoMatricula, matricularAlunoNovo, gerarPixParcela, GymfitErroDefinitivo } = require('./gymfit');
 const { enviarMensagemInstagram, obterNomeUsuarioInstagram, verificarAssinaturaWebhook } = require('./instagram');
 const { enviarMensagemWhatsappCloud, enviarTemplateWhatsappCloud, enviarBotoesWhatsappCloud, enviarArquivoWhatsappCloud, criarTemplateWhatsappCloud, listarTemplatesWhatsappCloud, trocarCodigoPorAccessTokenWhatsappCloud, inscreverWebhookWabaWhatsappCloud, consultarStatusNumeroWhatsappCloud, listarNumerosWabaWhatsappCloud, baixarMidiaWhatsappCloud } = require('./whatsappCloudApi');
 const { agendaLogin, buscarAgendaDoDia, atualizarStatusAgendamento, buscarMQVsRecentes, buscarAgendamentosPorIds } = require('./agenda');
@@ -7506,16 +7505,14 @@ app.post('/api/pairing-code', async (req, res) => {
     }
 });
 
-// Rota TEMPORÁRIA para validar manualmente (Postman/curl) a resposta real de
-// /pagamento/realizarCobrancaOnline antes de conectar ao fluxo automático do
-// WhatsApp — ainda não sabemos se ela traz link/QR Code do Pix além de
-// status/transacaoId/valor. Não é chamada por nenhum lugar do robô. Remover
-// (ou proteger) depois que o campo do link estiver identificado.
-app.post('/api/pacto/teste-pix', async (req, res) => {
-    const { movparcela, nrParcelas, convenio } = req.body;
-    if (!movparcela) return res.status(400).json({ error: 'Informe "movparcela" (código da parcela a pagar).' });
+// Rota TEMPORÁRIA para validar manualmente (Postman/curl) o Pix de uma parcela: o GymFit gera a cobrança no Santander e devolve o "copia e cola".
+// Não é chamada por nenhum lugar do robô. Remover (ou proteger) quando o Pix entrar no fluxo automático do WhatsApp.
+// Aceita "parcela" (id da parcela, vindo de obterParcelasEmAberto) ou o nome antigo "movparcela".
+app.post(['/api/gymfit/teste-pix', '/api/pacto/teste-pix'], async (req, res) => {
+    const parcela = req.body.parcela || req.body.movparcela;
+    if (!parcela) return res.status(400).json({ error: 'Informe "parcela" (id da parcela em aberto, como vem de obterParcelasEmAberto).' });
     try {
-        const resultado = await gerarLinkPagamentoPixSantander({ movparcela, nrParcelas, convenio });
+        const resultado = await gerarPixParcela(parcela);
         res.json(resultado);
     } catch (err) {
         console.error('❌ Erro ao testar geração de link Pix Santander:', err.message);
@@ -10556,38 +10553,29 @@ if (!global.pactoCadastro) global.pactoCadastro = new Map();
 
 async function finalizarCadastro(telefone, dados) {
     try {
-        const cliente = await criarCliente({
+        // O GymFit cadastra o aluno e já lança o contrato de matrícula (com as parcelas) numa chamada só.
+        const r = await matricularAlunoNovo({
             nome: dados.nome,
             celular: extrairCelular(telefone),
             cpf: dados.cpf,
-            email: dados.email
+            email: dados.email,
+            consultor: process.env.PACTO_CONSULTOR_PADRAO // nome do consultor da carteira; se não existir no GymFit, o aluno fica sem consultor
         });
 
-        const hoje = new Date();
-        const fim = new Date(hoje);
-        const duracao = Number(process.env.PACTO_PLANO_DURACAO_MESES || 1);
-        fim.setMonth(fim.getMonth() + duracao);
-
-        await matricularAluno({
-            codigoMatricula: parseInt(cliente.matricula, 10),
-            consultor: process.env.PACTO_CONSULTOR_PADRAO,
-            dataCadastro: formatarDataBR(hoje),
-            dataInicio: formatarDataBR(hoje),
-            dataFinal: formatarDataBR(fim),
-            duracao,
-            modalidades: [{
-                nome: process.env.PACTO_PLANO_MODALIDADE,
-                vezesPorSemana: Number(process.env.PACTO_PLANO_VEZES_SEMANA || 7)
-            }],
-            valorContrato: Number(process.env.PACTO_PLANO_VALOR_CONTRATO),
-            valorMatricula: Number(process.env.PACTO_PLANO_VALOR_MATRICULA)
-        });
-
-        await saveVinculo(telefone, cliente);
-        await enviarEregistrar(telefone, `✅ Matrícula realizada com sucesso! Sua matrícula é *${cliente.matricula}*. Bem-vindo(a)!`);
+        const aluno = await buscarAlunoPorMatricula(r.matricula);
+        if (aluno) await saveVinculo(telefone, aluno);
+        const matriculaTexto = String(r.matricula).padStart(6, '0');
+        await enviarEregistrar(telefone, `✅ Matrícula realizada com sucesso! Sua matrícula é *${matriculaTexto}*. Bem-vindo(a)!`);
     } catch (err) {
-        console.error('❌ Erro ao matricular novo aluno na Pacto:', err.message);
-        await enviarEregistrar(telefone, '⚠️ Não consegui concluir sua matrícula agora. Por favor, fale com a recepção da academia.');
+        console.error('❌ Erro ao matricular novo aluno no GymFit:', err.message);
+        if (err instanceof GymfitErroDefinitivo && err.status === 409 && err.detalhes?.matricula) {
+            // CPF já cadastrado: não cria duplicado. Quem já é aluno resolve a renovação com a recepção.
+            await enviarEregistrar(telefone, `ℹ️ Esse CPF já tem cadastro na academia (matrícula *${String(err.detalhes.matricula).padStart(6, '0')}*). Para renovar ou tirar dúvidas, fale com a recepção — ou envie *minha situação* que eu consulto pra você.`);
+        } else if (err instanceof GymfitErroDefinitivo && err.status === 400) {
+            await enviarEregistrar(telefone, '❌ Não consegui validar seus dados (confira se o CPF está correto). Se quiser tentar de novo, é só me chamar.');
+        } else {
+            await enviarEregistrar(telefone, '⚠️ Não consegui concluir sua matrícula agora. Por favor, fale com a recepção da academia.');
+        }
     }
 }
 
@@ -10624,10 +10612,22 @@ async function handleCadastroFlow(telefone, texto, textoOriginal) {
 
     if (estado.etapa === 'email') {
         estado.email = texto === 'pular' ? '' : textoOriginal.trim();
+        // Valores sempre os do GymFit (nada de preço fixo no chatbot). Se o GymFit não responder, não prometemos valor: a recepção confirma.
+        let linhaPlano;
+        try {
+            const o = await obterOrcamentoMatricula();
+            const brl = (centavos) => (centavos / 100).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+            linhaPlano = `Plano: ${o.plano} — ${brl(o.mensal_centavos)}${o.taxa_matricula_centavos > 0 ? ` + ${brl(o.taxa_matricula_centavos)} de matrícula` : ''}`;
+        } catch (err) {
+            console.error('⚠️ Não consegui buscar o orçamento de matrícula no GymFit:', err.message);
+            global.pactoCadastro.delete(telefone);
+            await enviarEregistrar(telefone, '⚠️ Não consegui montar a sua matrícula agora. Por favor, fale com a recepção da academia.');
+            return true;
+        }
         estado.etapa = 'confirmar';
         await enviarEregistrar(telefone,
             `📋 Confere os seus dados:\n\nNome: ${estado.nome}\nCPF: ${estado.cpf}\nE-mail: ${estado.email || '(não informado)'}\n\n` +
-            `Plano: Mensal — R$ ${process.env.PACTO_PLANO_VALOR_CONTRATO} + R$ ${process.env.PACTO_PLANO_VALOR_MATRICULA} de matrícula\n\n` +
+            `${linhaPlano}\n\n` +
             `Digite *CONFIRMAR* para finalizar ou *CANCELAR* para desistir.`
         );
         return true;
@@ -11826,9 +11826,8 @@ async function processarMensagemRecebida(msg, canal = 'whatsapp') {
                     return;
                 }
                 const parcela = parcelas[0];
-                const movparcela = parcela.movparcela || parcela.codigo || parcela.id || parcela.numero;
-                await enviarResposta(msg, `🧪 Parcela usada:\n${JSON.stringify(parcela)}\n\nCampo usado como movparcela: ${movparcela}`);
-                const resultado = await gerarLinkPagamentoPixSantander({ movparcela });
+                await enviarResposta(msg, `🧪 Parcela usada:\n${JSON.stringify(parcela)}`);
+                const resultado = await gerarPixParcela(parcela.id);
                 await enviarResposta(msg, `✅ Resultado:\n${JSON.stringify(resultado, null, 2)}`);
             } catch (err) {
                 console.error('❌ [TESTE PIX] erro:', err.message);
