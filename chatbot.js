@@ -2785,6 +2785,76 @@ app.get('/api/gymfit/aniversarios', async (req, res) => {
     }
 });
 
+// Aluno do GymFit -> base do Chatboot. O GymFit é a fonte dos alunos (a Pacto não alimenta mais): a cada alteração de cadastro, contrato ou afastamento
+// (aluno novo, rematrícula, cancelamento, desistência, férias, troca de telefone...) ele manda o estado atual do aluno e aqui o contato é criado/atualizado
+// NA HORA (nome, matrícula, nascimento) e recebe a etiqueta Ativo ou Ex-Aluno. Idempotente: repetir o mesmo envio não muda nada.
+// Regras: Ativo = situação "ativo" (suspenso e inativo viram Ex-Aluno, como na varredura de ativos); a etiqueta vale para TODOS os contatos com a matrícula
+// (o aluno pode ter mais de um número); telefone já ligado a OUTRA matrícula (número compartilhado) não é alterado.
+app.post('/api/gymfit/aluno', async (req, res) => {
+    if (!autorizadoGymfit(req, res)) return;
+    const matriculaNum = parseInt(req.body?.matricula, 10);
+    if (!(matriculaNum > 0)) return res.status(400).json({ error: 'matricula inválida' });
+    const situacao = String(req.body?.situacao || '');
+    if (!['ativo', 'suspenso', 'inativo'].includes(situacao)) return res.status(400).json({ error: 'situacao deve ser ativo, suspenso ou inativo' });
+    const nome = String(req.body?.nome || '').trim() || null;
+    const telefone = req.body?.telefone ? normalizarTelefoneImportado(String(req.body.telefone)) : null;
+    const nascimento = /^\d{4}-\d{2}-\d{2}$/.test(String(req.body?.data_nascimento || '')) ? String(req.body.data_nascimento) : null;
+    try {
+        const matricula = String(matriculaNum).padStart(6, '0');
+        const alvos = new Set((await db.all(
+            "SELECT telefone FROM leads WHERE matricula IS NOT NULL AND TRIM(matricula) != '' AND CAST(matricula AS INTEGER) = ?", matriculaNum
+        )).map(l => l.telefone));
+        let criado = false, compartilhado = false;
+        if (telefone) {
+            const existente = await db.get('SELECT telefone, matricula FROM leads WHERE telefone = ? OR telefone = ? OR telefone = ?', [telefone, `${telefone}@c.us`, `${telefone}@lid`]);
+            if (!existente) {
+                await db.run(
+                    `INSERT INTO leads (telefone, nome, origem, matricula, data_nascimento) VALUES (?, ?, 'gymfit', ?, ?) ON CONFLICT(telefone) DO NOTHING`,
+                    [telefone, nome, matricula, nascimento]
+                );
+                leadsSet.add(telefone);
+                stats.leads++;
+                criado = true;
+                alvos.add(telefone);
+                if (nome && situacao === 'ativo') enfileirarRenomeioContatoWhatsApp(telefone, nome);
+            } else if (!existente.matricula || !String(existente.matricula).trim() || parseInt(existente.matricula, 10) === matriculaNum) {
+                alvos.add(existente.telefone);
+            } else {
+                compartilhado = true; // número já é de outro aluno: não mexe nele
+            }
+        }
+        const ativoId = await garantirEtiquetaAtivo();
+        const exAlunoId = await garantirEtiquetaExAluno();
+        const tem = async (tel, etiquetaId) => !!(await db.get('SELECT 1 FROM contato_etiquetas WHERE telefone = ? AND etiqueta_id = ?', [normalizarTelefoneBR(String(tel).replace('@c.us', '').replace('@lid', '')), etiquetaId]));
+        let atualizados = 0;
+        for (const tel of alvos) {
+            await db.run(
+                'UPDATE leads SET nome = COALESCE(?, nome), matricula = ?, data_nascimento = COALESCE(?, data_nascimento) WHERE telefone = ?',
+                [nome, matricula, nascimento, tel]
+            );
+            const quer = situacao === 'ativo' ? ativoId : exAlunoId;
+            const nao = situacao === 'ativo' ? exAlunoId : ativoId;
+            if (!(await tem(tel, quer))) await aplicarEtiquetaContato(tel, quer);
+            if (await tem(tel, nao)) await removerEtiquetaContato(tel, nao);
+            if (situacao === 'ativo') {
+                await db.run(
+                    `INSERT INTO pacto_alunos_ativos (telefone, nome, matricula, atualizado_em) VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                         ON CONFLICT(telefone) DO UPDATE SET nome = excluded.nome, matricula = excluded.matricula, atualizado_em = CURRENT_TIMESTAMP`,
+                    [tel, nome, matricula]
+                );
+            } else {
+                await db.run('DELETE FROM pacto_alunos_ativos WHERE telefone = ?', tel);
+            }
+            atualizados++;
+        }
+        if (criado) io.emit('stats', stats);
+        res.json({ ok: true, criado, atualizados, compartilhado });
+    } catch (e) {
+        console.error('Erro ao receber aluno do GymFit:', e.message);
+        res.status(500).json({ error: 'falha ao atualizar o aluno' });
+    }
+});
+
 // Envio de UMA Mensagem Personalizada pedido pelo GymFit (CRM > Pós Vendas: botões "WhatsApp" = Orientação e "Avaliação Física"/"MQV" = Agendamento+MQV; Faltosos: botão "Enviar Mensagem" = Mensagem Faltosos 2).
 // Só aceita os nomes da lista abaixo (a chave do GymFit não dispara qualquer mensagem). Mesmo caminho dos Disparos: pool, template aprovado, placeholders.
 const MENSAGENS_PERMITIDAS_GYMFIT = new Set(['Orientação', 'Agendamento+MQV', 'Apreciação', 'Mensagem faltosos 2', 'Mensagem Faltosos 2', 'A Vencer 30 Dias', 'A Vencer 20 Dias', 'A Vencer 10 Dias', 'A vencer 30 dias', 'A vencer 20 dias', 'A vencer 10 dias']);
