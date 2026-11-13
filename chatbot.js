@@ -93,7 +93,7 @@ const OpenAI = require('openai');
 const Anthropic = require('@anthropic-ai/sdk').default;
 const moment = require('moment-timezone');
 // Tudo que era da Pacto agora vem do GymFit: consultas (aluno, parcelas, contratos, operações), matrícula de aluno novo e Pix de parcela.
-const { obterAlunosContratoSemAssinar, obterLinkAssinaturaContrato, buscarAlunoPorMatricula, obterParcelasEmAberto, obterContratosPorMatricula, obterDetalheContrato, obterOperacoesContrato, obterOrcamentoMatricula, matricularAlunoNovo, gerarPixParcela, obterAlertasCrm, GymfitErroDefinitivo } = require('./gymfit');
+const { atualizarResponsavelAluno, obterAlunosContratoSemAssinar, obterLinkAssinaturaContrato, buscarAlunoPorMatricula, obterParcelasEmAberto, obterContratosPorMatricula, obterDetalheContrato, obterOperacoesContrato, obterOrcamentoMatricula, matricularAlunoNovo, gerarPixParcela, obterAlertasCrm, GymfitErroDefinitivo } = require('./gymfit');
 const { enviarMensagemInstagram, obterNomeUsuarioInstagram, verificarAssinaturaWebhook } = require('./instagram');
 const { enviarMensagemWhatsappCloud, enviarTemplateWhatsappCloud, enviarBotoesWhatsappCloud, enviarArquivoWhatsappCloud, criarTemplateWhatsappCloud, listarTemplatesWhatsappCloud, trocarCodigoPorAccessTokenWhatsappCloud, inscreverWebhookWabaWhatsappCloud, consultarStatusNumeroWhatsappCloud, listarNumerosWabaWhatsappCloud, baixarMidiaWhatsappCloud } = require('./whatsappCloudApi');
 const { consultarAlunoNaAgenda, agendaLogin, buscarAgendaDoDia, atualizarStatusAgendamento, buscarMQVsRecentes, buscarAgendamentosPorIds, garantirAlunoNaAgenda } = require('./agenda');
@@ -536,7 +536,7 @@ function slugifyNomeTemplate(nome, id) {
 // MARKETING por padrão, mais seguro pro tipo de conteúdo comum aqui
 // (reengajamento, promoção, indicação, feedback). Categoria errada é motivo
 // comum de rejeição na Meta.
-const CATEGORIAS_META_UTILITY = new Set(['inadimplentes', 'parcelas-atrasadas', 'vence-hoje', 'confirmacao-agendamento', 'assinatura-contrato']);
+const CATEGORIAS_META_UTILITY = new Set(['inadimplentes', 'parcelas-atrasadas', 'vence-hoje', 'confirmacao-agendamento', 'assinatura-contrato', 'cadastro-responsavel']);
 function categoriaMetaParaMensagem(categoriaLocal) {
     return CATEGORIAS_META_UTILITY.has(categoriaLocal) ? 'UTILITY' : 'MARKETING';
 }
@@ -2487,6 +2487,8 @@ async function processarMensagemWhatsappCloud(mensagem, valor, { phoneNumberIdDe
     // horário de atendimento (o aluno pode responder à noite) — ver
     // tratarRespostaConfirmacaoAF pra quando um atendente assumiu a conversa.
     if (await tratarRespostaConfirmacaoAF({ numLimpo, texto, botaoId, ehBotao, nomeContato, assumidaPorHumano: !!assumidaPorHumano })) return;
+    // Responsável de aluno menor respondendo o pedido de nome e CPF: grava no GymFit (vale também fora do horário do robô).
+    if (!assumidaPorHumano && await tratarRespostaResponsavel({ numLimpo, texto, nomeContato })) return;
     if (assumidaPorHumano) return;
     if (estavaFinalizada) {
         console.log(`🔕 ${numLimpo} escreveu numa conversa finalizada — reaberta pro atendente, robô não responde.`);
@@ -11781,6 +11783,106 @@ async function chamarOpenAICompativel({ provider, apiKey, modelo, systemFixo, sy
 // como fallback. Extraído do handler de 'message' pra poder ser chamado tanto
 // na hora (modo robô) quanto adiado (rede de segurança de horário, ver
 // agendarFallbackHumano) sem duplicar a lógica.
+// =====================================
+// ATUALIZAÇÃO DO RESPONSÁVEL (aluno menor) — a resposta do responsável vira cadastro no GymFit
+// =====================================
+// A mensagem "Atualização do Responsável" pede o nome completo e o CPF do responsável legal. Quando o contato responde (nome e CPF na mesma mensagem ou
+// em duas), o Chatboot grava no GymFit (POST .../alunos/:matricula/responsavel) e o aluno sai da esteira "Cadastro do responsável" sozinho. Só age
+// quando a nossa última mensagem pra esse contato foi o pedido do responsável (ou há uma resposta pela metade nas últimas 24h): qualquer outra conversa
+// segue o fluxo normal. O CPF é conferido (dígitos verificadores) antes de gravar; o GymFit confere de novo.
+const PADRAO_PEDIDO_RESPONSAVEL = /nome completo do respons[aá]vel/i;
+const PADRAO_CPF_NO_TEXTO = /\d{3}[.\s]?\d{3}[.\s]?\d{3}[-.\s]?\d{2}/;
+function cpfValidoBR(cpf) {
+    const d = String(cpf || '').replace(/\D/g, '');
+    if (!/^\d{11}$/.test(d) || /^(\d)\1{10}$/.test(d)) return false;
+    for (const tam of [9, 10]) {
+        let soma = 0;
+        for (let i = 0; i < tam; i++) soma += Number(d[i]) * (tam + 1 - i);
+        if (((soma * 10) % 11) % 10 !== Number(d[tam])) return false;
+    }
+    return true;
+}
+const PARTICULAS_NOME = new Set(['de', 'da', 'do', 'dos', 'das', 'e']);
+function formatarNomePessoa(nome) {
+    return nome.toLowerCase().split(' ').map((p, i) => (i > 0 && PARTICULAS_NOME.has(p)) ? p : p.charAt(0).toUpperCase() + p.slice(1)).join(' ');
+}
+// Tira nome e CPF de uma resposta livre ("Maria da Silva 529.982.247-25", "Nome: Maria... CPF: ..."). Nome só vale com 2+ palavras.
+function extrairResponsavelDoTexto(texto) {
+    const achouCpf = (texto || '').match(PADRAO_CPF_NO_TEXTO);
+    const cpf = achouCpf ? achouCpf[0].replace(/\D/g, '') : null;
+    const resto = (texto || '').replace(PADRAO_CPF_NO_TEXTO, ' ')
+        .replace(/nome completo|nome do respons[aá]vel|cpf do respons[aá]vel|respons[aá]vel|meu nome [ée]|me chamo|\bnome\b|\bcpf\b/gi, ' ')
+        .replace(/[^A-Za-zÀ-ÿ' ]/g, ' ').replace(/\s+/g, ' ').trim();
+    // Tira palavras soltas de moldura ("o nome é ... e o") nas pontas e rejeita o que tem cara de conversa (saudação, pergunta) em vez de nome.
+    let palavras = resto.split(' ').filter(Boolean);
+    while (palavras.length && PALAVRAS_MOLDURA_NOME.has(palavras[0].toLowerCase())) palavras.shift();
+    while (palavras.length && PALAVRAS_MOLDURA_NOME.has(palavras[palavras.length - 1].toLowerCase())) palavras.pop();
+    const pareceConversa = /\?/.test(texto || '') || palavras.some(p => PALAVRAS_DE_CONVERSA.has(p.toLowerCase()));
+    const nomeFinal = palavras.join(' ');
+    const nome = !pareceConversa && palavras.length >= 2 && nomeFinal.length >= 5 && palavras.length <= 8 ? formatarNomePessoa(nomeFinal) : null;
+    return { nome, cpf };
+}
+const PALAVRAS_MOLDURA_NOME = new Set(['o', 'a', 'é', 'e', 'meu', 'minha', 'sou', 'é', 'eh', 'foi', 'segue', 'abaixo']);
+const PALAVRAS_DE_CONVERSA = new Set(['oi', 'ola', 'olá', 'bom', 'boa', 'dia', 'tarde', 'noite', 'obrigado', 'obrigada', 'sim', 'nao', 'não', 'quanto', 'qual', 'quais', 'como',
+    'quando', 'plano', 'planos', 'valor', 'preço', 'preco', 'pode', 'quero', 'tudo', 'bem', 'ok', 'ta', 'tá', 'aluno', 'aluna', 'filho', 'filha', 'matricula', 'matrícula']);
+
+async function tratarRespostaResponsavel({ numLimpo, texto, nomeContato }) {
+    try {
+        await db.run(`CREATE TABLE IF NOT EXISTS responsavel_pendente (telefone TEXT PRIMARY KEY, nome TEXT, cpf TEXT, atualizado_em TEXT NOT NULL)`);
+        const limite24h = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
+        const pendente = await db.get('SELECT * FROM responsavel_pendente WHERE telefone = ? AND atualizado_em >= ?', [numLimpo, limite24h]);
+        const ultimaSaida = await db.get(`SELECT texto FROM conversas WHERE telefone = ? AND direcao = 'out' AND ts >= ? ORDER BY ts DESC, id DESC LIMIT 1`,
+            [numLimpo, new Date(Date.now() - 7 * 24 * 3600 * 1000).toISOString()]);
+        const contexto = !!pendente || PADRAO_PEDIDO_RESPONSAVEL.test(ultimaSaida?.texto || '');
+        if (!contexto) return false;
+
+        const { nome: nomeMsg, cpf: cpfMsg } = extrairResponsavelDoTexto(texto);
+        if (cpfMsg && !cpfValidoBR(cpfMsg)) {
+            await responderResponsavel(numLimpo, nomeContato, 'O CPF que você enviou não parece válido. Pode conferir os números e mandar de novo, por favor? 🙏');
+            return true;
+        }
+        const nome = nomeMsg || pendente?.nome || null;
+        const cpf = cpfMsg || pendente?.cpf || null;
+        if (!nome && !cpf) return false; // não é a resposta (ex: uma pergunta) — segue o fluxo normal
+        if (!nome || !cpf) {
+            await db.run('INSERT OR REPLACE INTO responsavel_pendente (telefone, nome, cpf, atualizado_em) VALUES (?, ?, ?, ?)', [numLimpo, nome, cpf, new Date().toISOString()]);
+            await responderResponsavel(numLimpo, nomeContato, !cpf
+                ? 'Obrigado! Agora só falta o *CPF do responsável*. Pode enviar?'
+                : 'Obrigado! Agora só falta o *nome completo do responsável*. Pode enviar?');
+            return true;
+        }
+
+        const matricula = await resolverMatriculaContato(numLimpo);
+        if (!matricula) { console.log(`ℹ️ Responsável (${numLimpo}): contato sem matrícula vinculada — segue o fluxo normal.`); return false; }
+        try {
+            await atualizarResponsavelAluno(matricula, { nome, cpf });
+        } catch (e) {
+            if (e instanceof GymfitErroDefinitivo && e.status === 400) {
+                await db.run('DELETE FROM responsavel_pendente WHERE telefone = ?', numLimpo);
+                await responderResponsavel(numLimpo, nomeContato, 'O CPF do responsável precisa ser diferente do CPF do aluno. Pode enviar o *nome completo* e o *CPF* do responsável legal?');
+                return true;
+            }
+            if (e instanceof GymfitErroDefinitivo && e.status === 409) { // aluno já é maior de idade: nada a atualizar
+                await db.run('DELETE FROM responsavel_pendente WHERE telefone = ?', numLimpo);
+                console.log(`ℹ️ Responsável (${numLimpo}): aluno ${matricula} não é menor — nada gravado.`);
+                return false;
+            }
+            throw e;
+        }
+        await db.run('DELETE FROM responsavel_pendente WHERE telefone = ?', numLimpo);
+        console.log(`👨‍👩‍👧 Responsável gravado no GymFit para a matrícula ${matricula} (via ${numLimpo}).`);
+        await responderResponsavel(numLimpo, nomeContato, 'Recebido! ✅ O cadastro do responsável foi atualizado. Agradecemos pela colaboração! 💚');
+        return true;
+    } catch (e) {
+        console.error(`❌ Resposta do responsável (${numLimpo}): ${e.message} — segue o fluxo normal.`);
+        return false;
+    }
+}
+async function responderResponsavel(numLimpo, nomeContato, texto) {
+    const sent = await enviarRespostaCanal('whatsapp_cloud', { body: '' }, numLimpo, texto);
+    if (sent) await registrarMensagemEnviada(numLimpo, texto, nomeContato, idSerializado(sent), false, 'text', null, 'whatsapp_cloud');
+}
+
 // Aluno demonstrou interesse em agendar a avaliação física → sem enrolar: confere/cadastra o aluno na Agenda e
 // manda direto a mensagem personalizada "Agendamento+MQV". Dispara quando (a) o aluno pede pra agendar/marcar
 // a avaliação, ou (b) responde "sim/pode/quero" logo depois de a última mensagem nossa ter oferecido o link

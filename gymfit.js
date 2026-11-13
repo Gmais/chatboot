@@ -248,7 +248,15 @@ async function obterAlunosContratoSemAssinar() {
     return r?.alunos || [];
 }
 
+// Grava o responsável legal (nome completo + CPF) de um aluno MENOR no cadastro do GymFit; com os dois preenchidos o aluno sai da esteira "Cadastro do
+// responsável". Lança GymfitErroDefinitivo: 400 = CPF inválido/igual ao do aluno, 409 = aluno não é menor, 404 = aluno não encontrado.
+async function atualizarResponsavelAluno(matricula, { nome, cpf }) {
+    const numero = String(matricula ?? '').replace(/\D/g, '');
+    return gymfitRequest('POST', `/integrations/chatbot/alunos/${numero}/responsavel`, { nome, cpf });
+}
+
 module.exports = {
+    atualizarResponsavelAluno,
     obterAlunosContratoSemAssinar,
     obterLinkAssinaturaContrato,
     buscarAlunoPorMatricula, buscarAlunoPorCodigo, obterParcelasEmAberto,
