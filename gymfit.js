@@ -242,7 +242,14 @@ async function obterLinkAssinaturaContrato(matricula) {
     }
 }
 
+// Alunos que estão hoje na esteira "Contratos sem assinar" do CRM: [{ matricula, nome, telefone, contrato_id }] (telefone pode ser null).
+async function obterAlunosContratoSemAssinar() {
+    const r = await gymfitRequest('GET', '/integrations/chatbot/contratos-sem-assinar');
+    return r?.alunos || [];
+}
+
 module.exports = {
+    obterAlunosContratoSemAssinar,
     obterLinkAssinaturaContrato,
     buscarAlunoPorMatricula, buscarAlunoPorCodigo, obterParcelasEmAberto,
     obterContratosPorMatricula: obterContratosPorMatriculaComCache,

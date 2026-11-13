@@ -93,7 +93,7 @@ const OpenAI = require('openai');
 const Anthropic = require('@anthropic-ai/sdk').default;
 const moment = require('moment-timezone');
 // Tudo que era da Pacto agora vem do GymFit: consultas (aluno, parcelas, contratos, operações), matrícula de aluno novo e Pix de parcela.
-const { obterLinkAssinaturaContrato, buscarAlunoPorMatricula, obterParcelasEmAberto, obterContratosPorMatricula, obterDetalheContrato, obterOperacoesContrato, obterOrcamentoMatricula, matricularAlunoNovo, gerarPixParcela, obterAlertasCrm, GymfitErroDefinitivo } = require('./gymfit');
+const { obterAlunosContratoSemAssinar, obterLinkAssinaturaContrato, buscarAlunoPorMatricula, obterParcelasEmAberto, obterContratosPorMatricula, obterDetalheContrato, obterOperacoesContrato, obterOrcamentoMatricula, matricularAlunoNovo, gerarPixParcela, obterAlertasCrm, GymfitErroDefinitivo } = require('./gymfit');
 const { enviarMensagemInstagram, obterNomeUsuarioInstagram, verificarAssinaturaWebhook } = require('./instagram');
 const { enviarMensagemWhatsappCloud, enviarTemplateWhatsappCloud, enviarBotoesWhatsappCloud, enviarArquivoWhatsappCloud, criarTemplateWhatsappCloud, listarTemplatesWhatsappCloud, trocarCodigoPorAccessTokenWhatsappCloud, inscreverWebhookWabaWhatsappCloud, consultarStatusNumeroWhatsappCloud, listarNumerosWabaWhatsappCloud, baixarMidiaWhatsappCloud } = require('./whatsappCloudApi');
 const { agendaLogin, buscarAgendaDoDia, atualizarStatusAgendamento, buscarMQVsRecentes, buscarAgendamentosPorIds, garantirAlunoNaAgenda } = require('./agenda');
@@ -8651,6 +8651,127 @@ async function processarCobrancaMQV() {
     }
 }
 setInterval(() => processarCobrancaMQV().catch(e => console.error('Erro no ciclo da cobrança do MQV:', e.message)), 2 * 60 * 1000);
+
+// =====================================
+// LEMBRETE DE ASSINATURA DE CONTRATO — esteira "Contratos sem assinar" (Para hoje) do GymFit
+// =====================================
+// Quem está na esteira recebe a Mensagem Personalizada "Assinatura de Contrato" (template aprovado na Meta, pela API Oficial) e de novo a cada 3 dias,
+// num horário sorteado entre 8h e 20h (Brasília), até sair da esteira (assinar o contrato). Só começa depois que a Meta aprova o template. A primeira
+// rodada vale pra TODOS que estão na esteira quando começa: cada um ganha um horário sorteado no resto do dia (ou amanhã, se já passou das 20h).
+// O {link_contrato} é gerado no GymFit na hora de cada envio. Interruptor: configuracoes.assinatura_lembrete_ativo = '0' desliga.
+const NOME_MENSAGEM_ASSINATURA = 'Assinatura de Contrato';
+const ASSINATURA_INTERVALO_DIAS = 3;
+const ASSINATURA_HORA_INICIO = 8;
+const ASSINATURA_HORA_FIM = 20;
+const ASSINATURA_MAX_POR_CICLO = 15;
+const ASSINATURA_SYNC_MS = 30 * 60 * 1000;
+
+// Horário aleatório de um dia (moment em Brasília) dentro de 8h–20h; `aPartirDe` limita o início (hoje, depois de agora). null = não sobrou janela.
+function sortearHorarioNaJanela(dia, aPartirDe = null) {
+    const ini = dia.clone().hour(ASSINATURA_HORA_INICIO).minute(0).second(0).millisecond(0);
+    const fim = dia.clone().hour(ASSINATURA_HORA_FIM).minute(0).second(0).millisecond(0);
+    const de = aPartirDe && aPartirDe.isAfter(ini) ? aPartirDe : ini;
+    if (!de.isBefore(fim)) return null;
+    return new Date(de.valueOf() + Math.random() * (fim.valueOf() - de.valueOf())).toISOString();
+}
+// diasAFrente 0 = ainda hoje (se couber na janela; senão amanhã).
+function proximoEnvioAssinatura(agora, diasAFrente) {
+    if (diasAFrente === 0) {
+        const hoje = sortearHorarioNaJanela(agora, agora.clone().add(1, 'minute'));
+        if (hoje) return hoje;
+        diasAFrente = 1;
+    }
+    return sortearHorarioNaJanela(agora.clone().add(diasAFrente, 'days'));
+}
+
+async function garantirTabelaLembreteAssinatura() {
+    await db.run(`CREATE TABLE IF NOT EXISTS contrato_assinatura_lembretes (
+        matricula INTEGER PRIMARY KEY,
+        nome TEXT,
+        telefone TEXT NOT NULL,
+        proximo_envio_em TEXT NOT NULL,
+        ultimo_envio_em TEXT,
+        total_envios INTEGER NOT NULL DEFAULT 0,
+        ultimo_erro TEXT,
+        ultimo_erro_em TEXT
+    )`);
+}
+
+// Põe na fila quem entrou na esteira e tira quem saiu (assinou, ou perdeu o contrato ativo).
+async function sincronizarLembretesAssinatura(agora) {
+    const alunos = await obterAlunosContratoSemAssinar();
+    const naEsteira = new Set();
+    let novos = 0;
+    for (const a of alunos) {
+        const telefone = normalizarTelefoneBR(a.telefone);
+        if (telefone.length < 12 || telefone.length > 13) continue; // sem WhatsApp utilizável
+        naEsteira.add(a.matricula);
+        const existente = await db.get('SELECT matricula FROM contrato_assinatura_lembretes WHERE matricula = ?', a.matricula);
+        if (existente) {
+            await db.run('UPDATE contrato_assinatura_lembretes SET nome = ?, telefone = ? WHERE matricula = ?', [a.nome, telefone, a.matricula]);
+        } else {
+            await db.run('INSERT INTO contrato_assinatura_lembretes (matricula, nome, telefone, proximo_envio_em) VALUES (?, ?, ?, ?)',
+                [a.matricula, a.nome, telefone, proximoEnvioAssinatura(agora, 0)]);
+            novos++;
+        }
+    }
+    const filaAtual = await db.all('SELECT matricula FROM contrato_assinatura_lembretes');
+    let saidas = 0;
+    for (const f of filaAtual) {
+        if (!naEsteira.has(f.matricula)) { await db.run('DELETE FROM contrato_assinatura_lembretes WHERE matricula = ?', f.matricula); saidas++; }
+    }
+    if (novos || saidas) console.log(`✍️ Lembrete de assinatura: ${novos} aluno(s) entrou(aram) na fila, ${saidas} saiu(saíram) da esteira (${naEsteira.size} na esteira agora).`);
+}
+
+let lembreteAssinaturaRodando = false;
+let lembreteAssinaturaUltimaSync = 0;
+async function processarLembretesAssinatura() {
+    if (lembreteAssinaturaRodando || !db) return;
+    lembreteAssinaturaRodando = true;
+    try {
+        if ((await db.get("SELECT valor FROM configuracoes WHERE chave = 'assinatura_lembrete_ativo'"))?.valor === '0') return;
+        const agora = moment.tz('America/Sao_Paulo');
+        if (agora.hour() < ASSINATURA_HORA_INICIO || agora.hour() >= ASSINATURA_HORA_FIM) return;
+        const msg = await db.get('SELECT * FROM mensagens_personalizadas WHERE nome = ?', NOME_MENSAGEM_ASSINATURA);
+        if (!msg?.template_whatsapp) return; // a Meta ainda não aprovou o template
+        const config = await obterConfigWhatsappCloud();
+        if (!config.accessToken || !config.phoneNumberId) return;
+        await garantirTabelaLembreteAssinatura();
+        if (Date.now() - lembreteAssinaturaUltimaSync > ASSINATURA_SYNC_MS) {
+            await sincronizarLembretesAssinatura(agora);
+            lembreteAssinaturaUltimaSync = Date.now();
+        }
+        const template = JSON.parse(msg.template_whatsapp);
+        const devidos = await db.all('SELECT * FROM contrato_assinatura_lembretes WHERE proximo_envio_em <= ? ORDER BY proximo_envio_em LIMIT ?', [new Date().toISOString(), ASSINATURA_MAX_POR_CICLO]);
+        for (const d of devidos) {
+            try {
+                // Link novo na hora; sem link = o aluno saiu da esteira desde a última conferência.
+                const link = await obterLinkAssinaturaContrato(d.matricula);
+                if (!link) { await db.run('DELETE FROM contrato_assinatura_lembretes WHERE matricula = ?', d.matricula); continue; }
+                const primeiroNome = (d.nome || '').trim().split(/\s+/)[0].toLowerCase().replace(/^./, c => c.toUpperCase());
+                const valores = { nome: primeiroNome, nome_completo: d.nome || '', matricula: String(d.matricula).padStart(6, '0'), link_contrato: link };
+                const parametros = (template.variaveis || []).map(v => valores[v] ?? '');
+                const resultado = await enviarTemplateWhatsappCloud(d.telefone, template.nome, parametros, config);
+                const textoRegistro = msg.texto.replace(/[{[](\w+)[\]}]/g, (m, k) => valores[k.toLowerCase()] ?? m);
+                await registrarMensagemEnviada(d.telefone, textoRegistro, d.nome, resultado?.messages?.[0]?.id || null, false, 'text', null, 'whatsapp_cloud', true);
+                await db.run('UPDATE contrato_assinatura_lembretes SET ultimo_envio_em = ?, total_envios = total_envios + 1, ultimo_erro = NULL, proximo_envio_em = ? WHERE matricula = ?',
+                    [new Date().toISOString(), proximoEnvioAssinatura(agora, ASSINATURA_INTERVALO_DIAS), d.matricula]);
+                console.log(`✍️ Lembrete de assinatura enviado pra ${d.nome} (${d.matricula}) — envio nº ${d.total_envios + 1}.`);
+            } catch (e) {
+                console.error(`❌ Lembrete de assinatura pra ${d.nome} (${d.matricula}) falhou:`, e.message);
+                // Não insiste no mesmo ciclo: tenta de novo amanhã, em horário sorteado.
+                await db.run('UPDATE contrato_assinatura_lembretes SET ultimo_erro = ?, ultimo_erro_em = ?, proximo_envio_em = ? WHERE matricula = ?',
+                    [e.message, new Date().toISOString(), proximoEnvioAssinatura(agora, 1), d.matricula]);
+            }
+            await delay(1000);
+        }
+    } catch (e) {
+        console.error('❌ Erro no lembrete de assinatura de contrato:', e.message);
+    } finally {
+        lembreteAssinaturaRodando = false;
+    }
+}
+setInterval(() => processarLembretesAssinatura().catch(e => console.error('Erro no ciclo do lembrete de assinatura:', e.message)), 5 * 60 * 1000);
 
 // Chamado pela varredura de hora em hora: deixa a coluna MQV da tela em dia
 // pra todo mundo da lista (a cobrança confere de novo antes de cada envio).
