@@ -255,7 +255,22 @@ async function atualizarResponsavelAluno(matricula, { nome, cpf }) {
     return gymfitRequest('POST', `/integrations/chatbot/alunos/${numero}/responsavel`, { nome, cpf });
 }
 
+// Alunos que estão hoje na esteira "Ex-alunos para reativar": [{ matricula, nome, telefone, plano_fim, dias_vencido }] (quem já tem as 4 etapas do checklist saiu).
+async function obterExAlunosParaReativar() {
+    const r = await gymfitRequest('GET', '/integrations/chatbot/ex-alunos-reativar');
+    return r?.alunos || [];
+}
+
+// Registra uma etapa do checklist do ex-aluno no CRM do GymFit: { etapa: 'contato' } | { etapa: 'negociacao', planos, promocao } |
+// { etapa: 'tratativa', texto } | { etapa: 'interesse', nivel: 'alto'|'medio'|'baixo' }. Devolve o checklist atualizado ({ complete, ... }).
+// Lança GymfitErroDefinitivo: 409 = etapa fora de ordem (ex.: interesse sem tratativa) ou aluno sem contrato anterior.
+async function registrarReativacaoAluno(matricula, dados) {
+    const numero = String(matricula ?? '').replace(/\D/g, '');
+    return gymfitRequest('POST', `/integrations/chatbot/alunos/${numero}/reativacao`, dados);
+}
+
 module.exports = {
+    obterExAlunosParaReativar, registrarReativacaoAluno,
     atualizarResponsavelAluno,
     obterAlunosContratoSemAssinar,
     obterLinkAssinaturaContrato,

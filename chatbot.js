@@ -93,7 +93,7 @@ const OpenAI = require('openai');
 const Anthropic = require('@anthropic-ai/sdk').default;
 const moment = require('moment-timezone');
 // Tudo que era da Pacto agora vem do GymFit: consultas (aluno, parcelas, contratos, operações), matrícula de aluno novo e Pix de parcela.
-const { atualizarResponsavelAluno, obterAlunosContratoSemAssinar, obterLinkAssinaturaContrato, buscarAlunoPorMatricula, obterParcelasEmAberto, obterContratosPorMatricula, obterDetalheContrato, obterOperacoesContrato, obterOrcamentoMatricula, matricularAlunoNovo, gerarPixParcela, obterAlertasCrm, GymfitErroDefinitivo } = require('./gymfit');
+const { obterExAlunosParaReativar, registrarReativacaoAluno, atualizarResponsavelAluno, obterAlunosContratoSemAssinar, obterLinkAssinaturaContrato, buscarAlunoPorMatricula, obterParcelasEmAberto, obterContratosPorMatricula, obterDetalheContrato, obterOperacoesContrato, obterOrcamentoMatricula, matricularAlunoNovo, gerarPixParcela, obterAlertasCrm, GymfitErroDefinitivo } = require('./gymfit');
 const { enviarMensagemInstagram, obterNomeUsuarioInstagram, verificarAssinaturaWebhook } = require('./instagram');
 const { enviarMensagemWhatsappCloud, enviarTemplateWhatsappCloud, enviarBotoesWhatsappCloud, enviarArquivoWhatsappCloud, criarTemplateWhatsappCloud, listarTemplatesWhatsappCloud, trocarCodigoPorAccessTokenWhatsappCloud, inscreverWebhookWabaWhatsappCloud, consultarStatusNumeroWhatsappCloud, listarNumerosWabaWhatsappCloud, baixarMidiaWhatsappCloud } = require('./whatsappCloudApi');
 const { consultarAlunoNaAgenda, agendaLogin, buscarAgendaDoDia, atualizarStatusAgendamento, buscarMQVsRecentes, buscarAgendamentosPorIds, garantirAlunoNaAgenda } = require('./agenda');
@@ -499,7 +499,7 @@ async function seedTemplatesWhatsappCloud() {
 // montarem os parâmetros do envio depois — mesmo formato dos 9 já existentes.
 function extrairVariaveisDoTexto(texto) {
     const variaveis = [];
-    const regex = /[{[](saudacao|nome_completo|nome|matricula|dias_atrasados|parcelas|valor|horario|professor|dia|link_contrato)[\]}]/gi;
+    const regex = /[{[](saudacao|nome_completo|nome|matricula|dias_atrasados|parcelas|valor|horario|professor|dia|link_contrato|dias_vencido)[\]}]/gi;
     let m;
     while ((m = regex.exec(texto || ''))) {
         const chave = m[1].toLowerCase();
@@ -1519,6 +1519,23 @@ async function resolverLinkContrato(telefone) {
     return link;
 }
 
+// {dias_vencido}: há quantos dias o plano do ex-aluno venceu (esteira "Ex-alunos para reativar"). Vem da fila da reativação (plano_fim guardado na
+// sincronização com o GymFit) e é recalculado a cada envio; contato fora da fila → vazio.
+const PADRAO_DIAS_VENCIDO = /[{[]dias_vencido[\]}]/i;
+async function resolverDiasVencido(telefone) {
+    try {
+        const num = String(telefone).replace('@c.us', '').replace('@lid', '');
+        await garantirTabelaReativacao();
+        const linha = await db.get('SELECT plano_fim FROM reativacao_exalunos WHERE telefone = ? OR substr(telefone, -8) = substr(?, -8)', [num, num]);
+        if (!linha) return '';
+        const dias = moment.tz('America/Sao_Paulo').startOf('day').diff(moment.tz(linha.plano_fim, 'YYYY-MM-DD', 'America/Sao_Paulo'), 'days');
+        return dias > 0 ? String(dias) : '';
+    } catch (e) {
+        console.error(`⚠️ {dias_vencido}: não consegui calcular (${e.message}).`);
+        return '';
+    }
+}
+
 async function substituirPlaceholdersPessoais(texto, telefone) {
     const hora = moment.tz('America/Sao_Paulo').hours();
     const saudacao = hora >= 5 && hora < 12 ? 'Bom dia' : hora >= 12 && hora < 18 ? 'Boa tarde' : 'Boa noite';
@@ -1550,7 +1567,9 @@ async function substituirPlaceholdersPessoais(texto, telefone) {
     const amanhaYMD = moment.tz('America/Sao_Paulo').add(1, 'day').format('YYYY-MM-DD');
     const diaExibir = !agendamentoAF ? '' : agendamentoAF.data === hojeYMD ? 'hoje' : agendamentoAF.data === amanhaYMD ? 'amanhã' : '';
     const linkContratoExibir = PADRAO_LINK_CONTRATO.test(texto) ? await resolverLinkContrato(telefone) : '';
+    const diasVencidoExibir = PADRAO_DIAS_VENCIDO.test(texto) ? await resolverDiasVencido(telefone) : '';
     return texto
+        .replace(/\[dias_vencido\]/gi, diasVencidoExibir).replace(/{dias_vencido}/gi, diasVencidoExibir)
         .replace(/{saudacao}/gi, saudacao)
         .replace(/\[nome\]/gi, nomeExibir || '')
         .replace(/{nome}/gi, nomeExibir || '')
@@ -2491,6 +2510,9 @@ async function processarMensagemWhatsappCloud(mensagem, valor, { phoneNumberIdDe
     if (!assumidaPorHumano && await tratarRespostaResponsavel({ numLimpo, texto, nomeContato })) return;
     // "Quer que te mande o link de pagamento?" → confirma nome e matrícula → gera o Pix no GymFit.
     if (!assumidaPorHumano && await tratarFluxoPagamentoPix({ numLimpo, texto, nomeContato })) return;
+    // Ex-aluno que recebeu a mensagem de reativação: depois da conversa assentar, a IA registra negociação, tratativa e interesse no CRM do GymFit
+    // (vale também quando uma atendente assumiu a conversa).
+    agendarAnaliseReativacao(numLimpo);
     if (assumidaPorHumano) return;
     if (estavaFinalizada) {
         console.log(`🔕 ${numLimpo} escreveu numa conversa finalizada — reaberta pro atendente, robô não responde.`);
@@ -5385,7 +5407,9 @@ async function dispararMensagensDaAutomacao(automacaoId) {
                     const amanhaYMD = moment.tz('America/Sao_Paulo').add(1, 'day').format('YYYY-MM-DD');
                     const diaStr = !agendamentoAF ? '' : agendamentoAF.data === hojeYMD ? 'hoje' : agendamentoAF.data === amanhaYMD ? 'amanhã' : '';
                     const linkContratoStr = PADRAO_LINK_CONTRATO.test(msg.texto || '') ? await resolverLinkContrato(numLimpo) : '';
+                    const diasVencidoStr = PADRAO_DIAS_VENCIDO.test(msg.texto || '') ? await resolverDiasVencido(numLimpo) : '';
                     const texto = (msg.texto || '')
+                        .replace(/\{dias_vencido\}/gi, diasVencidoStr).replace(/\[dias_vencido\]/gi, diasVencidoStr)
                         .replace(/\{link_contrato\}/gi, () => linkContratoStr).replace(/\[link_contrato\]/gi, () => linkContratoStr)
                         .replace(/\{nome\}/gi, primeiroNome).replace(/\[nome\]/gi, primeiroNome)
                         .replace(/\{nome_completo\}/gi, nomeCompleto).replace(/\[nome_completo\]/gi, nomeCompleto)
@@ -5438,7 +5462,7 @@ async function dispararMensagensDaAutomacao(automacaoId) {
                                         const valorPorPlaceholder = {
                                             nome: primeiroNome, nome_completo: nomeCompleto, matricula,
                                             parcelas: parcelasStr, valor: valorStr, dias_atrasados: diasAtrasadosStr,
-                                            horario: horarioStr, professor: professorStr, dia: diaStr, link_contrato: linkContratoStr,
+                                            horario: horarioStr, professor: professorStr, dia: diaStr, link_contrato: linkContratoStr, dias_vencido: diasVencidoStr,
                                         };
                                         const parametros = template.variaveis.map(v => valorPorPlaceholder[v] ?? '');
                                         // ver comentário em templateTemHeaderImagem — só manda o parâmetro de
@@ -7371,7 +7395,7 @@ function iniciarBroadcast(job) {
                             // ali é justamente o padrão que arrisca bloqueio dele.
                             const primeiroNome = (nomeContato || '').trim().split(' ')[0] || '';
                             const parametros = [];
-                            for (const v of templateWhatsapp.variaveis || []) parametros.push(v === 'nome' ? primeiroNome : (v === 'link_contrato' ? await resolverLinkContrato(numeroCompleto) : ''));
+                            for (const v of templateWhatsapp.variaveis || []) parametros.push(v === 'nome' ? primeiroNome : (v === 'link_contrato' ? await resolverLinkContrato(numeroCompleto) : (v === 'dias_vencido' ? await resolverDiasVencido(numeroCompleto) : '')));
                             // ver comentário em templateTemHeaderImagem — só manda o cabeçalho se
                             // o Template aprovado realmente tiver um.
                             const headerImageUrl = (templateMediaPath && await templateTemHeaderImagem(templateWhatsapp.nome, entryEnvio.config))
@@ -8807,6 +8831,255 @@ async function processarLembretesAssinatura() {
     }
 }
 setInterval(() => processarLembretesAssinatura().catch(e => console.error('Erro no ciclo do lembrete de assinatura:', e.message)), 5 * 60 * 1000);
+
+// =====================================
+// REATIVAÇÃO DE EX-ALUNOS — esteira "Ex-alunos para reativar" (GymFit)
+// =====================================
+// Quem está na esteira recebe UMA vez por ciclo (ciclo = fim do último contrato) a Mensagem Personalizada "Reativação de Ex-aluno" (template aprovado
+// na Meta, pela API Oficial), num horário sorteado entre 8h e 20h (Brasília), no máximo `reativacao_limite_diario` por dia (padrão 40: a fila se espalha
+// pelos dias seguintes, pra não despejar centenas de mensagens de marketing de uma vez). Só começa depois que a Meta aprova o template.
+// Checklist do CRM (as mesmas 4 etapas da tela): o envio vale como 1. Contato realizado; quando o aluno responde, a conversa é analisada pela IA e
+// registra 2. Negociação (se os planos/promoção foram apresentados), 3. Registro da tratativa (se houve negociação) e 4. Nível de interesse.
+// Interruptor: configuracoes.reativacao_ativa = '0' desliga.
+const NOME_MENSAGEM_REATIVACAO = 'Reativação de Ex-aluno';
+const REATIVACAO_LIMITE_DIARIO_PADRAO = 40;
+const REATIVACAO_JANELA_RESPOSTA_DIAS = 14;
+const REATIVACAO_MAX_ANALISES = 8;
+const REATIVACAO_MAX_TENTATIVAS_ENVIO = 3;
+const REATIVACAO_ESPERA_ANALISE_MS = 3 * 60 * 1000;
+const REATIVACAO_MAX_POR_CICLO = 10;
+const REATIVACAO_SYNC_MS = 30 * 60 * 1000;
+const diaBrasilia = (iso) => moment.tz(iso, 'America/Sao_Paulo').format('YYYY-MM-DD');
+
+let tabelaReativacaoPronta = false;
+async function garantirTabelaReativacao() {
+    if (tabelaReativacaoPronta) return;
+    await db.run(`CREATE TABLE IF NOT EXISTS reativacao_exalunos (
+        matricula INTEGER PRIMARY KEY,
+        nome TEXT,
+        telefone TEXT NOT NULL,
+        plano_fim TEXT NOT NULL,
+        dias_vencido INTEGER,
+        proximo_envio_em TEXT,
+        enviado_em TEXT,
+        tentativas INTEGER NOT NULL DEFAULT 0,
+        ultimo_erro TEXT,
+        ultimo_erro_em TEXT,
+        analises INTEGER NOT NULL DEFAULT 0,
+        ultima_analise_em TEXT,
+        interesse TEXT,
+        tratativa_registrada INTEGER NOT NULL DEFAULT 0
+    )`);
+    tabelaReativacaoPronta = true;
+}
+
+async function limiteDiarioReativacao() {
+    const v = parseInt((await db.get("SELECT valor FROM configuracoes WHERE chave = 'reativacao_limite_diario'"))?.valor, 10);
+    return v > 0 ? v : REATIVACAO_LIMITE_DIARIO_PADRAO;
+}
+
+// Próximo horário sorteado com vaga: hoje (se ainda couber na janela) ou nos dias seguintes, respeitando o limite diário (`contagemPorDia` é atualizado).
+function proximoHorarioReativacao(agora, contagemPorDia, limite) {
+    for (let d = 0; d < 400; d++) {
+        const horario = d === 0 ? sortearHorarioNaJanela(agora, agora.clone().add(1, 'minute')) : sortearHorarioNaJanela(agora.clone().add(d, 'days'));
+        if (!horario) continue;
+        const dia = diaBrasilia(horario);
+        if ((contagemPorDia.get(dia) || 0) >= limite) continue;
+        contagemPorDia.set(dia, (contagemPorDia.get(dia) || 0) + 1);
+        return horario;
+    }
+    return null;
+}
+
+// Põe na fila quem entrou na esteira (ou voltou a vencer: ciclo novo) e tira quem saiu antes de receber. Quem já recebeu continua registrado (não reenvia no mesmo ciclo).
+async function sincronizarReativacaoExAlunos(agora) {
+    const alunos = await obterExAlunosParaReativar(); // se o GymFit falhar, lança: nada é apagado
+    const limite = await limiteDiarioReativacao();
+    const ocupados = await db.all('SELECT proximo_envio_em, enviado_em FROM reativacao_exalunos WHERE enviado_em IS NULL OR enviado_em >= ?', [agora.clone().startOf('day').toISOString()]);
+    const contagem = new Map();
+    for (const o of ocupados) {
+        const iso = o.enviado_em || o.proximo_envio_em;
+        if (iso) { const dia = diaBrasilia(iso); contagem.set(dia, (contagem.get(dia) || 0) + 1); }
+    }
+    const naEsteira = new Set();
+    let novos = 0;
+    for (const a of alunos) {
+        const telefone = normalizarTelefoneBR(a.telefone);
+        if (telefone.length < 12 || telefone.length > 13) continue; // sem WhatsApp utilizável
+        naEsteira.add(a.matricula);
+        const existente = await db.get('SELECT plano_fim FROM reativacao_exalunos WHERE matricula = ?', a.matricula);
+        if (!existente) {
+            await db.run('INSERT INTO reativacao_exalunos (matricula, nome, telefone, plano_fim, dias_vencido, proximo_envio_em) VALUES (?, ?, ?, ?, ?, ?)',
+                [a.matricula, a.nome, telefone, a.plano_fim, a.dias_vencido, proximoHorarioReativacao(agora, contagem, limite)]);
+            novos++;
+        } else if (existente.plano_fim !== a.plano_fim) { // renovou e venceu de novo: ciclo novo
+            await db.run(`UPDATE reativacao_exalunos SET nome = ?, telefone = ?, plano_fim = ?, dias_vencido = ?, proximo_envio_em = ?, enviado_em = NULL, tentativas = 0,
+                ultimo_erro = NULL, ultimo_erro_em = NULL, analises = 0, ultima_analise_em = NULL, interesse = NULL, tratativa_registrada = 0 WHERE matricula = ?`,
+                [a.nome, telefone, a.plano_fim, a.dias_vencido, proximoHorarioReativacao(agora, contagem, limite), a.matricula]);
+            novos++;
+        } else {
+            await db.run('UPDATE reativacao_exalunos SET nome = ?, telefone = ?, dias_vencido = ? WHERE matricula = ?', [a.nome, telefone, a.dias_vencido, a.matricula]);
+        }
+    }
+    let saidas = 0;
+    for (const p of await db.all('SELECT matricula FROM reativacao_exalunos WHERE enviado_em IS NULL')) {
+        if (!naEsteira.has(p.matricula)) { await db.run('DELETE FROM reativacao_exalunos WHERE matricula = ?', p.matricula); saidas++; }
+    }
+    if (novos || saidas) console.log(`🔁 Reativação de ex-alunos: ${novos} entrou(aram) na fila, ${saidas} saiu(saíram) da esteira antes de receber (${naEsteira.size} na esteira agora).`);
+}
+
+let reativacaoRodando = false;
+let reativacaoUltimaSync = 0;
+async function processarReativacaoExAlunos() {
+    if (reativacaoRodando || !db) return;
+    reativacaoRodando = true;
+    try {
+        if ((await db.get("SELECT valor FROM configuracoes WHERE chave = 'reativacao_ativa'"))?.valor === '0') return;
+        const agora = moment.tz('America/Sao_Paulo');
+        if (agora.hour() < ASSINATURA_HORA_INICIO || agora.hour() >= ASSINATURA_HORA_FIM) return;
+        const msg = await db.get('SELECT * FROM mensagens_personalizadas WHERE nome = ?', NOME_MENSAGEM_REATIVACAO);
+        if (!msg?.template_whatsapp) return; // a Meta ainda não aprovou o template
+        const config = await obterConfigWhatsappCloud();
+        if (!config.accessToken || !config.phoneNumberId) return;
+        await garantirTabelaReativacao();
+        if (Date.now() - reativacaoUltimaSync > REATIVACAO_SYNC_MS) {
+            await sincronizarReativacaoExAlunos(agora);
+            reativacaoUltimaSync = Date.now();
+        }
+        const template = JSON.parse(msg.template_whatsapp);
+        const limite = await limiteDiarioReativacao();
+        const enviadosHoje = (await db.get('SELECT COUNT(*) AS n FROM reativacao_exalunos WHERE enviado_em >= ?', agora.clone().startOf('day').toISOString())).n;
+        if (enviadosHoje >= limite) return;
+        const devidos = await db.all('SELECT * FROM reativacao_exalunos WHERE enviado_em IS NULL AND proximo_envio_em IS NOT NULL AND proximo_envio_em <= ? ORDER BY proximo_envio_em LIMIT ?',
+            [new Date().toISOString(), Math.min(REATIVACAO_MAX_POR_CICLO, limite - enviadosHoje)]);
+        for (const d of devidos) {
+            try {
+                const primeiroNome = (d.nome || '').trim().split(/\s+/)[0].toLowerCase().replace(/^./, c => c.toUpperCase());
+                const dias = agora.clone().startOf('day').diff(moment.tz(d.plano_fim, 'YYYY-MM-DD', 'America/Sao_Paulo'), 'days');
+                const valores = { nome: primeiroNome, nome_completo: d.nome || '', matricula: String(d.matricula).padStart(6, '0'), dias_vencido: String(dias > 0 ? dias : d.dias_vencido) };
+                const parametros = (template.variaveis || []).map(v => valores[v] ?? '');
+                const resultado = await enviarTemplateWhatsappCloud(d.telefone, template.nome, parametros, config);
+                const textoRegistro = msg.texto.replace(/[{[](\w+)[\]}]/g, (m, k) => valores[k.toLowerCase()] ?? m);
+                await registrarMensagemEnviada(d.telefone, textoRegistro, d.nome, resultado?.messages?.[0]?.id || null, false, 'text', null, 'whatsapp_cloud', true);
+                await db.run('UPDATE reativacao_exalunos SET enviado_em = ?, proximo_envio_em = NULL, ultimo_erro = NULL WHERE matricula = ?', [new Date().toISOString(), d.matricula]);
+                console.log(`🔁 Reativação enviada pra ${d.nome} (${d.matricula}) — plano venceu há ${valores.dias_vencido} dias.`);
+                // Etapa 1 do checklist: contato realizado.
+                await registrarReativacaoAluno(d.matricula, { etapa: 'contato' }).catch(e => console.error(`⚠️ Reativação: contato de ${d.matricula} não registrado no GymFit: ${e.message}`));
+            } catch (e) {
+                console.error(`❌ Reativação pra ${d.nome} (${d.matricula}) falhou:`, e.message);
+                const tentativas = (d.tentativas || 0) + 1;
+                // Tenta de novo amanhã, em horário sorteado; depois de algumas falhas desiste (número inválido, por exemplo).
+                await db.run('UPDATE reativacao_exalunos SET tentativas = ?, ultimo_erro = ?, ultimo_erro_em = ?, proximo_envio_em = ? WHERE matricula = ?',
+                    [tentativas, e.message, new Date().toISOString(), tentativas >= REATIVACAO_MAX_TENTATIVAS_ENVIO ? null : proximoEnvioAssinatura(agora, 1), d.matricula]);
+            }
+            await delay(1000);
+        }
+    } catch (e) {
+        console.error('❌ Erro na reativação de ex-alunos:', e.message);
+    } finally {
+        reativacaoRodando = false;
+    }
+}
+setInterval(() => processarReativacaoExAlunos().catch(e => console.error('Erro no ciclo da reativação de ex-alunos:', e.message)), 5 * 60 * 1000);
+
+const buscarLinhaReativacao = (numLimpo) => db.get('SELECT * FROM reativacao_exalunos WHERE telefone = ? OR substr(telefone, -8) = substr(?, -8)', [numLimpo, numLimpo]);
+
+// Chamada simples à IA configurada (a mesma da conversa) pra uma tarefa de análise: devolve o texto ou null.
+async function chamarIAParaTarefa(systemTexto, conteudoUsuario) {
+    const config = {};
+    (await db.all('SELECT * FROM configuracoes')).forEach(r => config[r.chave] = r.valor);
+    const provider = config.ia_provider || 'openai';
+    const apiKey = provider === 'anthropic' ? await obterChaveAnthropic(config) : provider === 'groq' ? config.groq_api_key : config.openai_api_key;
+    if (!apiKey) return null;
+    const modelo = provider === 'anthropic' ? (config.anthropic_modelo || 'claude-opus-5-5')
+        : provider === 'groq' ? (config.groq_modelo || 'llama-3.3-70b-versatile') : (config.openai_modelo || 'gpt-3.5-turbo');
+    const mensagens = [{ role: 'user', content: conteudoUsuario }];
+    const { texto } = provider === 'anthropic'
+        ? await chamarClaude({ apiKey, modelo, systemFixo: systemTexto, systemDinamico: null, mensagens })
+        : await chamarOpenAICompativel({ provider, apiKey, modelo, systemFixo: systemTexto, systemDinamico: null, mensagens });
+    return texto;
+}
+
+const REATIVACAO_PROMPT_ANALISE = `Você analisa a conversa de WhatsApp entre a academia Planeta Corpo Club+ e um EX-ALUNO que recebeu uma mensagem perguntando se quer renovar o plano. Devolva SOMENTE um JSON (sem markdown, sem texto extra) com os campos:
+{
+  "aluno_respondeu": true se o aluno escreveu alguma resposta de verdade (não só emoji/figurinha),
+  "interesse_em_conhecer_planos": true se o aluno demonstrou interesse em renovar, voltar ou conhecer planos, valores ou promoções,
+  "planos_apresentados": true se a academia (robô ou atendente) JÁ apresentou os planos/valores na conversa,
+  "promocao_apresentada": true se a academia JÁ apresentou promoção/condição especial/campanha na conversa,
+  "resumo_planos": resumo curto de quais planos/valores foram apresentados (ou null),
+  "resumo_promocao": resumo curto da promoção apresentada (ou null),
+  "houve_negociacao": true se o aluno foi além de um simples "ok/oi": perguntou valores ou condições, falou de objeção (preço, tempo, mudança, saúde), pediu para pensar, aceitou ou recusou explicando o motivo. false se ele só respondeu algo vago ou não conversou,
+  "resumo_conversa": resumo objetivo, em português e na 3ª pessoa, de TODA a conversa até agora (o que o aluno disse, o que foi oferecido, objeções, combinados e próximo passo) — máximo 600 caracteres,
+  "nivel_interesse": "alto" (quer voltar/fechar, pediu link ou forma de pagamento, marcou data), "medio" (interessado mas indeciso, vai pensar, pediu valores) ou "baixo" (recusou, sem interesse, sem resposta útil) — ou null se o aluno ainda não respondeu
+}
+Seja fiel ao que está escrito; não invente. A conversa pode ainda estar em andamento: avalie com o que existe até agora.`;
+
+// Lê a conversa do ex-aluno desde o envio da mensagem de reativação e registra no checklist do GymFit o que já aconteceu (etapas 2, 3 e 4).
+async function analisarConversaReativacao(matricula) {
+    const linha = await db.get('SELECT * FROM reativacao_exalunos WHERE matricula = ?', matricula);
+    if (!linha || !linha.enviado_em || linha.analises >= REATIVACAO_MAX_ANALISES) return;
+    const rows = await db.all(
+        `SELECT direcao, texto, tipo FROM conversas WHERE (telefone = ? OR substr(telefone, -8) = substr(?, -8)) AND ts > datetime(?, '+3 seconds') ORDER BY ts, id LIMIT 80`,
+        [linha.telefone, linha.telefone, linha.enviado_em]);
+    const texto = (r) => (r.texto && r.texto.trim()) || (r.tipo && r.tipo !== 'text' ? `[${r.tipo}]` : '');
+    if (!rows.some(r => r.direcao === 'in' && texto(r))) return; // o aluno ainda não respondeu
+    const msgPers = await db.get('SELECT texto FROM mensagens_personalizadas WHERE nome = ?', NOME_MENSAGEM_REATIVACAO);
+    const transcricao = [`Academia (mensagem de reativação): ${(msgPers?.texto || '').replace(/[{[]\w+[\]}]/g, '…')}`,
+        ...rows.filter(r => texto(r)).map(r => `${r.direcao === 'in' ? 'Aluno' : 'Academia'}: ${texto(r)}`)].join('\n');
+
+    const bruto = await chamarIAParaTarefa(REATIVACAO_PROMPT_ANALISE, `Conversa:\n\n${transcricao}`);
+    const achado = (bruto || '').match(/\{[\s\S]*\}/);
+    if (!achado) throw new Error('a IA não devolveu o JSON da análise');
+    const r = JSON.parse(achado[0]);
+    if (!r.aluno_respondeu) return;
+
+    const cortar = (t, n) => (typeof t === 'string' && t.trim() ? t.trim().slice(0, n) : undefined);
+    const registrar = async (dados) => {
+        try { return await registrarReativacaoAluno(matricula, dados); }
+        catch (e) { console.error(`⚠️ Reativação ${matricula}: etapa "${dados.etapa}" não registrada no GymFit: ${e.message}`); return null; }
+    };
+    const feitos = [];
+    await registrar({ etapa: 'contato' }); // sem efeito se já estava marcado; garante a ordem das etapas
+    if ((r.planos_apresentados || r.promocao_apresentada)
+        && await registrar({ etapa: 'negociacao', planos: r.planos_apresentados ? cortar(r.resumo_planos, 1900) : undefined, promocao: r.promocao_apresentada ? cortar(r.resumo_promocao, 1900) : undefined })) feitos.push('negociação');
+    let tratativa = !!linha.tratativa_registrada;
+    if (r.houve_negociacao && cortar(r.resumo_conversa, 3900) && await registrar({ etapa: 'tratativa', texto: cortar(r.resumo_conversa, 3900) })) { tratativa = true; feitos.push('tratativa'); }
+    const nivel = ['alto', 'medio', 'baixo'].includes(r.nivel_interesse) ? r.nivel_interesse : null;
+    let nivelRegistrado = null;
+    if (nivel && tratativa && await registrar({ etapa: 'interesse', nivel })) { nivelRegistrado = nivel; feitos.push(`interesse ${nivel}`); }
+    await db.run('UPDATE reativacao_exalunos SET analises = analises + 1, ultima_analise_em = ?, tratativa_registrada = ?, interesse = COALESCE(?, interesse) WHERE matricula = ?',
+        [new Date().toISOString(), tratativa ? 1 : 0, nivelRegistrado, matricula]);
+    console.log(`🔁 Reativação: conversa de ${linha.nome} (${matricula}) analisada — registrado no GymFit: ${feitos.length ? feitos.join(', ') : 'nada novo'}.`);
+}
+
+// Chamado a cada mensagem do aluno: espera a conversa assentar (a resposta do robô incluída) e analisa uma vez.
+const reativacaoTimers = new Map();
+function agendarAnaliseReativacao(numLimpo) {
+    (async () => {
+        await garantirTabelaReativacao();
+        const linha = await buscarLinhaReativacao(numLimpo);
+        if (!linha?.enviado_em || linha.analises >= REATIVACAO_MAX_ANALISES) return;
+        if (moment().diff(moment(linha.enviado_em), 'days', true) > REATIVACAO_JANELA_RESPOSTA_DIAS) return;
+        clearTimeout(reativacaoTimers.get(linha.matricula));
+        reativacaoTimers.set(linha.matricula, setTimeout(() => {
+            reativacaoTimers.delete(linha.matricula);
+            analisarConversaReativacao(linha.matricula).catch(e => console.error(`❌ Análise da reativação de ${linha.matricula} falhou:`, e.message));
+        }, REATIVACAO_ESPERA_ANALISE_MS));
+    })().catch(e => console.error('❌ Reativação (agendar análise):', e.message));
+}
+
+// Contexto pra IA quando quem escreve é um ex-aluno que acabou de receber a mensagem de reativação.
+async function montarContextoReativacaoIA(numLimpo) {
+    try {
+        await garantirTabelaReativacao();
+        const linha = await buscarLinhaReativacao(numLimpo);
+        if (!linha?.enviado_em || moment().diff(moment(linha.enviado_em), 'days', true) > REATIVACAO_JANELA_RESPOSTA_DIAS) return null;
+        const dias = moment.tz('America/Sao_Paulo').startOf('day').diff(moment.tz(linha.plano_fim, 'YYYY-MM-DD', 'America/Sao_Paulo'), 'days');
+        return `# EX-ALUNO EM REATIVAÇÃO\nEste contato é um EX-ALUNO (plano venceu há ${dias} dias) que recebeu da academia a mensagem de reativação perguntando se quer renovar e continuar treinando. Conduza a conversa para a volta dele:\n- Se demonstrar interesse em renovar, voltar ou conhecer planos/promoções, APRESENTE na hora os planos e a promoção vigente (use o treinamento e a CAMPANHA DO MÊS) e convide a fechar; se aceitar, diga que uma consultora conclui a renovação.\n- Se tiver objeção (preço, tempo, mudança), responda com empatia e uma alternativa curta.\n- Se disser que não quer, respeite, pergunte uma única vez o motivo e deixe a porta aberta. Não insista.`;
+    } catch (e) {
+        return null;
+    }
+}
 
 // Chamado pela varredura de hora em hora: deixa a coluna MQV da tela em dia
 // pra todo mundo da lista (a cobrança confere de novo antes de cada envio).
@@ -12099,6 +12372,8 @@ async function processarComoRobo(msg, numLimpo, texto, telefoneReal, nomeContato
             if (contextoContrato) partesDinamicas.push(contextoContrato);
             const contextoAluno = await montarContextoAlunoIA(numLimpo);
             if (contextoAluno) partesDinamicas.push(contextoAluno);
+            const contextoReativacao = await montarContextoReativacaoIA(numLimpo);
+            if (contextoReativacao) partesDinamicas.push(contextoReativacao);
             const systemDinamico = partesDinamicas.join('\n\n');
             const mensagens = await montarHistoricoConversaIA(numLimpo, textoOriginal);
 
