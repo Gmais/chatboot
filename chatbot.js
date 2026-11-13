@@ -2901,6 +2901,37 @@ app.post('/api/gymfit/enviar-mensagem', async (req, res) => {
     }
 });
 
+// Texto do GymFit com o LINK DE ASSINATURA DO CONTRATO (cada link é único, então não dá para ser uma Mensagem Personalizada fixa): o GymFit manda o texto pronto e ele
+// sai pelo mesmo caminho dos Disparos (pool de números, delay, fila). Só aceita texto que traga um link /assinar/<código> e de tamanho normal: a chave do GymFit
+// não serve para mandar qualquer mensagem a qualquer número.
+const LINK_ASSINATURA_GYMFIT = /https?:\/\/[^\s]+\/assinar\/[A-Za-z0-9_-]{20,}/;
+app.post('/api/gymfit/enviar-texto', async (req, res) => {
+    if (!autorizadoGymfit(req, res)) return;
+    const telefone = String(req.body?.telefone || '').replace(/\D/g, '');
+    const texto = String(req.body?.texto || '').trim();
+    if (telefone.length < 10 || telefone.length > 15) return res.status(400).json({ error: 'telefone inválido' });
+    if (!texto || texto.length > 1200 || !LINK_ASSINATURA_GYMFIT.test(texto)) return res.status(400).json({ error: 'texto não permitido para o GymFit (só mensagem com o link de assinatura do contrato)' });
+    try {
+        const algumPoolConectado = [...poolClients.values()].some(e => e.status === 'connected');
+        if (!algumPoolConectado && !isConnected && !(await cloudApiDisponivelParaDisparo())) {
+            return res.status(503).json({ error: 'Nenhum número de disparo conectado no Chatboot.' });
+        }
+        const dadosJob = montarJobDisparo({ body: { numeros: telefone, mensagem: texto, categoria: '', descricao: 'Contrato para assinar (GymFit)', delay_ms: 2000 } });
+        const { listaNumeros, mensagem, delay_ms, delay_modo, delay_velocidade, categoria, mensagemId, descricaoFinal } = dadosJob;
+        const { numerosPermitidosIds, templateWhatsapp, templateMediaPath } = await resolverRoteamentoETemplate(categoria, mensagemId);
+        const job = { listaNumeros, mensagem, mediaFile: null, delay_ms, delay_modo, delay_velocidade, numerosPermitidosIds, descricao: descricaoFinal, templateWhatsapp, templateMediaPath };
+        if (broadcastRunning) {
+            filaDisparos.push(job);
+            io.emit('broadcast_fila_atualizada', { tamanho: filaDisparos.length });
+            return res.json({ ok: true, queued: true });
+        }
+        iniciarBroadcast(job);
+        res.json({ ok: true, queued: false });
+    } catch (e) {
+        res.status(500).json({ error: 'falha ao enviar o texto' });
+    }
+});
+
 app.get('/api/configuracoes', async (req, res) => {
     const rows = await db.all('SELECT * FROM configuracoes');
     const config = {};
