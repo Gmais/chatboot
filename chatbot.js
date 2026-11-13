@@ -1469,10 +1469,21 @@ async function resolverNomeContato(telefone) {
 // vem do mesmo vínculo com o CRM Pacto usado na coluna Matrícula de Contatos.
 // Sem vínculo (contato que nunca se matriculou/nunca conversou sobre isso),
 // devolve string vazia — o placeholder some da mensagem em vez de mostrar "null".
-const matriculaContatos = new Map();
+// Cache com validade: antes ele nunca expirava e guardava também o "sem matrícula", então quem foi consultado ANTES do GymFit mandar a matrícula
+// (ou antes de alguém digitá-la em Contatos) ficava sem o #matrícula no Bate Papo até o servidor reiniciar. Agora o vazio vale poucos segundos,
+// a matrícula alguns minutos, e toda gravação de matrícula (GymFit, Contatos, importações) zera o cache — qualquer caminho esquecido se corrige sozinho.
+const matriculaContatos = new Map(); // num -> { matricula, ate }
+const MATRICULA_CACHE_OK_MS = 5 * 60 * 1000;
+const MATRICULA_CACHE_VAZIO_MS = 15 * 1000;
+function limparCacheMatriculas() { matriculaContatos.clear(); }
 async function resolverMatriculaContato(telefone) {
     const num = telefone.replace('@c.us', '').replace('@lid', '');
-    if (matriculaContatos.has(num)) return matriculaContatos.get(num);
+    const emCache = matriculaContatos.get(num);
+    if (emCache && emCache.ate > Date.now()) return emCache.matricula;
+    const guardar = (matricula) => {
+        matriculaContatos.set(num, { matricula, ate: Date.now() + (matricula ? MATRICULA_CACHE_OK_MS : MATRICULA_CACHE_VAZIO_MS) });
+        return matricula;
+    };
     try {
         // Matrícula digitada manualmente em Contatos tem prioridade (mesma regra
         // usada na coluna Matrícula da tela de Contatos); sem isso, cai pro vínculo
@@ -1481,13 +1492,11 @@ async function resolverMatriculaContato(telefone) {
             'SELECT matricula FROM leads WHERE telefone = ? OR telefone = ? OR telefone = ?',
             [num, `${num}@c.us`, `${num}@lid`]
         );
-        if (lead?.matricula) { matriculaContatos.set(num, lead.matricula); return lead.matricula; }
+        if (lead?.matricula && String(lead.matricula).trim()) return guardar(lead.matricula);
     } catch (_) { }
     try {
         const vinculo = await db.get('SELECT matricula FROM vinculo_pacto WHERE telefone LIKE ?', [`%${num}%`]);
-        const matricula = vinculo?.matricula || '';
-        matriculaContatos.set(num, matricula);
-        return matricula;
+        return guardar(vinculo?.matricula || '');
     } catch (_) { return ''; }
 }
 
@@ -2887,6 +2896,7 @@ app.post('/api/gymfit/aluno', async (req, res) => {
             }
             atualizados++;
         }
+        limparCacheMatriculas();
         if (criado) io.emit('stats', stats);
         res.json({ ok: true, criado, atualizados, compartilhado });
     } catch (e) {
@@ -4870,6 +4880,7 @@ app.put('/api/contatos/:telefone', async (req, res) => {
             'UPDATE leads SET nome = ?, matricula = ?, data_nascimento = ? WHERE telefone = ?',
             [nome.trim(), (matricula || '').trim() || null, (data_nascimento || '').trim() || null, telefoneFinal]
         );
+        limparCacheMatriculas();
         res.json({ success: true, telefone: telefoneFinal, nome: nome.trim(), matricula: (matricula || '').trim() || null, data_nascimento: (data_nascimento || '').trim() || null });
     } catch (err) {
         res.status(500).json({ error: err.message });
