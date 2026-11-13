@@ -93,7 +93,7 @@ const OpenAI = require('openai');
 const Anthropic = require('@anthropic-ai/sdk').default;
 const moment = require('moment-timezone');
 // Tudo que era da Pacto agora vem do GymFit: consultas (aluno, parcelas, contratos, operações), matrícula de aluno novo e Pix de parcela.
-const { buscarAlunoPorMatricula, obterParcelasEmAberto, obterContratosPorMatricula, obterDetalheContrato, obterOperacoesContrato, obterOrcamentoMatricula, matricularAlunoNovo, gerarPixParcela, obterAlertasCrm, GymfitErroDefinitivo } = require('./gymfit');
+const { obterLinkAssinaturaContrato, buscarAlunoPorMatricula, obterParcelasEmAberto, obterContratosPorMatricula, obterDetalheContrato, obterOperacoesContrato, obterOrcamentoMatricula, matricularAlunoNovo, gerarPixParcela, obterAlertasCrm, GymfitErroDefinitivo } = require('./gymfit');
 const { enviarMensagemInstagram, obterNomeUsuarioInstagram, verificarAssinaturaWebhook } = require('./instagram');
 const { enviarMensagemWhatsappCloud, enviarTemplateWhatsappCloud, enviarBotoesWhatsappCloud, enviarArquivoWhatsappCloud, criarTemplateWhatsappCloud, listarTemplatesWhatsappCloud, trocarCodigoPorAccessTokenWhatsappCloud, inscreverWebhookWabaWhatsappCloud, consultarStatusNumeroWhatsappCloud, listarNumerosWabaWhatsappCloud, baixarMidiaWhatsappCloud } = require('./whatsappCloudApi');
 const { agendaLogin, buscarAgendaDoDia, atualizarStatusAgendamento, buscarMQVsRecentes, buscarAgendamentosPorIds, garantirAlunoNaAgenda } = require('./agenda');
@@ -499,7 +499,7 @@ async function seedTemplatesWhatsappCloud() {
 // montarem os parâmetros do envio depois — mesmo formato dos 9 já existentes.
 function extrairVariaveisDoTexto(texto) {
     const variaveis = [];
-    const regex = /[{[](saudacao|nome_completo|nome|matricula|dias_atrasados|parcelas|valor|horario|professor|dia)[\]}]/gi;
+    const regex = /[{[](saudacao|nome_completo|nome|matricula|dias_atrasados|parcelas|valor|horario|professor|dia|link_contrato)[\]}]/gi;
     let m;
     while ((m = regex.exec(texto || ''))) {
         const chave = m[1].toLowerCase();
@@ -1507,6 +1507,18 @@ async function resolverMatriculaContato(telefone) {
 // varredura) — a Agenda de Avaliação traz compromissos de hoje E de amanhã
 // na mesma janela de 24h, e o template tinha "hoje" fixo no texto, então uma
 // avaliação de amanhã saía confirmando "hoje" (bug relatado).
+// {link_contrato}: link pra o aluno assinar o contrato pelo celular, gerado no GymFit NA HORA do envio (cada link novo cancela o anterior em aberto,
+// por isso só é pedido quando a mensagem realmente usa o placeholder). Sem link (aluno sem matrícula vinculada, sem contrato pra assinar ou GymFit
+// fora) LANÇA ERRO em vez de devolver vazio: mandar "clique no link: " sem link é pior que não mandar.
+const PADRAO_LINK_CONTRATO = /[{[]link_contrato[\]}]/i;
+async function resolverLinkContrato(telefone) {
+    const matricula = await resolverMatriculaContato(telefone.replace('@c.us', '').replace('@lid', ''));
+    if (!matricula) throw new Error('Contato sem matrícula vinculada — não dá pra gerar o link do contrato.');
+    const link = await obterLinkAssinaturaContrato(matricula);
+    if (!link) throw new Error('Aluno sem contrato ativo pendente de assinatura — sem link pra enviar.');
+    return link;
+}
+
 async function substituirPlaceholdersPessoais(texto, telefone) {
     const hora = moment.tz('America/Sao_Paulo').hours();
     const saudacao = hora >= 5 && hora < 12 ? 'Bom dia' : hora >= 12 && hora < 18 ? 'Boa tarde' : 'Boa noite';
@@ -1537,6 +1549,7 @@ async function substituirPlaceholdersPessoais(texto, telefone) {
     const hojeYMD = moment.tz('America/Sao_Paulo').format('YYYY-MM-DD');
     const amanhaYMD = moment.tz('America/Sao_Paulo').add(1, 'day').format('YYYY-MM-DD');
     const diaExibir = !agendamentoAF ? '' : agendamentoAF.data === hojeYMD ? 'hoje' : agendamentoAF.data === amanhaYMD ? 'amanhã' : '';
+    const linkContratoExibir = PADRAO_LINK_CONTRATO.test(texto) ? await resolverLinkContrato(telefone) : '';
     return texto
         .replace(/{saudacao}/gi, saudacao)
         .replace(/\[nome\]/gi, nomeExibir || '')
@@ -1545,6 +1558,7 @@ async function substituirPlaceholdersPessoais(texto, telefone) {
         .replace(/{nome_completo}/gi, nomeCompletoExibir || '')
         .replace(/\[matricula\]/gi, matriculaExibir || '')
         .replace(/{matricula}/gi, matriculaExibir || '')
+        .replace(/\[link_contrato\]/gi, () => linkContratoExibir).replace(/{link_contrato}/gi, () => linkContratoExibir)
         .replace(/\[parcelas\]/gi, parcelasExibir).replace(/{parcelas}/gi, parcelasExibir)
         .replace(/\[valor\]/gi, valorExibir).replace(/{valor}/gi, valorExibir)
         .replace(/\[dias_atrasados\]/gi, diasAtrasadosExibir).replace(/{dias_atrasados}/gi, diasAtrasadosExibir)
@@ -5335,7 +5349,9 @@ async function dispararMensagensDaAutomacao(automacaoId) {
                     const hojeYMD = moment.tz('America/Sao_Paulo').format('YYYY-MM-DD');
                     const amanhaYMD = moment.tz('America/Sao_Paulo').add(1, 'day').format('YYYY-MM-DD');
                     const diaStr = !agendamentoAF ? '' : agendamentoAF.data === hojeYMD ? 'hoje' : agendamentoAF.data === amanhaYMD ? 'amanhã' : '';
+                    const linkContratoStr = PADRAO_LINK_CONTRATO.test(msg.texto || '') ? await resolverLinkContrato(numLimpo) : '';
                     const texto = (msg.texto || '')
+                        .replace(/\{link_contrato\}/gi, () => linkContratoStr).replace(/\[link_contrato\]/gi, () => linkContratoStr)
                         .replace(/\{nome\}/gi, primeiroNome).replace(/\[nome\]/gi, primeiroNome)
                         .replace(/\{nome_completo\}/gi, nomeCompleto).replace(/\[nome_completo\]/gi, nomeCompleto)
                         .replace(/\{matricula\}/gi, matricula).replace(/\[matricula\]/gi, matricula)
@@ -5387,7 +5403,7 @@ async function dispararMensagensDaAutomacao(automacaoId) {
                                         const valorPorPlaceholder = {
                                             nome: primeiroNome, nome_completo: nomeCompleto, matricula,
                                             parcelas: parcelasStr, valor: valorStr, dias_atrasados: diasAtrasadosStr,
-                                            horario: horarioStr, professor: professorStr, dia: diaStr,
+                                            horario: horarioStr, professor: professorStr, dia: diaStr, link_contrato: linkContratoStr,
                                         };
                                         const parametros = template.variaveis.map(v => valorPorPlaceholder[v] ?? '');
                                         // ver comentário em templateTemHeaderImagem — só manda o parâmetro de
@@ -7319,7 +7335,8 @@ function iniciarBroadcast(job) {
                             // pro Principal só quando desse errado — reenviar em massa por
                             // ali é justamente o padrão que arrisca bloqueio dele.
                             const primeiroNome = (nomeContato || '').trim().split(' ')[0] || '';
-                            const parametros = (templateWhatsapp.variaveis || []).map(v => v === 'nome' ? primeiroNome : '');
+                            const parametros = [];
+                            for (const v of templateWhatsapp.variaveis || []) parametros.push(v === 'nome' ? primeiroNome : (v === 'link_contrato' ? await resolverLinkContrato(numeroCompleto) : ''));
                             // ver comentário em templateTemHeaderImagem — só manda o cabeçalho se
                             // o Template aprovado realmente tiver um.
                             const headerImageUrl = (templateMediaPath && await templateTemHeaderImagem(templateWhatsapp.nome, entryEnvio.config))

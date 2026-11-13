@@ -126,6 +126,7 @@ const EXEMPLOS_POR_VARIAVEL = {
     nome: 'Maria', nome_completo: 'Maria Silva', matricula: '12345',
     parcelas: '2', valor: 'R$ 150,00', dias_atrasados: '5',
     horario: '14:00', professor: 'João', dia: 'hoje', saudacao: 'Bom dia',
+    link_contrato: 'https://gymfit-web-seven.vercel.app/assinar/AbCdEfGh1234',
 };
 // `botoes` (opcional): textos dos botões de resposta rápida (QUICK_REPLY),
 // até 25 caracteres cada, sem emoji.

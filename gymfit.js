@@ -228,7 +228,22 @@ async function gerarPixParcela(idParcela) {
     return gymfitRequest('POST', `/integrations/chatbot/parcelas/${encodeURIComponent(idParcela)}/pix`);
 }
 
+// Link para o aluno assinar o contrato pelo celular (válido 7 dias). Cada chamada gera um link novo e cancela o anterior em aberto, então só chame na
+// hora de enviar. Devolve a URL, ou null quando o aluno não tem contrato ativo para assinar (já assinou, ou nem tem contrato).
+async function obterLinkAssinaturaContrato(matricula) {
+    const numero = String(matricula ?? '').replace(/\D/g, '');
+    if (!numero) return null;
+    try {
+        const r = await gymfitRequest('POST', `/integrations/chatbot/alunos/${numero}/link-assinatura`);
+        return r?.link || null;
+    } catch (e) {
+        if (e instanceof GymfitErroDefinitivo && e.status === 404) return null;
+        throw e;
+    }
+}
+
 module.exports = {
+    obterLinkAssinaturaContrato,
     buscarAlunoPorMatricula, buscarAlunoPorCodigo, obterParcelasEmAberto,
     obterContratosPorMatricula: obterContratosPorMatriculaComCache,
     obterDetalheContrato, obterOperacoesContrato,
