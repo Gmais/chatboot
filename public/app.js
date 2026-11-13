@@ -6707,6 +6707,7 @@ let filtroCategoriaMensagens = null;
 const CAMPANHAS_INFO = {
     'aniversariantes':          { label: 'Aniversariantes',           icon: '🎂' },
     'confirmacao-agendamento':  { label: 'Confirmação Agendamento',   icon: '📅' },
+    'assinatura-contrato':      { label: 'Assinatura de Contrato',    icon: '✍️' },
     'alunos-novos':             { label: 'Alunos Novos',              icon: '🆕' },
     'inadimplentes':            { label: 'Inadimplentes',             icon: '🔴' },
     'parcelas-atrasadas':       { label: 'Parcelas Atrasadas',        icon: '🟡' },

@@ -536,7 +536,7 @@ function slugifyNomeTemplate(nome, id) {
 // MARKETING por padrão, mais seguro pro tipo de conteúdo comum aqui
 // (reengajamento, promoção, indicação, feedback). Categoria errada é motivo
 // comum de rejeição na Meta.
-const CATEGORIAS_META_UTILITY = new Set(['inadimplentes', 'parcelas-atrasadas', 'vence-hoje', 'confirmacao-agendamento']);
+const CATEGORIAS_META_UTILITY = new Set(['inadimplentes', 'parcelas-atrasadas', 'vence-hoje', 'confirmacao-agendamento', 'assinatura-contrato']);
 function categoriaMetaParaMensagem(categoriaLocal) {
     return CATEGORIAS_META_UTILITY.has(categoriaLocal) ? 'UTILITY' : 'MARKETING';
 }
