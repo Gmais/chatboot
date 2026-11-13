@@ -2489,6 +2489,8 @@ async function processarMensagemWhatsappCloud(mensagem, valor, { phoneNumberIdDe
     if (await tratarRespostaConfirmacaoAF({ numLimpo, texto, botaoId, ehBotao, nomeContato, assumidaPorHumano: !!assumidaPorHumano })) return;
     // Responsável de aluno menor respondendo o pedido de nome e CPF: grava no GymFit (vale também fora do horário do robô).
     if (!assumidaPorHumano && await tratarRespostaResponsavel({ numLimpo, texto, nomeContato })) return;
+    // "Quer que te mande o link de pagamento?" → confirma nome e matrícula → gera o Pix no GymFit.
+    if (!assumidaPorHumano && await tratarFluxoPagamentoPix({ numLimpo, texto, nomeContato })) return;
     if (assumidaPorHumano) return;
     if (estavaFinalizada) {
         console.log(`🔕 ${numLimpo} escreveu numa conversa finalizada — reaberta pro atendente, robô não responde.`);
@@ -11879,6 +11881,90 @@ async function tratarRespostaResponsavel({ numLimpo, texto, nomeContato }) {
     }
 }
 async function responderResponsavel(numLimpo, nomeContato, texto) {
+    const sent = await enviarRespostaCanal('whatsapp_cloud', { body: '' }, numLimpo, texto);
+    if (sent) await registrarMensagemEnviada(numLimpo, texto, nomeContato, idSerializado(sent), false, 'text', null, 'whatsapp_cloud');
+}
+
+// =====================================
+// LINK DE PAGAMENTO (Pix) — confirma quem é o aluno e gera o Pix da parcela no GymFit
+// =====================================
+// Fluxo (Vence Hoje, parcelas atrasadas, inadimplentes — qualquer mensagem nossa que ofereça "o link de pagamento"): o aluno responde "pode enviar" →
+// o robô pergunta "Você é o aluno X, matrícula Y?" (é dinheiro, então confirma a identidade antes) → "sim" → gera o Pix da parcela no GymFit e manda o
+// valor, o vencimento e o código Pix Copia e Cola. "Não" ou qualquer falha → chama uma consultora. Só age quando a nossa última mensagem ofereceu o
+// link (ou há confirmação pendente nos últimos 30 min); o resto segue o fluxo normal.
+const PADRAO_OFERTA_LINK_PAGAMENTO = /link (de|do|para o|pra o|para|pra) (pagamento|pix)|mande o link|mande? o pix|te mande o link/i;
+const PIX_CONFIRMACAO_VALIDADE_MS = 30 * 60 * 1000;
+function respostaAfirmativaCurta(texto) {
+    if ((texto || '').includes('?')) return null;
+    const n = normalizarRespostaCurtaAF(texto).replace(/^(oi+|ola|opa|bom dia|boa tarde|boa noite|e ai)\s+/, '');
+    if (!n || n.length > 40) return null;
+    if (/^(nao|n|nn|agora nao|depois|deixa|nao quero|nao sou)\b/.test(n)) return 'nao';
+    if (/^(sim|s|ss|simm|sou|isso|exato|correto|confirmo|confirmado|pode|pode sim|pode enviar|pode mandar|pode me enviar|pode me mandar|quero|quero sim|manda|manda sim|envia|ok|okay|claro|com certeza|positivo|fechado|beleza|blz|joinha|por favor|pfv)\b/.test(n)) return 'sim';
+    return null;
+}
+async function passarConversaParaHumano(numLimpo) {
+    await db.run('INSERT OR IGNORE INTO conversas_humano (telefone) VALUES (?)', numLimpo);
+    await desligarRoboNaConversa(numLimpo);
+    io.emit('conversa_assumida', { telefone: numLimpo, assumida: true });
+}
+const brl = (v) => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(v);
+
+async function tratarFluxoPagamentoPix({ numLimpo, texto, nomeContato }) {
+    try {
+        await db.run('CREATE TABLE IF NOT EXISTS pix_confirmacao_pendente (telefone TEXT PRIMARY KEY, matricula TEXT NOT NULL, criado_em TEXT NOT NULL)');
+        const pendente = await db.get('SELECT * FROM pix_confirmacao_pendente WHERE telefone = ? AND criado_em >= ?', [numLimpo, new Date(Date.now() - PIX_CONFIRMACAO_VALIDADE_MS).toISOString()]);
+        const resposta = respostaAfirmativaCurta(texto);
+
+        if (pendente) {
+            if (!resposta) return false; // outra coisa (pergunta etc.): segue o fluxo normal; a confirmação continua valendo até vencer
+            await db.run('DELETE FROM pix_confirmacao_pendente WHERE telefone = ?', numLimpo);
+            if (resposta === 'nao') {
+                await responderFluxo(numLimpo, nomeContato, 'Tudo bem! Vou chamar uma consultora para te ajudar com o pagamento. 🙏');
+                await passarConversaParaHumano(numLimpo);
+                return true;
+            }
+            try {
+                const parcelas = (await obterParcelasEmAberto(pendente.matricula)).sort((a, b) => a.dataVencimentoDt - b.dataVencimentoDt);
+                const hoje = moment.tz('America/Sao_Paulo').endOf('day').valueOf();
+                const alvo = parcelas.find(p => p.dataVencimentoDt <= hoje) || parcelas[0];
+                if (!alvo) {
+                    await responderFluxo(numLimpo, nomeContato, 'Conferi aqui e você não tem parcelas em aberto no momento. 😊 Qualquer dúvida é só chamar!');
+                    return true;
+                }
+                const pix = await gerarPixParcela(alvo.id);
+                const primeiroNome = (nomeContato && nomeContato !== numLimpo) ? nomeContato.split(' ')[0] : '';
+                const outras = parcelas.length - 1;
+                await responderFluxo(numLimpo, nomeContato,
+                    `Pronto${primeiroNome ? `, ${primeiroNome}` : ''}! ✅ Aqui está o Pix da sua parcela de *${brl(pix.valor_centavos / 100)}* (vencimento ${alvo.dataVencimento}).\n\nCopie o código da próxima mensagem e cole no app do seu banco, em *Pix > Pix Copia e Cola*.${pix.expira_em ? `\nO código vale até ${moment.tz(pix.expira_em, 'America/Sao_Paulo').format('DD/MM [às] HH:mm')}.` : ''}${outras > 0 ? `\n\nVocê tem mais ${outras} parcela(s) em aberto; se quiser pagar também, é só me avisar.` : ''}`);
+                await responderFluxo(numLimpo, nomeContato, pix.copia_cola);
+                console.log(`💳 Pix gerado e enviado pra ${numLimpo} (matrícula ${pendente.matricula}, parcela ${alvo.id}).`);
+            } catch (e) {
+                console.error(`❌ Pix pra ${numLimpo} (matrícula ${pendente.matricula}) falhou: ${e.message}`);
+                await responderFluxo(numLimpo, nomeContato, 'Não consegui gerar o link agora. Vou chamar uma consultora para te mandar certinho. 🙏');
+                await passarConversaParaHumano(numLimpo);
+            }
+            return true;
+        }
+
+        // Sem confirmação pendente: só começa se a nossa última mensagem ofereceu o link e o aluno aceitou.
+        if (resposta !== 'sim') return false;
+        const ultimaSaida = await db.get(`SELECT texto FROM conversas WHERE telefone = ? AND direcao = 'out' AND ts >= ? ORDER BY ts DESC, id DESC LIMIT 1`,
+            [numLimpo, new Date(Date.now() - 24 * 3600 * 1000).toISOString()]);
+        if (!PADRAO_OFERTA_LINK_PAGAMENTO.test(ultimaSaida?.texto || '')) return false;
+        const matricula = await resolverMatriculaContato(numLimpo);
+        if (!matricula) return false;
+        const aluno = await buscarAlunoPorMatricula(matricula);
+        if (!aluno?.pessoa?.nome) return false;
+        if (!(await obterParcelasEmAberto(matricula)).length) return false;
+        await db.run('INSERT OR REPLACE INTO pix_confirmacao_pendente (telefone, matricula, criado_em) VALUES (?, ?, ?)', [numLimpo, matricula, new Date().toISOString()]);
+        await responderFluxo(numLimpo, nomeContato, `Antes de gerar o link, preciso confirmar seus dados. 🔒\n\nVocê é o(a) aluno(a) *${aluno.pessoa.nome}*, matrícula *${aluno.matricula}*?\n\nResponda *sim* para eu gerar o link de pagamento.`);
+        return true;
+    } catch (e) {
+        console.error(`❌ Fluxo de pagamento (${numLimpo}): ${e.message} — segue o fluxo normal.`);
+        return false;
+    }
+}
+async function responderFluxo(numLimpo, nomeContato, texto) {
     const sent = await enviarRespostaCanal('whatsapp_cloud', { body: '' }, numLimpo, texto);
     if (sent) await registrarMensagemEnviada(numLimpo, texto, nomeContato, idSerializado(sent), false, 'text', null, 'whatsapp_cloud');
 }
