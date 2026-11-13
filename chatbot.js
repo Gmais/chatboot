@@ -6779,10 +6779,38 @@ app.post('/api/conversas/:telefone/robo', async (req, res) => {
         }
         io.emit('conversa_robo', { telefone, ativo: true });
         res.json({ success: true, ativo: true });
+        // O cliente pode já ter respondido antes de ligar o robô: responde essa mensagem agora, sem esperar ele escrever de novo.
+        responderMensagemPendenteAoLigarRobo(telefone).catch(e => console.error(`❌ Robô ligado em ${telefone}: não consegui responder a mensagem pendente:`, e.message));
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
 });
+
+// Ao ligar o robô numa conversa (ou devolvê-la ao robô), se a ÚLTIMA mensagem é do cliente e ninguém respondeu, o robô responde na hora, pelos mesmos
+// passos de uma mensagem nova (responsável, Pix, robô/IA). Só texto, WhatsApp API Oficial/Instagram e até 24h (janela de resposta da Meta).
+const pendenteRoboEmAndamento = new Set();
+async function responderMensagemPendenteAoLigarRobo(telefone) {
+    if (pendenteRoboEmAndamento.has(telefone)) return;
+    pendenteRoboEmAndamento.add(telefone);
+    try {
+        const ult = await db.get(
+            `SELECT direcao, texto, tipo, nome, canal FROM conversas WHERE telefone = ? ORDER BY ts DESC, id DESC LIMIT 1`, telefone);
+        if (!ult || ult.direcao !== 'in' || !(ult.texto || '').trim() || (ult.tipo && ult.tipo !== 'text')) return;
+        if (ult.canal !== 'whatsapp_cloud' && ult.canal !== 'instagram') return;
+        const recente = await db.get(`SELECT 1 FROM conversas WHERE telefone = ? AND direcao = 'in' AND ts >= datetime('now', '-24 hours') ORDER BY ts DESC, id DESC LIMIT 1`, telefone);
+        if (!recente) return;
+        const texto = ult.texto.trim();
+        const nomeContato = ult.nome || telefone;
+        console.log(`🤖 Robô ligado em ${telefone}: respondendo a última mensagem do cliente ("${texto.slice(0, 40)}").`);
+        if (ult.canal === 'whatsapp_cloud') {
+            if (await tratarRespostaResponsavel({ numLimpo: telefone, texto, nomeContato })) return;
+            if (await tratarFluxoPagamentoPix({ numLimpo: telefone, texto, nomeContato })) return;
+        }
+        await processarComoRobo({ body: texto }, telefone, texto.toLowerCase(), telefone, nomeContato, ult.canal);
+    } finally {
+        pendenteRoboEmAndamento.delete(telefone);
+    }
+}
 
 app.post('/api/conversas/:telefone/liberar', async (req, res) => {
     const { telefone } = req.params;
