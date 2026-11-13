@@ -96,7 +96,7 @@ const moment = require('moment-timezone');
 const { buscarAlunoPorMatricula, obterParcelasEmAberto, obterContratosPorMatricula, obterDetalheContrato, obterOperacoesContrato, obterOrcamentoMatricula, matricularAlunoNovo, gerarPixParcela, obterAlertasCrm, GymfitErroDefinitivo } = require('./gymfit');
 const { enviarMensagemInstagram, obterNomeUsuarioInstagram, verificarAssinaturaWebhook } = require('./instagram');
 const { enviarMensagemWhatsappCloud, enviarTemplateWhatsappCloud, enviarBotoesWhatsappCloud, enviarArquivoWhatsappCloud, criarTemplateWhatsappCloud, listarTemplatesWhatsappCloud, trocarCodigoPorAccessTokenWhatsappCloud, inscreverWebhookWabaWhatsappCloud, consultarStatusNumeroWhatsappCloud, listarNumerosWabaWhatsappCloud, baixarMidiaWhatsappCloud } = require('./whatsappCloudApi');
-const { agendaLogin, buscarAgendaDoDia, atualizarStatusAgendamento, buscarMQVsRecentes, buscarAgendamentosPorIds } = require('./agenda');
+const { agendaLogin, buscarAgendaDoDia, atualizarStatusAgendamento, buscarMQVsRecentes, buscarAgendamentosPorIds, garantirAlunoNaAgenda } = require('./agenda');
 
 // Descobre se um Template aprovado pela Meta REALMENTE tem um componente de
 // cabeçalho com imagem — sem isso, os 3 pontos que montam headerImageUrl (automação,
@@ -11555,6 +11555,72 @@ async function chamarOpenAICompativel({ provider, apiKey, modelo, systemFixo, sy
 // como fallback. Extraído do handler de 'message' pra poder ser chamado tanto
 // na hora (modo robô) quanto adiado (rede de segurança de horário, ver
 // agendarFallbackHumano) sem duplicar a lógica.
+// Aluno demonstrou interesse em agendar a avaliação física → sem enrolar: confere/cadastra o aluno na Agenda e
+// manda direto a mensagem personalizada "Agendamento+MQV". Dispara quando (a) o aluno pede pra agendar/marcar
+// a avaliação, ou (b) responde "sim/pode/quero" logo depois de a última mensagem nossa ter oferecido o link
+// ("O professor pediu para você agendar sua avaliação física. Posso te mandar o link...?").
+// Na Agenda o login é só o PRIMEIRO nome + matrícula; quem não tem cadastro é criado com os dados do GymFit.
+// Qualquer falha (sem matrícula, GymFit/Agenda fora) devolve false e o atendimento segue o fluxo normal —
+// mandar o link pra um aluno que não consegue entrar seria pior.
+const NOME_MENSAGEM_AGENDAMENTO_MQV = 'Agendamento+MQV';
+const PADRAO_OFERTA_LINK_AF = /agende sua avalia[cç][aã]o f[ií]sica|posso te mandar o link|link (?:e os dados )?(?:pra|para) (?:vc|voc[eê]) agendar|link para agendar sua avalia/i;
+const PADRAO_PEDIDO_AGENDAR_AF = /(agendar|marcar|agendo|marco|reagendar).{0,40}avaliacao|avaliacao.{0,40}(agendar|marcar|agendo|marco)/;
+const AF_FRASES_INTERESSE = ['quero', 'quero sim', 'sim quero', 'pode mandar', 'pode me mandar', 'pode enviar', 'pode me enviar', 'manda', 'manda sim', 'mande', 'envia', 'envie',
+    'tenho interesse', 'tenho sim', 'gostaria', 'sim pode', 'sim pode mandar', 'sim por favor', 'pode mandar sim', 'pode sim', 'por favor'];
+async function tratarInteresseAvaliacaoFisica({ msg, numLimpo, texto, telefoneReal, nomeContato, canal }) {
+    try {
+        const normalizado = normalizarRespostaCurtaAF(texto);
+        if (!normalizado) return false;
+        const pedidoDireto = PADRAO_PEDIDO_AGENDAR_AF.test(normalizado) && !/\b(nao|nunca|cancelar|desmarcar)\b/.test(normalizado);
+
+        const inicio3d = new Date(Date.now() - 3 * 24 * 3600 * 1000).toISOString();
+        const saidas = await db.all(
+            `SELECT texto FROM conversas WHERE telefone = ? AND direcao = 'out' AND ts >= ? ORDER BY ts DESC, id DESC LIMIT 5`,
+            [numLimpo, inicio3d]
+        );
+        let interesse = pedidoDireto;
+        if (!interesse && saidas[0] && PADRAO_OFERTA_LINK_AF.test(saidas[0].texto || '')) {
+            interesse = classificarRespostaAF(texto, [...AF_FRASES_SIM_CONFIRMACAO, ...AF_FRASES_INTERESSE], AF_FRASES_NAO_CONFIRMACAO) === 'sim';
+        }
+        if (!interesse) return false;
+
+        // Já mandou o link (nas últimas 24h): não repete — o aluno segue com o atendimento normal.
+        const inicio24h = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
+        if (await db.get(`SELECT 1 FROM conversas WHERE telefone = ? AND direcao = 'out' AND ts >= ? AND texto LIKE '%mqv/responder%' LIMIT 1`, [numLimpo, inicio24h])) return false;
+
+        const msgPers = await db.get('SELECT texto FROM mensagens_personalizadas WHERE nome = ?', NOME_MENSAGEM_AGENDAMENTO_MQV);
+        if (!msgPers?.texto) { console.log(`ℹ️ Interesse em avaliação (${numLimpo}): mensagem "${NOME_MENSAGEM_AGENDAMENTO_MQV}" não existe em Mensagens Personalizadas.`); return false; }
+
+        const matricula = await resolverMatriculaContato(numLimpo);
+        if (!matricula) { console.log(`ℹ️ Interesse em avaliação (${numLimpo}): contato sem matrícula vinculada — segue o fluxo normal.`); return false; }
+        const aluno = await buscarAlunoPorMatricula(matricula);
+        const nomeGymfit = aluno?.pessoa?.nome?.trim();
+        if (!nomeGymfit) { console.log(`ℹ️ Interesse em avaliação (${numLimpo}): matrícula ${matricula} não encontrada no GymFit.`); return false; }
+        const primeiroNome = nomeGymfit.split(/\s+/)[0].toLowerCase().replace(/^./, c => c.toUpperCase());
+
+        const agenda = await garantirAlunoNaAgenda({
+            primeiroNome,
+            nomeCompleto: nomeGymfit,
+            matricula,
+            whatsapp: numLimpo.replace(/\D/g, ''),
+            nascimento: aluno.pessoa?.datanasc ? String(aluno.pessoa.datanasc).slice(0, 10) : null,
+        });
+        console.log(`📅 Interesse em avaliação (${numLimpo}): ${agenda.criado ? 'aluno cadastrado na Agenda' : 'aluno já tinha cadastro na Agenda'} — mandando ${NOME_MENSAGEM_AGENDAMENTO_MQV}.`);
+
+        const comDados = msgPers.texto
+            .replace(/\[nome\]|{nome}/gi, agenda.nomeLogin)
+            .replace(/\[matricula\]|{matricula}/gi, agenda.matriculaLogin);
+        const textoFinal = await substituirPlaceholdersPessoais(comDados, numLimpo);
+        const sent = await enviarRespostaCanal(canal, msg, telefoneReal, textoFinal);
+        if (!sent) return false;
+        await registrarMensagemEnviada(telefoneReal, textoFinal, nomeContato, idSerializado(sent), false, 'text', null, canal);
+        return true;
+    } catch (e) {
+        console.error(`❌ Interesse em avaliação (${numLimpo}): ${e.message} — segue o fluxo normal.`);
+        return false;
+    }
+}
+
 async function processarComoRobo(msg, numLimpo, texto, telefoneReal, nomeContato, canal = 'whatsapp') {
     // Sinaliza que o bot está processando ("digitando...")
     io.emit('bot_digitando', { telefone: numLimpo, ativo: true });
@@ -11565,6 +11631,8 @@ async function processarComoRobo(msg, numLimpo, texto, telefoneReal, nomeContato
     if (await handleCadastroFlow(numLimpo, texto, msg.body || '')) { io.emit('bot_digitando', { telefone: numLimpo, ativo: false }); return; }
 
     if (await handlePactoFlow(numLimpo, texto)) { io.emit('bot_digitando', { telefone: numLimpo, ativo: false }); return; }
+
+    if (await tratarInteresseAvaliacaoFisica({ msg, numLimpo, texto, telefoneReal, nomeContato, canal })) { io.emit('bot_digitando', { telefone: numLimpo, ativo: false }); return; }
 
     const regras = await db.all('SELECT * FROM respostas WHERE ativo = 1 ORDER BY ordem ASC');
     let regraAtiva = null;

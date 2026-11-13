@@ -138,4 +138,77 @@ async function buscarAgendamentosPorIds(ids, accessToken = null) {
     return agendaGet(token, 'appointments', { select: 'id,status,date,time', id: `in.(${ids.join(',')})` });
 }
 
-module.exports = { agendaLogin, buscarAgendaDoDia, atualizarStatusAgendamento, buscarMQVsRecentes, buscarAgendamentosPorIds };
+const semZerosMatricula = (v) => String(v ?? '').replace(/\D/g, '').replace(/^0+(?=\d)/, '');
+
+// Garante que o aluno tem cadastro na Agenda (login = primeiro nome + matrícula
+// como senha, igual ao "Novo Aluno" da tela Alunos) e no cadastro da Avaliação
+// Física (clients — é por ele que o link do MQV acha o aluno pela matrícula).
+// Quem já existe (mesma matrícula, com ou sem zeros à esquerda) nunca é
+// recriado. `matricula` é a MESMA string que vai na mensagem pro aluno: é a
+// senha dele. Devolve { criado, userId }; erro de rede/permissão sobe pro
+// chamador decidir (aluno sem cadastro não consegue entrar).
+async function garantirAlunoNaAgenda({ primeiroNome, nomeCompleto, matricula, whatsapp, nascimento }) {
+    const matriculaDigitos = String(matricula ?? '').replace(/\D/g, '');
+    const chave = semZerosMatricula(matriculaDigitos);
+    if (!chave) throw new Error('Matrícula inválida para cadastrar na Agenda.');
+    const token = await agendaLogin();
+
+    const existentes = await agendaGet(token, 'profiles', {
+        select: 'user_id,name,matricula',
+        matricula: `ilike.*${chave}`,
+        limit: '20',
+    });
+    const jaTem = (existentes || []).find(p => semZerosMatricula(p.matricula) === chave);
+
+    let userId = jaTem?.user_id ?? null;
+    let criado = false;
+    if (!jaTem) {
+        if (!primeiroNome) throw new Error('Sem nome do aluno para cadastrar na Agenda.');
+        const res = await fetch(`${AGENDA_SUPABASE_URL}/functions/v1/admin-create-user`, {
+            method: 'POST',
+            headers: { apikey: AGENDA_ANON_KEY, Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: primeiroNome, password: matriculaDigitos, role: 'aluno', matricula: matriculaDigitos, whatsapp: whatsapp || null }),
+        });
+        const corpo = await res.json().catch(() => ({}));
+        const resultado = corpo?.results?.[0];
+        if (!res.ok || corpo?.error || !resultado?.success) {
+            throw new Error(corpo?.error || resultado?.error || `Falha ao cadastrar o aluno na Agenda (HTTP ${res.status}).`);
+        }
+        userId = resultado.user_id ?? null;
+        criado = true;
+    }
+
+    // Cadastro da Avaliação Física (MQV): cria só se não existir — nunca
+    // sobrescreve um cadastro que a equipe já preencheu. Falha aqui não
+    // impede o aluno de agendar, então não derruba o cadastro acima.
+    try {
+        const clientes = await agendaGet(token, 'clients', { select: 'id,pacto_matricula', pacto_matricula: `ilike.*${chave}`, limit: '20' });
+        if (!(clientes || []).some(c => semZerosMatricula(c.pacto_matricula) === chave)) {
+            const url = new URL(`${AGENDA_SUPABASE_URL}/rest/v1/clients`);
+            const resCli = await fetch(url, {
+                method: 'POST',
+                headers: { apikey: AGENDA_ANON_KEY, Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', Prefer: 'return=minimal' },
+                body: JSON.stringify({
+                    full_name: nomeCompleto || primeiroNome,
+                    birth_date: nascimento || null,
+                    whatsapp: whatsapp || null,
+                    pacto_matricula: String(matricula).padStart(6, '0'),
+                }),
+            });
+            if (!resCli.ok) console.error(`⚠️ Agenda: aluno cadastrado mas o cadastro da Avaliação Física (MQV) falhou (HTTP ${resCli.status}).`);
+        }
+    } catch (e) {
+        console.error('⚠️ Agenda: falha ao garantir o cadastro da Avaliação Física (MQV):', e.message);
+    }
+    // nomeLogin/matriculaLogin = o que o aluno precisa digitar na Agenda: pro
+    // cadastro que já existia, o que está gravado lá; pro novo, o que acabou de
+    // ser gravado.
+    return {
+        criado,
+        userId,
+        nomeLogin: jaTem?.name?.trim() || primeiroNome,
+        matriculaLogin: jaTem ? String(jaTem.matricula).replace(/\D/g, '') : matriculaDigitos,
+    };
+}
+
+module.exports = { agendaLogin, buscarAgendaDoDia, atualizarStatusAgendamento, buscarMQVsRecentes, buscarAgendamentosPorIds, garantirAlunoNaAgenda };
