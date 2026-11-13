@@ -2897,7 +2897,7 @@ app.post('/api/gymfit/aluno', async (req, res) => {
 
 // Envio de UMA Mensagem Personalizada pedido pelo GymFit (CRM > Pós Vendas: botões "WhatsApp" = Orientação e "Avaliação Física"/"MQV" = Agendamento+MQV; Faltosos: botão "Enviar Mensagem" = Mensagem Faltosos 2).
 // Só aceita os nomes da lista abaixo (a chave do GymFit não dispara qualquer mensagem). Mesmo caminho dos Disparos: pool, template aprovado, placeholders.
-const MENSAGENS_PERMITIDAS_GYMFIT = new Set(['Orientação', 'Agendamento+MQV', 'Apreciação', 'Mensagem faltosos 2', 'Mensagem Faltosos 2', 'A Vencer 30 Dias', 'A Vencer 20 Dias', 'A Vencer 10 Dias', 'A vencer 30 dias', 'A vencer 20 dias', 'A vencer 10 dias']);
+const MENSAGENS_PERMITIDAS_GYMFIT = new Set(['Orientação', 'Agendamento+MQV', 'Apreciação', 'Mensagem faltosos 2', 'Mensagem Faltosos 2', 'A Vencer 30 Dias', 'A Vencer 20 Dias', 'A Vencer 10 Dias', 'A vencer 30 dias', 'A vencer 20 dias', 'A vencer 10 dias', 'Atualização do Responsável', 'Atualizacao do Responsavel']);
 app.post('/api/gymfit/enviar-mensagem', async (req, res) => {
     if (!autorizadoGymfit(req, res)) return;
     const telefone = String(req.body?.telefone || '').replace(/\D/g, '');
