@@ -211,4 +211,25 @@ async function garantirAlunoNaAgenda({ primeiroNome, nomeCompleto, matricula, wh
     };
 }
 
-module.exports = { agendaLogin, buscarAgendaDoDia, atualizarStatusAgendamento, buscarMQVsRecentes, buscarAgendamentosPorIds, garantirAlunoNaAgenda };
+// Situação do aluno na Agenda pela matrícula (só leitura), pra IA responder sem enrolar: se já tem cadastro (login = primeiro nome + matrícula), a próxima
+// avaliação agendada/confirmada (com professor) e a última realizada. Cadastro duplicado (mesma matrícula) conta junto.
+async function consultarAlunoNaAgenda(matricula) {
+    const chave = semZerosMatricula(matricula);
+    if (!chave) return null;
+    const token = await agendaLogin();
+    const perfis = (await agendaGet(token, 'profiles', { select: 'user_id,name,matricula', matricula: `ilike.*${chave}`, limit: '20' }))
+        .filter(p => semZerosMatricula(p.matricula) === chave);
+    if (!perfis.length) return { cadastrado: false, nomeLogin: null, proxima: null, ultimaRealizada: null };
+    const ids = perfis.map(p => p.user_id);
+    const ags = await agendaGet(token, 'appointments', { select: 'date,time,status,professor_id', student_id: `in.(${ids.join(',')})`, order: 'date.desc,time.desc', limit: '30' });
+    const hoje = new Date(Date.now() - 3 * 3600 * 1000).toISOString().slice(0, 10); // data de Brasília
+    const futuras = ags.filter(a => ['agendado', 'confirmado'].includes(a.status) && a.date >= hoje).sort((a, b) => `${a.date}${a.time}`.localeCompare(`${b.date}${b.time}`));
+    const realizada = ags.find(a => a.status === 'realizado') || null;
+    const profIds = [...new Set([futuras[0]?.professor_id, realizada?.professor_id].filter(Boolean))];
+    const profs = profIds.length ? await agendaGet(token, 'profiles', { select: 'user_id,name', user_id: `in.(${profIds.join(',')})` }) : [];
+    const nomeProf = (id) => profs.find(p => p.user_id === id)?.name || null;
+    const fmt = (a) => a && { data: a.date, hora: String(a.time).slice(0, 5), status: a.status, professor: nomeProf(a.professor_id) };
+    return { cadastrado: true, nomeLogin: perfis[0].name, proxima: fmt(futuras[0]), ultimaRealizada: fmt(realizada) };
+}
+
+module.exports = { consultarAlunoNaAgenda, agendaLogin, buscarAgendaDoDia, atualizarStatusAgendamento, buscarMQVsRecentes, buscarAgendamentosPorIds, garantirAlunoNaAgenda };
