@@ -146,8 +146,8 @@ socket.on('loading', (msg) => {
 socket.on('principal_desativado', () => {
     if (qrContainer) {
         qrContainer.innerHTML = coexAtiva
-            ? `<span style="color:#666;font-size:.85rem">🚫 Pareamento via QR desativado — usando API Oficial + Coexistência</span>`
-            : `<span style="color:#666;font-size:.85rem">🚫 Pareamento via QR desativado — usando só a API Oficial</span>`;
+            ? `<span style="color:#666;font-size:.85rem">Pareamento via QR desativado — usando API Oficial + Coexistência</span>`
+            : `<span style="color:#666;font-size:.85rem">Pareamento via QR desativado — usando só a API Oficial</span>`;
     }
     if (statusText) {
         statusText.textContent = coexAtiva ? 'API Oficial + Coexistência' : 'Só API Oficial';
@@ -289,8 +289,8 @@ function setBadge(state) {
         // responde junto com a API Oficial — o selo mostra os dois nomes
         // nesse caso em vez de só "API Oficial".
         desativado: coexAtiva
-            ? { text: '🚫 API Oficial + Coexistência', cls: '', dot: 'offline', label: 'API Oficial + Coexistência' }
-            : { text: '🚫 Só API Oficial', cls: '', dot: 'offline', label: 'Principal desativado (Só API Oficial)' },
+            ? { text: 'API Oficial + Coexistência', cls: '', dot: 'offline', label: 'API Oficial + Coexistência' }
+            : { text: 'Só API Oficial', cls: '', dot: 'offline', label: 'Principal desativado (Só API Oficial)' },
     };
     const s = states[state] || states.loading;
     statusBadge.textContent = s.text;
