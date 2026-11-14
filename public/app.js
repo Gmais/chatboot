@@ -5095,7 +5095,9 @@ const CM = (() => {
                 ultima_direcao: data.direcao,
                 ultimo_tipo: data.tipo,
                 ultimo_ts: data.ts,
-                nao_lidas: naoLidas
+                nao_lidas: naoLidas,
+                // O servidor manda a matrícula junto do evento; sem isso, conversa nova (ou que ainda não tinha matrícula) ficava sem "#" até recarregar.
+                ...(data.matricula ? { matricula: data.matricula } : {})
             });
 
             updateGlobalBadge();
@@ -5192,6 +5194,17 @@ const CM = (() => {
             upsertContact({ telefone, robo_ativo: ativo ? 1 : 0 });
             renderContactList();
             if (activePhone === telefone) renderChatRoboButton();
+        });
+
+        // Matrícula gravada/alterada (sincronização do GymFit ou edição em Contatos): atualiza lista e cabeçalho na hora.
+        socket.on('matricula_atualizada', ({ telefone, matricula }) => {
+            const c = contacts.get(telefone);
+            if (!c) return;
+            upsertContact({ ...c, matricula: matricula || '' });
+            renderContactList();
+            if (activePhone === telefone && chatHeaderName) {
+                chatHeaderName.innerHTML = `${c.canal === 'instagram' ? '📷 ' : ''}${escapeHtml(c.nome)}${matricula ? ` <span class="chat-contact-matricula">#${escapeHtml(matricula)}</span>` : ''}`;
+            }
         });
 
         socket.on('conversa_lida', ({ telefone }) => {

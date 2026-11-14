@@ -1495,6 +1495,11 @@ async function resolverMatriculaContato(telefone) {
         if (lead?.matricula && String(lead.matricula).trim()) return guardar(lead.matricula);
     } catch (_) { }
     try {
+        // Reserva: aluno ativo que o GymFit mandou mas cujo contato não tem matrícula gravada em "leads".
+        const ativo = await db.get('SELECT matricula FROM pacto_alunos_ativos WHERE (telefone = ? OR telefone = ? OR telefone = ?) AND matricula IS NOT NULL AND TRIM(matricula) != \'\'', [num, `${num}@c.us`, `${num}@lid`]);
+        if (ativo?.matricula) return guardar(ativo.matricula);
+    } catch (_) { }
+    try {
         const vinculo = await db.get('SELECT matricula FROM vinculo_pacto WHERE telefone LIKE ?', [`%${num}%`]);
         return guardar(vinculo?.matricula || '');
     } catch (_) { return ''; }
@@ -2897,6 +2902,8 @@ app.post('/api/gymfit/aluno', async (req, res) => {
             atualizados++;
         }
         limparCacheMatriculas();
+        // Bate Papo aberto atualiza o "#matrícula" na hora, sem recarregar a página.
+        for (const tel of alvos) io.emit('matricula_atualizada', { telefone: String(tel).replace('@c.us', '').replace('@lid', ''), matricula });
         if (criado) io.emit('stats', stats);
         res.json({ ok: true, criado, atualizados, compartilhado });
     } catch (e) {
@@ -4881,6 +4888,7 @@ app.put('/api/contatos/:telefone', async (req, res) => {
             [nome.trim(), (matricula || '').trim() || null, (data_nascimento || '').trim() || null, telefoneFinal]
         );
         limparCacheMatriculas();
+        io.emit('matricula_atualizada', { telefone: telefoneFinal, matricula: (matricula || '').trim() });
         res.json({ success: true, telefone: telefoneFinal, nome: nome.trim(), matricula: (matricula || '').trim() || null, data_nascimento: (data_nascimento || '').trim() || null });
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -11747,9 +11755,17 @@ async function enviarRespostaCanal(canal, msg, telefoneReal, conteudo, opcoes = 
     if (canal === 'whatsapp_pool') return enviarRespostaPeloClientePrincipal(telefoneReal, conteudo, opcoes);
 
     // WhatsApp Web recheca isso depois do Delay configurado (enviarResposta /
-    // enviarRespostaPeloClientePrincipal). API Oficial e Instagram não têm
-    // esse atraso, mas a chamada da IA leva alguns segundos — mesmo motivo.
+    // enviarRespostaPeloClientePrincipal). API Oficial e Instagram não tinham
+    // esse atraso: a resposta saía assim que a IA terminava (poucos segundos) e
+    // ficava óbvio que era robô. Agora seguem o MESMO Delay de Configurações →
+    // Comportamento do Robô + o tempo de "digitação" proporcional ao texto, e
+    // só depois rechecam se a conversa continua com o robô.
     if (canal === 'whatsapp_cloud' || canal === 'instagram') {
+        if (typeof conteudo === 'string') {
+            const delayConfigurado = await obterDelayRespostaConfigurado();
+            if (delayConfigurado > 0) await delay(delayConfigurado * 1000);
+            await delay(calcularDelayDigitacao(conteudo));
+        }
         const motivoCancelar = await motivoCancelarRespostaAutomatica(telefoneReal);
         if (motivoCancelar) {
             console.log(`⏸️ Envio cancelado — conversa com ${telefoneReal} ${motivoCancelar} enquanto o robô preparava a resposta.`);
