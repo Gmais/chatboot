@@ -289,8 +289,8 @@ function setBadge(state) {
         // responde junto com a API Oficial — o selo mostra os dois nomes
         // nesse caso em vez de só "API Oficial".
         desativado: coexAtiva
-            ? { text: 'API Oficial + Coexistência', cls: '', dot: 'offline', label: 'API Oficial + Coexistência' }
-            : { text: 'Só API Oficial', cls: '', dot: 'offline', label: 'Principal desativado (Só API Oficial)' },
+            ? { text: 'API Oficial + Coexistência', cls: '', dot: 'online', label: 'API Oficial + Coexistência' }
+            : { text: 'Só API Oficial', cls: '', dot: 'online', label: 'Principal desativado (Só API Oficial)' },
     };
     const s = states[state] || states.loading;
     statusBadge.textContent = s.text;
