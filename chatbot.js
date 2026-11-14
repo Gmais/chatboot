@@ -2251,8 +2251,10 @@ async function configEnvioCloudDaAutomacao(automacaoId) {
 // copia pra lá, com o mesmo nome, os templates APROVADOS na WABA principal que as automações marcadas
 // pra Coexistência usam. Idempotente: o que já existe lá é pulado. A Meta revisa a cópia (minutos a horas);
 // até aprovar, o envio por Coexistência falha e o contato continua na fila.
+let replicandoTemplatesCoex = false; // evita duas cópias ao mesmo tempo (botão + arranque) criando o mesmo template
 async function replicarTemplatesDasAutomacoesParaCoex() {
-    if (!db) return;
+    if (!db || replicandoTemplatesCoex) return;
+    replicandoTemplatesCoex = true;
     try {
         const principal = await obterConfigWhatsappCloud();
         const wabaCoex = (await db.get("SELECT valor FROM configuracoes WHERE chave = 'whatsapp_coex_waba_id'"))?.valor;
@@ -2283,6 +2285,8 @@ async function replicarTemplatesDasAutomacoesParaCoex() {
         }
     } catch (e) {
         console.error('Erro ao replicar templates pra Coexistência:', e.message);
+    } finally {
+        replicandoTemplatesCoex = false;
     }
 }
 
