@@ -2339,6 +2339,14 @@ async function processarWebhookWhatsappCloud(payload) {
                     await db.run('INSERT OR REPLACE INTO configuracoes (chave, valor) VALUES (?, ?)', ['whatsapp_coex_phone_number_id', phoneNumberIdDestino]);
                     console.log(`📱 Coexistência: número detectado pelo webhook — phone_number_id=${phoneNumberIdDestino} (${valor?.metadata?.display_phone_number || '?'})`);
                 }
+                // entry.id do webhook = id da WABA dona desse número. É nela que os Templates do número em Coexistência precisam existir/ser aprovados.
+                if (entry.id) {
+                    const jaSalvo = await db.get("SELECT valor FROM configuracoes WHERE chave = 'whatsapp_coex_waba_id'");
+                    if (jaSalvo?.valor !== String(entry.id)) {
+                        await db.run('INSERT OR REPLACE INTO configuracoes (chave, valor) VALUES (?, ?)', ['whatsapp_coex_waba_id', String(entry.id)]);
+                        console.log(`📱 Coexistência: WABA do número detectada pelo webhook — waba_id=${entry.id}`);
+                    }
+                }
                 if (valor?.metadata?.display_phone_number && coex.displayPhoneNumber !== valor.metadata.display_phone_number) {
                     await db.run('INSERT OR REPLACE INTO configuracoes (chave, valor) VALUES (?, ?)', ['whatsapp_coex_display_phone_number', valor.metadata.display_phone_number]);
                 }
