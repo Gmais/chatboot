@@ -151,6 +151,29 @@ async function criarTemplateWhatsappCloud(nomeTemplate, category, corpoComVariav
     });
 }
 
+// Copia um template JÁ EXISTENTE (como veio de listarTemplatesWhatsappCloud) pra
+// OUTRA WABA, com o mesmo nome, categoria, corpo, exemplos e botões — usado pra
+// o número em Coexistência (WABA própria) poder mandar as mesmas mensagens que a
+// WABA principal já tem aprovadas. Template é por WABA: nome igual em contas
+// diferentes não conflita. Cabeçalho de mídia fica de fora (precisa de upload de
+// exemplo): quem chama checa antes (templateTemHeader).
+function templateTemHeader(template) {
+    return (template?.components || []).some(c => c.type === 'HEADER');
+}
+async function copiarTemplateParaWabaWhatsappCloud(template, { accessToken, wabaId } = {}) {
+    if (!accessToken || !wabaId) throw new Error('WhatsApp Business API não configurado: falta o Token de Acesso ou o WABA ID.');
+    if (templateTemHeader(template)) throw new Error(`o template "${template.name}" tem cabeçalho — copia automática não suporta`);
+    const components = (template.components || [])
+        .filter(c => ['BODY', 'FOOTER', 'BUTTONS'].includes(c.type))
+        .map(c => c.type === 'BUTTONS'
+            ? { type: 'BUTTONS', buttons: (c.buttons || []).map(b => ({ type: b.type, text: b.text })) }
+            : c);
+    return graphRequest('POST', `${wabaId}/message_templates`, {
+        accessToken,
+        body: { name: template.name, language: template.language || 'pt_BR', category: template.category, components },
+    });
+}
+
 // Mensagem com até 3 botões de resposta (interactive/button) — texto livre,
 // então só funciona DENTRO da janela de 24h (usado como resposta a algo que
 // o contato acabou de mandar). `botoes` = [{ id, titulo }], título com até
@@ -224,7 +247,7 @@ async function listarTemplatesWhatsappCloud({ accessToken, wabaId } = {}) {
     if (!accessToken || !wabaId) throw new Error('WhatsApp Business API não configurado: falta o Token de Acesso ou o WABA ID (ver Configurações).');
     const resultado = await graphRequest('GET', `${wabaId}/message_templates`, {
         accessToken,
-        params: { fields: 'name,status,category,components', limit: 250 },
+        params: { fields: 'name,status,category,language,components', limit: 250 },
     });
     return resultado?.data || [];
 }
@@ -345,6 +368,7 @@ module.exports = {
     enviarArquivoWhatsappCloud,
     criarTemplateWhatsappCloud,
     listarTemplatesWhatsappCloud,
+    copiarTemplateParaWabaWhatsappCloud,
     trocarCodigoPorAccessTokenWhatsappCloud,
     inscreverWebhookWabaWhatsappCloud,
     consultarStatusNumeroWhatsappCloud,

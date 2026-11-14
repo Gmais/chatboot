@@ -95,7 +95,7 @@ const moment = require('moment-timezone');
 // Tudo que era da Pacto agora vem do GymFit: consultas (aluno, parcelas, contratos, operações), matrícula de aluno novo e Pix de parcela.
 const { obterExAlunosParaReativar, registrarReativacaoAluno, atualizarResponsavelAluno, obterAlunosContratoSemAssinar, obterLinkAssinaturaContrato, buscarAlunoPorMatricula, obterParcelasEmAberto, obterContratosPorMatricula, obterDetalheContrato, obterOperacoesContrato, obterOrcamentoMatricula, matricularAlunoNovo, gerarPixParcela, obterAlertasCrm, GymfitErroDefinitivo } = require('./gymfit');
 const { enviarMensagemInstagram, obterNomeUsuarioInstagram, verificarAssinaturaWebhook } = require('./instagram');
-const { enviarMensagemWhatsappCloud, enviarTemplateWhatsappCloud, enviarBotoesWhatsappCloud, enviarArquivoWhatsappCloud, criarTemplateWhatsappCloud, listarTemplatesWhatsappCloud, trocarCodigoPorAccessTokenWhatsappCloud, inscreverWebhookWabaWhatsappCloud, consultarStatusNumeroWhatsappCloud, listarNumerosWabaWhatsappCloud, baixarMidiaWhatsappCloud } = require('./whatsappCloudApi');
+const { enviarMensagemWhatsappCloud, enviarTemplateWhatsappCloud, enviarBotoesWhatsappCloud, enviarArquivoWhatsappCloud, criarTemplateWhatsappCloud, listarTemplatesWhatsappCloud, copiarTemplateParaWabaWhatsappCloud, trocarCodigoPorAccessTokenWhatsappCloud, inscreverWebhookWabaWhatsappCloud, consultarStatusNumeroWhatsappCloud, listarNumerosWabaWhatsappCloud, baixarMidiaWhatsappCloud } = require('./whatsappCloudApi');
 const { consultarAlunoNaAgenda, agendaLogin, buscarAgendaDoDia, atualizarStatusAgendamento, buscarMQVsRecentes, buscarAgendamentosPorIds, garantirAlunoNaAgenda } = require('./agenda');
 
 // Descobre se um Template aprovado pela Meta REALMENTE tem um componente de
@@ -1382,6 +1382,8 @@ async function initDB() {
     await submeterBacklogTemplatesFaltantes();
     setInterval(sincronizarTemplatesAprovados, 60 * 60 * 1000); // checa aprovação da Meta 1x/hora
     sincronizarTemplatesAprovados();
+    setInterval(replicarTemplatesDasAutomacoesParaCoex, 60 * 60 * 1000); // garante os templates na WABA do número em Coexistência
+    setTimeout(replicarTemplatesDasAutomacoesParaCoex, 60 * 1000);
     // Agenda de Avaliação Física virou uma janela rolante de 24h (ver
     // processarAgendaAvaliacao) em vez de "hoje" fixo — precisa saber a DATA
     // de cada agendamento (não só o horário) pra combinar as duas e filtrar
@@ -2209,14 +2211,79 @@ async function campanhaUsaWhatsappCloud(categoria) {
 // mensagens automatizadas... sempre que uma nova mensagem automatizada for
 // criada ela vá para essa lista"). campanhaUsaWhatsappCloud continua existindo
 // só pro Disparo manual, que não está necessariamente ligado a nenhuma automação.
+// Id "virtual" gravado em disparo_roteamento (campanha_chave = id da automação) pra marcar
+// "mandar pelo número em Coexistência" (o do celular da recepção, WABA própria) — não é uma
+// linha de disparo_numeros; a tela de Roteamento por Automação mostra como um checkbox à parte.
+const ROTEAMENTO_COEX_ID = -1;
+
 async function automacaoUsaWhatsappCloud(automacaoId) {
     if (!automacaoId) return false;
     const regra = await db.get('SELECT numeros_ids FROM disparo_roteamento WHERE campanha_chave = ?', String(automacaoId));
     if (!regra?.numeros_ids) return false;
+    const ids = regra.numeros_ids.split(',').filter(Boolean).map(Number);
+    if (ids.includes(ROTEAMENTO_COEX_ID)) return true;
     const rowCloudApi = await db.get("SELECT id FROM disparo_numeros WHERE tipo = 'cloud_api' LIMIT 1");
     if (!rowCloudApi) return false;
-    const ids = regra.numeros_ids.split(',').filter(Boolean).map(Number);
     return ids.includes(rowCloudApi.id);
+}
+
+// Config de envio de UMA mensagem da automação: se ela está marcada pra Coexistência, sai pelo número
+// em CoEx (phone_number_id e WABA dele; mesmo token) — se está marcada pras duas, alterna ao acaso.
+// Devolve null quando não há rota pra API Oficial; viaCoex diz por qual número vai sair.
+async function configEnvioCloudDaAutomacao(automacaoId) {
+    const regra = await db.get('SELECT numeros_ids FROM disparo_roteamento WHERE campanha_chave = ?', String(automacaoId));
+    if (!regra?.numeros_ids) return null;
+    const ids = regra.numeros_ids.split(',').filter(Boolean).map(Number);
+    const rowCloudApi = await db.get("SELECT id FROM disparo_numeros WHERE tipo = 'cloud_api' LIMIT 1");
+    const usaApi = !!rowCloudApi && ids.includes(rowCloudApi.id);
+    const usaCoex = ids.includes(ROTEAMENTO_COEX_ID);
+    const principal = await obterConfigWhatsappCloud();
+    if (usaCoex && (!usaApi || Math.random() < 0.5)) {
+        const coex = await obterConfigCoex();
+        const wabaCoex = (await db.get("SELECT valor FROM configuracoes WHERE chave = 'whatsapp_coex_waba_id'"))?.valor || null;
+        if (coex.ativa && coex.phoneNumberId && wabaCoex) return { ...principal, phoneNumberId: coex.phoneNumberId, wabaId: wabaCoex, viaCoex: true };
+        if (!usaApi) return null;
+    }
+    return usaApi ? { ...principal, viaCoex: false } : null;
+}
+
+// Templates são por WABA. O número em Coexistência fica numa WABA própria (sem templates), então
+// copia pra lá, com o mesmo nome, os templates APROVADOS na WABA principal que as automações marcadas
+// pra Coexistência usam. Idempotente: o que já existe lá é pulado. A Meta revisa a cópia (minutos a horas);
+// até aprovar, o envio por Coexistência falha e o contato continua na fila.
+async function replicarTemplatesDasAutomacoesParaCoex() {
+    if (!db) return;
+    try {
+        const principal = await obterConfigWhatsappCloud();
+        const wabaCoex = (await db.get("SELECT valor FROM configuracoes WHERE chave = 'whatsapp_coex_waba_id'"))?.valor;
+        if (!principal.accessToken || !principal.wabaId || !wabaCoex || wabaCoex === principal.wabaId) return;
+        const regras = await db.all('SELECT campanha_chave, numeros_ids FROM disparo_roteamento');
+        const automacoes = regras.filter(r => /^\d+$/.test(r.campanha_chave) && r.numeros_ids.split(',').map(Number).includes(ROTEAMENTO_COEX_ID));
+        if (automacoes.length === 0) return;
+        const nomes = new Set();
+        for (const r of automacoes) {
+            for (const msg of await poolMensagensDaAutomacao(Number(r.campanha_chave))) {
+                try { const t = JSON.parse(msg.template_whatsapp || 'null'); if (t?.nome) nomes.add(t.nome); } catch (_) { }
+            }
+        }
+        if (nomes.size === 0) return;
+        const daPrincipal = new Map((await listarTemplatesWhatsappCloud(principal)).map(t => [t.name, t]));
+        const daCoex = new Set((await listarTemplatesWhatsappCloud({ accessToken: principal.accessToken, wabaId: wabaCoex })).map(t => t.name));
+        for (const nome of nomes) {
+            if (daCoex.has(nome)) continue;
+            const origem = daPrincipal.get(nome);
+            if (!origem || origem.status !== 'APPROVED') { console.log(`ℹ️ Coexistência: template "${nome}" não está aprovado na WABA principal — não copiado.`); continue; }
+            try {
+                await copiarTemplateParaWabaWhatsappCloud(origem, { accessToken: principal.accessToken, wabaId: wabaCoex });
+                console.log(`📨 Coexistência: template "${nome}" copiado pra WABA do número em CoEx (aguardando aprovação da Meta).`);
+            } catch (e) {
+                console.error(`Erro ao copiar o template "${nome}" pra WABA do número em CoEx:`, e.message);
+            }
+            await delay(1000);
+        }
+    } catch (e) {
+        console.error('Erro ao replicar templates pra Coexistência:', e.message);
+    }
 }
 
 // Handshake de verificação do webhook — mesmo mecanismo GET que todo
@@ -5473,7 +5540,7 @@ async function dispararMensagensDaAutomacao(automacaoId) {
                         // só o texto puro.
                         let enviadoPelaCloudApi = false;
                         if (texto && await automacaoUsaWhatsappCloud(automacaoId)) {
-                            const configWhatsappCloud = await obterConfigWhatsappCloud();
+                            const configWhatsappCloud = (await configEnvioCloudDaAutomacao(automacaoId)) || await obterConfigWhatsappCloud();
                             if (configWhatsappCloud.accessToken && configWhatsappCloud.phoneNumberId) {
                                 if (msg.template_whatsapp) {
                                     // Mensagem tem Template aprovado vinculado — manda direto por
@@ -5504,6 +5571,7 @@ async function dispararMensagensDaAutomacao(automacaoId) {
                                             ? [`af:confirmar:${agendamentoAF.appointment_id}`, `af:remarcar:${agendamentoAF.appointment_id}`] : null;
                                         const resultadoTemplate = await enviarTemplateWhatsappCloud(numLimpo, template.nome, parametros, configWhatsappCloud, headerImageUrl, payloadsBotoes);
                                         await registrarMensagemEnviada(numLimpo, texto, nome, resultadoTemplate?.messages?.[0]?.id || null, false, 'text', null, 'whatsapp_cloud', true);
+                                        if (configWhatsappCloud.viaCoex) await registrarRotaWhatsappCloud(numLimpo, configWhatsappCloud.phoneNumberId); // respostas/manual desse contato seguem pelo mesmo número
                                         sucesso = true;
                                         enviadoPelaCloudApi = true;
                                     } catch (e) {
@@ -5513,6 +5581,7 @@ async function dispararMensagensDaAutomacao(automacaoId) {
                                     try {
                                         const resultado = await enviarMensagemWhatsappCloud(numLimpo, texto, configWhatsappCloud);
                                         await registrarMensagemEnviada(numLimpo, texto, nome, resultado?.messages?.[0]?.id || null, false, 'text', null, 'whatsapp_cloud', true);
+                                        if (configWhatsappCloud.viaCoex) await registrarRotaWhatsappCloud(numLimpo, configWhatsappCloud.phoneNumberId);
                                         sucesso = true;
                                         enviadoPelaCloudApi = true;
                                     } catch (e) {
@@ -10986,7 +11055,7 @@ app.get('/api/disparo-roteamento', async (req, res) => {
 
 app.put('/api/disparo-roteamento/:campanha_chave', async (req, res) => {
     try {
-        const ids = Array.isArray(req.body?.numeros_ids) ? req.body.numeros_ids.filter(n => Number.isInteger(n) || /^\d+$/.test(n)) : [];
+        const ids = Array.isArray(req.body?.numeros_ids) ? req.body.numeros_ids.filter(n => Number.isInteger(n) || /^-?\d+$/.test(n)) : [];
         if (ids.length === 0) {
             await db.run('DELETE FROM disparo_roteamento WHERE campanha_chave = ?', req.params.campanha_chave);
         } else {
@@ -10996,6 +11065,8 @@ app.put('/api/disparo-roteamento/:campanha_chave', async (req, res) => {
                 [req.params.campanha_chave, ids.join(',')]
             );
         }
+        // Marcou Coexistência: já providencia os templates na WABA do número em CoEx (em segundo plano).
+        if (ids.map(Number).includes(ROTEAMENTO_COEX_ID)) replicarTemplatesDasAutomacoesParaCoex();
         res.json({ success: true });
     } catch (err) {
         res.status(500).json({ error: err.message });
