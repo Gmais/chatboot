@@ -3354,7 +3354,7 @@ function renderDisparoRoteamentoLista() {
                             ${n.nome}
                         </label>
                     `).join('')}
-                    <label title="Manda pelo número do celular da recepção (Coexistência) — usa os templates da conta dele" style="display:flex;align-items:center;gap:.3rem;cursor:pointer;font-size:.8rem;color:var(--text-2)">
+                    <label title="Tenta primeiro o número do celular da recepção (Coexistência); se falhar ou o template ainda não estiver aprovado nele, manda sozinho pela API Oficial" style="display:flex;align-items:center;gap:.3rem;cursor:pointer;font-size:.8rem;color:var(--text-2)">
                         <input type="checkbox" class="disparo-roteamento-check" data-campanha="${chave}" data-numero-id="-1" ${selecionados.includes(-1) ? 'checked' : ''} style="accent-color:var(--green)">
                         WhatsApp Coexistência (celular)
                     </label>

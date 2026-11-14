@@ -2227,24 +2227,41 @@ async function automacaoUsaWhatsappCloud(automacaoId) {
     return ids.includes(rowCloudApi.id);
 }
 
-// Config de envio de UMA mensagem da automação: se ela está marcada pra Coexistência, sai pelo número
-// em CoEx (phone_number_id e WABA dele; mesmo token) — se está marcada pras duas, alterna ao acaso.
-// Devolve null quando não há rota pra API Oficial; viaCoex diz por qual número vai sair.
-async function configEnvioCloudDaAutomacao(automacaoId) {
+// Configs de envio (em ordem de tentativa) de UMA mensagem da automação:
+// - marcada pra Coexistência: 1º o número em CoEx (phone_number_id e WABA dele; mesmo token) e, se ele
+//   falhar (template ainda não aprovado na WABA dele, Coexistência desligada, erro da Meta...), cai
+//   AUTOMATICAMENTE pra API Oficial — mesmo que o checkbox da API não esteja marcado;
+// - só API Oficial marcada: só ela. Lista vazia = sem rota pra API Oficial.
+async function configsEnvioCloudDaAutomacao(automacaoId) {
     const regra = await db.get('SELECT numeros_ids FROM disparo_roteamento WHERE campanha_chave = ?', String(automacaoId));
-    if (!regra?.numeros_ids) return null;
+    if (!regra?.numeros_ids) return [];
     const ids = regra.numeros_ids.split(',').filter(Boolean).map(Number);
-    const rowCloudApi = await db.get("SELECT id FROM disparo_numeros WHERE tipo = 'cloud_api' LIMIT 1");
+    const rowCloudApi = await db.get("SELECT id FROM disparo_numeros WHERE tipo = 'cloud_api' AND ativo = 1 LIMIT 1");
     const usaApi = !!rowCloudApi && ids.includes(rowCloudApi.id);
     const usaCoex = ids.includes(ROTEAMENTO_COEX_ID);
     const principal = await obterConfigWhatsappCloud();
-    if (usaCoex && (!usaApi || Math.random() < 0.5)) {
+    const configs = [];
+    if (usaCoex) {
         const coex = await obterConfigCoex();
         const wabaCoex = (await db.get("SELECT valor FROM configuracoes WHERE chave = 'whatsapp_coex_waba_id'"))?.valor || null;
-        if (coex.ativa && coex.phoneNumberId && wabaCoex) return { ...principal, phoneNumberId: coex.phoneNumberId, wabaId: wabaCoex, viaCoex: true };
-        if (!usaApi) return null;
+        if (coex.ativa && coex.phoneNumberId && wabaCoex) configs.push({ ...principal, phoneNumberId: coex.phoneNumberId, wabaId: wabaCoex, viaCoex: true });
     }
-    return usaApi ? { ...principal, viaCoex: false } : null;
+    if ((usaApi || usaCoex) && rowCloudApi) configs.push({ ...principal, viaCoex: false });
+    return configs;
+}
+
+// O Template já está APROVADO na WABA do número em Coexistência? (cache curto — a lista quase não muda).
+// Se a consulta falhar, devolve true: aí é o próprio envio que decide (e cai pra API Oficial se der erro).
+const templatesCoexCache = { em: 0, aprovados: null };
+async function templateAprovadoNaCoex(nomeTemplate, configCoex) {
+    try {
+        if (!templatesCoexCache.aprovados || Date.now() - templatesCoexCache.em > 5 * 60 * 1000) {
+            const lista = await listarTemplatesWhatsappCloud(configCoex);
+            templatesCoexCache.aprovados = new Set(lista.filter(t => t.status === 'APPROVED').map(t => t.name));
+            templatesCoexCache.em = Date.now();
+        }
+        return templatesCoexCache.aprovados.has(nomeTemplate);
+    } catch (_) { return true; }
 }
 
 // Templates são por WABA. O número em Coexistência fica numa WABA própria (sem templates), então
@@ -5544,7 +5561,18 @@ async function dispararMensagensDaAutomacao(automacaoId) {
                         // só o texto puro.
                         let enviadoPelaCloudApi = false;
                         if (texto && await automacaoUsaWhatsappCloud(automacaoId)) {
-                            const configWhatsappCloud = (await configEnvioCloudDaAutomacao(automacaoId)) || await obterConfigWhatsappCloud();
+                            const configsEnvio = await configsEnvioCloudDaAutomacao(automacaoId);
+                            for (const configWhatsappCloud of (configsEnvio.length ? configsEnvio : [await obterConfigWhatsappCloud()])) {
+                            if (enviadoPelaCloudApi) break;
+                            // Coexistência primeiro; se o Template dessa mensagem ainda não foi aprovado na WABA do número em CoEx, nem tenta (vai direto pra API Oficial).
+                            if (configWhatsappCloud.viaCoex && msg.template_whatsapp) {
+                                let nomeTemplateCoex = null;
+                                try { nomeTemplateCoex = JSON.parse(msg.template_whatsapp)?.nome; } catch (_) { }
+                                if (nomeTemplateCoex && !(await templateAprovadoNaCoex(nomeTemplateCoex, configWhatsappCloud))) {
+                                    console.log(`ℹ️ Automação #${automacaoId}: template "${nomeTemplateCoex}" ainda não aprovado no número em Coexistência — enviando pela API Oficial.`);
+                                    continue;
+                                }
+                            }
                             if (configWhatsappCloud.accessToken && configWhatsappCloud.phoneNumberId) {
                                 if (msg.template_whatsapp) {
                                     // Mensagem tem Template aprovado vinculado — manda direto por
@@ -5579,7 +5607,7 @@ async function dispararMensagensDaAutomacao(automacaoId) {
                                         sucesso = true;
                                         enviadoPelaCloudApi = true;
                                     } catch (e) {
-                                        console.log(`ℹ️ Automação #${automacaoId}: falha via template pra ${numLimpo} (${e.message}) — tentando pelo número principal.`);
+                                        console.log(`ℹ️ Automação #${automacaoId}: falha via template pra ${numLimpo}${configWhatsappCloud.viaCoex ? ' pelo número em Coexistência' : ''} (${e.message}) — tentando ${configWhatsappCloud.viaCoex ? 'pela API Oficial' : 'pelo número principal'}.`);
                                     }
                                 } else {
                                     try {
@@ -5589,9 +5617,10 @@ async function dispararMensagensDaAutomacao(automacaoId) {
                                         sucesso = true;
                                         enviadoPelaCloudApi = true;
                                     } catch (e) {
-                                        console.log(`ℹ️ Automação #${automacaoId}: essa mensagem não tem template vinculado e o texto livre falhou pra ${numLimpo} (${e.message}) — tentando pelo número principal.`);
+                                        console.log(`ℹ️ Automação #${automacaoId}: essa mensagem não tem template vinculado e o texto livre falhou pra ${numLimpo}${configWhatsappCloud.viaCoex ? ' pelo número em Coexistência' : ''} (${e.message}) — tentando ${configWhatsappCloud.viaCoex ? 'pela API Oficial' : 'pelo número principal'}.`);
                                     }
                                 }
+                            }
                             }
                         }
                         if (!enviadoPelaCloudApi) {
