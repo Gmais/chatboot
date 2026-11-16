@@ -255,6 +255,18 @@ async function atualizarResponsavelAluno(matricula, { nome, cpf }) {
     return gymfitRequest('POST', `/integrations/chatbot/alunos/${numero}/responsavel`, { nome, cpf });
 }
 
+// Atualização cadastral (mensagens "Atualização CPF" / "Atualização Email"): grava o CPF ou o e-mail que o aluno respondeu no WhatsApp. O GymFit só
+// PREENCHE o que está vazio. Lança GymfitErroDefinitivo: 400 = inválido, 404 = aluno não encontrado, 409 = aluno já tem o dado ou CPF de outro aluno
+// (detalhes.motivo quando o GymFit manda: 'ja_tem_cpf' | 'cpf_de_outro_aluno' | 'ja_tem_email').
+async function atualizarCpfAluno(matricula, cpf) {
+    const numero = String(matricula ?? '').replace(/\D/g, '');
+    return gymfitRequest('POST', `/integrations/chatbot/alunos/${numero}/cpf`, { cpf });
+}
+async function atualizarEmailAluno(matricula, email) {
+    const numero = String(matricula ?? '').replace(/\D/g, '');
+    return gymfitRequest('POST', `/integrations/chatbot/alunos/${numero}/email`, { email });
+}
+
 // Alunos que estão hoje na esteira "Ex-alunos para reativar": [{ matricula, nome, telefone, plano_fim, dias_vencido }] (quem já tem as 4 etapas do checklist saiu).
 async function obterExAlunosParaReativar() {
     const r = await gymfitRequest('GET', '/integrations/chatbot/ex-alunos-reativar');
@@ -272,6 +284,7 @@ async function registrarReativacaoAluno(matricula, dados) {
 module.exports = {
     obterExAlunosParaReativar, registrarReativacaoAluno,
     atualizarResponsavelAluno,
+    atualizarCpfAluno, atualizarEmailAluno,
     obterAlunosContratoSemAssinar,
     obterLinkAssinaturaContrato,
     buscarAlunoPorMatricula, buscarAlunoPorCodigo, obterParcelasEmAberto,

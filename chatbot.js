@@ -93,7 +93,7 @@ const OpenAI = require('openai');
 const Anthropic = require('@anthropic-ai/sdk').default;
 const moment = require('moment-timezone');
 // Tudo que era da Pacto agora vem do GymFit: consultas (aluno, parcelas, contratos, operações), matrícula de aluno novo e Pix de parcela.
-const { obterExAlunosParaReativar, registrarReativacaoAluno, atualizarResponsavelAluno, obterAlunosContratoSemAssinar, obterLinkAssinaturaContrato, buscarAlunoPorMatricula, obterParcelasEmAberto, obterContratosPorMatricula, obterDetalheContrato, obterOperacoesContrato, obterOrcamentoMatricula, matricularAlunoNovo, gerarPixParcela, obterAlertasCrm, GymfitErroDefinitivo } = require('./gymfit');
+const { obterExAlunosParaReativar, registrarReativacaoAluno, atualizarResponsavelAluno, atualizarCpfAluno, atualizarEmailAluno, obterAlunosContratoSemAssinar, obterLinkAssinaturaContrato, buscarAlunoPorMatricula, obterParcelasEmAberto, obterContratosPorMatricula, obterDetalheContrato, obterOperacoesContrato, obterOrcamentoMatricula, matricularAlunoNovo, gerarPixParcela, obterAlertasCrm, GymfitErroDefinitivo } = require('./gymfit');
 const { enviarMensagemInstagram, obterNomeUsuarioInstagram, verificarAssinaturaWebhook } = require('./instagram');
 const { enviarMensagemWhatsappCloud, enviarTemplateWhatsappCloud, enviarBotoesWhatsappCloud, enviarArquivoWhatsappCloud, criarTemplateWhatsappCloud, listarTemplatesWhatsappCloud, copiarTemplateParaWabaWhatsappCloud, trocarCodigoPorAccessTokenWhatsappCloud, inscreverWebhookWabaWhatsappCloud, consultarStatusNumeroWhatsappCloud, listarNumerosWabaWhatsappCloud, baixarMidiaWhatsappCloud } = require('./whatsappCloudApi');
 const { consultarAlunoNaAgenda, agendaLogin, buscarAgendaDoDia, atualizarStatusAgendamento, buscarMQVsRecentes, buscarAgendamentosPorIds, garantirAlunoNaAgenda } = require('./agenda');
@@ -1474,6 +1474,13 @@ async function resolverNomeContato(telefone) {
 // Cache com validade: antes ele nunca expirava e guardava também o "sem matrícula", então quem foi consultado ANTES do GymFit mandar a matrícula
 // (ou antes de alguém digitá-la em Contatos) ficava sem o #matrícula no Bate Papo até o servidor reiniciar. Agora o vazio vale poucos segundos,
 // a matrícula alguns minutos, e toda gravação de matrícula (GymFit, Contatos, importações) zera o cache — qualquer caminho esquecido se corrige sozinho.
+// Matrícula como o ALUNO a conhece e digita (Agenda, recepção): 4 dígitos, sem os zeros extras que o GymFit/Pacto guardam ("006666" → "6666";
+// "000123" → "0123"; 5+ dígitos ficam como estão). Só pra texto que vai pro aluno — banco, chaves e consultas continuam com a forma completa.
+function matriculaParaAluno(m) {
+    const d = String(m ?? '').replace(/\D/g, '');
+    if (!d) return '';
+    return d.replace(/^0+(?=\d)/, '').padStart(4, '0');
+}
 const matriculaContatos = new Map(); // num -> { matricula, ate }
 const MATRICULA_CACHE_OK_MS = 5 * 60 * 1000;
 const MATRICULA_CACHE_VAZIO_MS = 15 * 1000;
@@ -1559,7 +1566,7 @@ async function substituirPlaceholdersPessoais(texto, telefone) {
     const nomeContato = await resolverNomeContato(num);
     const nomeExibir = (nomeContato && nomeContato !== num) ? nomeContato.split(' ')[0] : '';
     const nomeCompletoExibir = (nomeContato && nomeContato !== num) ? nomeContato : '';
-    const matriculaExibir = await resolverMatriculaContato(num);
+    const matriculaExibir = matriculaParaAluno(await resolverMatriculaContato(num));
     const inadimplente = await db.get(
         'SELECT * FROM pacto_inadimplentes WHERE telefone = ? OR telefone = ? OR telefone = ?',
         [num, `${num}@c.us`, `${num}@lid`]
@@ -2618,6 +2625,8 @@ async function processarMensagemWhatsappCloud(mensagem, valor, { phoneNumberIdDe
     if (await tratarRespostaConfirmacaoAF({ numLimpo, texto, botaoId, ehBotao, nomeContato, assumidaPorHumano: !!assumidaPorHumano })) return;
     // Responsável de aluno menor respondendo o pedido de nome e CPF: grava no GymFit (vale também fora do horário do robô).
     if (!assumidaPorHumano && await tratarRespostaResponsavel({ numLimpo, texto, nomeContato })) return;
+    // Aluno respondendo "Atualização CPF" / "Atualização Email": grava no GymFit (com atendente na conversa, grava sem responder).
+    if (await tratarRespostaAtualizacaoCadastral({ numLimpo, texto, nomeContato, silencioso: !!assumidaPorHumano })) return;
     // "Quer que te mande o link de pagamento?" → confirma nome e matrícula → gera o Pix no GymFit.
     if (!assumidaPorHumano && await tratarFluxoPagamentoPix({ numLimpo, texto, nomeContato })) return;
     // Ex-aluno que recebeu a mensagem de reativação: depois da conversa assentar, a IA registra negociação, tratativa e interesse no CRM do GymFit
@@ -3010,7 +3019,10 @@ app.post('/api/gymfit/aluno', async (req, res) => {
 
 // Envio de UMA Mensagem Personalizada pedido pelo GymFit (CRM > Pós Vendas: botões "WhatsApp" = Orientação e "Avaliação Física"/"MQV" = Agendamento+MQV; Faltosos: botão "Enviar Mensagem" = Mensagem Faltosos 2).
 // Só aceita os nomes da lista abaixo (a chave do GymFit não dispara qualquer mensagem). Mesmo caminho dos Disparos: pool, template aprovado, placeholders.
-const MENSAGENS_PERMITIDAS_GYMFIT = new Set(['Orientação', 'Agendamento+MQV', 'Apreciação', 'Mensagem faltosos 2', 'Mensagem Faltosos 2', 'A Vencer 30 Dias', 'A Vencer 20 Dias', 'A Vencer 10 Dias', 'A vencer 30 dias', 'A vencer 20 dias', 'A vencer 10 dias', 'Atualização do Responsável', 'Atualizacao do Responsavel']);
+const MENSAGENS_PERMITIDAS_GYMFIT = new Set(['Orientação', 'Agendamento+MQV', 'Apreciação', 'Mensagem faltosos 2', 'Mensagem Faltosos 2', 'A Vencer 30 Dias', 'A Vencer 20 Dias', 'A Vencer 10 Dias', 'A vencer 30 dias', 'A vencer 20 dias', 'A vencer 10 dias', 'Atualização do Responsável', 'Atualizacao do Responsavel',
+    'Atualização CPF', 'Atualização Email', 'Atualização de CPF', 'Atualização de E-mail']);
+// O GymFit chama as mensagens de atualização cadastral com "de" ("Atualização de CPF"); em Mensagens Personalizadas elas se chamam sem ("Atualização CPF").
+const NOMES_ALTERNATIVOS_GYMFIT = { 'Atualização de CPF': 'Atualização CPF', 'Atualização de E-mail': 'Atualização Email' };
 app.post('/api/gymfit/enviar-mensagem', async (req, res) => {
     if (!autorizadoGymfit(req, res)) return;
     const telefone = String(req.body?.telefone || '').replace(/\D/g, '');
@@ -3018,7 +3030,8 @@ app.post('/api/gymfit/enviar-mensagem', async (req, res) => {
     if (telefone.length < 10 || telefone.length > 15) return res.status(400).json({ error: 'telefone inválido' });
     if (!MENSAGENS_PERMITIDAS_GYMFIT.has(nome)) return res.status(400).json({ error: 'mensagem não permitida para o GymFit' });
     try {
-        const msg = await db.get('SELECT id, nome, texto, categoria FROM mensagens_personalizadas WHERE nome = ?', nome);
+        const msg = await db.get('SELECT id, nome, texto, categoria FROM mensagens_personalizadas WHERE nome = ?', nome)
+            || (NOMES_ALTERNATIVOS_GYMFIT[nome] ? await db.get('SELECT id, nome, texto, categoria FROM mensagens_personalizadas WHERE nome = ?', NOMES_ALTERNATIVOS_GYMFIT[nome]) : null);
         if (!msg) return res.status(404).json({ error: `Mensagem "${nome}" não encontrada em Mensagens Personalizadas` });
         const algumPoolConectado = [...poolClients.values()].some(e => e.status === 'connected');
         if (!algumPoolConectado && !isConnected && !(await cloudApiDisponivelParaDisparo())) {
@@ -6933,6 +6946,7 @@ async function responderMensagemPendenteAoLigarRobo(telefone) {
         console.log(`🤖 Robô ligado em ${telefone}: respondendo a última mensagem do cliente ("${texto.slice(0, 40)}").`);
         if (ult.canal === 'whatsapp_cloud') {
             if (await tratarRespostaResponsavel({ numLimpo: telefone, texto, nomeContato })) return;
+            if (await tratarRespostaAtualizacaoCadastral({ numLimpo: telefone, texto, nomeContato })) return;
             if (await tratarFluxoPagamentoPix({ numLimpo: telefone, texto, nomeContato })) return;
         }
         await processarComoRobo({ body: texto }, telefone, texto.toLowerCase(), telefone, nomeContato, ult.canal);
@@ -8678,7 +8692,7 @@ async function tratarRespostaConfirmacaoAF({ numLimpo, texto, botaoId, ehBotao, 
             } catch (e) {
                 erro = e.message;
             }
-            const instrucoesLink = `Pra escolher um novo dia e horário é só entrar em ${LINK_AGENDA_AVALIACAO}, digitar seu nome "${primeiroNome}" e sua matrícula "${ag.matricula || ''}".`;
+            const instrucoesLink = `Pra escolher um novo dia e horário é só entrar em ${LINK_AGENDA_AVALIACAO}, digitar seu nome "${primeiroNome}" e sua matrícula "${matriculaParaAluno(ag.matricula)}".`;
             if (!erro) {
                 // Mesmo efeito do 🗑️ da tela: sai da lista e perde a etiqueta (a
                 // próxima varredura também tiraria, já que cancelado não volta).
@@ -8965,7 +8979,7 @@ async function processarLembretesAssinatura() {
                 const link = await obterLinkAssinaturaContrato(d.matricula);
                 if (!link) { await db.run('DELETE FROM contrato_assinatura_lembretes WHERE matricula = ?', d.matricula); continue; }
                 const primeiroNome = (d.nome || '').trim().split(/\s+/)[0].toLowerCase().replace(/^./, c => c.toUpperCase());
-                const valores = { nome: primeiroNome, nome_completo: d.nome || '', matricula: String(d.matricula).padStart(6, '0'), link_contrato: link };
+                const valores = { nome: primeiroNome, nome_completo: d.nome || '', matricula: matriculaParaAluno(d.matricula), link_contrato: link };
                 const parametros = (template.variaveis || []).map(v => valores[v] ?? '');
                 const resultado = await enviarTemplateWhatsappCloud(d.telefone, template.nome, parametros, config);
                 const textoRegistro = msg.texto.replace(/[{[](\w+)[\]}]/g, (m, k) => valores[k.toLowerCase()] ?? m);
@@ -9113,7 +9127,7 @@ async function processarReativacaoExAlunos() {
             try {
                 const primeiroNome = (d.nome || '').trim().split(/\s+/)[0].toLowerCase().replace(/^./, c => c.toUpperCase());
                 const dias = agora.clone().startOf('day').diff(moment.tz(d.plano_fim, 'YYYY-MM-DD', 'America/Sao_Paulo'), 'days');
-                const valores = { nome: primeiroNome, nome_completo: d.nome || '', matricula: String(d.matricula).padStart(6, '0'), dias_vencido: String(dias > 0 ? dias : d.dias_vencido) };
+                const valores = { nome: primeiroNome, nome_completo: d.nome || '', matricula: matriculaParaAluno(d.matricula), dias_vencido: String(dias > 0 ? dias : d.dias_vencido) };
                 const parametros = (template.variaveis || []).map(v => valores[v] ?? '');
                 const resultado = await enviarTemplateWhatsappCloud(d.telefone, template.nome, parametros, config);
                 const textoRegistro = msg.texto.replace(/[{[](\w+)[\]}]/g, (m, k) => valores[k.toLowerCase()] ?? m);
@@ -11169,7 +11183,7 @@ async function enviarEregistrar(telefone, conteudo) {
 async function enviarRespostaPacto(telefone, aluno) {
     const nome = aluno.pessoa?.nome || 'Aluno';
     const situacao = aluno.situacao?.descricao || 'Não informada';
-    let texto = `📋 *${nome}*\nMatrícula: ${aluno.matricula}\nSituação: *${situacao}*\n\n`;
+    let texto = `📋 *${nome}*\nMatrícula: ${matriculaParaAluno(aluno.matricula)}\nSituação: *${situacao}*\n\n`;
 
     try {
         const parcelas = await obterParcelasEmAberto(aluno.pessoa.codigo);
@@ -11275,13 +11289,13 @@ async function finalizarCadastro(telefone, dados) {
 
         const aluno = await buscarAlunoPorMatricula(r.matricula);
         if (aluno) await saveVinculo(telefone, aluno);
-        const matriculaTexto = String(r.matricula).padStart(6, '0');
+        const matriculaTexto = matriculaParaAluno(r.matricula);
         await enviarEregistrar(telefone, `✅ Matrícula realizada com sucesso! Sua matrícula é *${matriculaTexto}*. Bem-vindo(a)!`);
     } catch (err) {
         console.error('❌ Erro ao matricular novo aluno no GymFit:', err.message);
         if (err instanceof GymfitErroDefinitivo && err.status === 409 && err.detalhes?.matricula) {
             // CPF já cadastrado: não cria duplicado. Quem já é aluno resolve a renovação com a recepção.
-            await enviarEregistrar(telefone, `ℹ️ Esse CPF já tem cadastro na academia (matrícula *${String(err.detalhes.matricula).padStart(6, '0')}*). Para renovar ou tirar dúvidas, fale com a recepção — ou envie *minha situação* que eu consulto pra você.`);
+            await enviarEregistrar(telefone, `ℹ️ Esse CPF já tem cadastro na academia (matrícula *${matriculaParaAluno(err.detalhes.matricula)}*). Para renovar ou tirar dúvidas, fale com a recepção — ou envie *minha situação* que eu consulto pra você.`);
         } else if (err instanceof GymfitErroDefinitivo && err.status === 400) {
             await enviarEregistrar(telefone, '❌ Não consegui validar seus dados (confira se o CPF está correto). Se quiser tentar de novo, é só me chamar.');
         } else {
@@ -12147,7 +12161,7 @@ async function montarContextoAlunoIA(numLimpo) {
         if (!aluno && !alertas && !parcelas && !agenda) return null; // nada respondeu: não finge saber
 
         const linhas = ['# O QUE OS SISTEMAS JÁ SABEM DESTE ALUNO (consultado agora no GymFit e na Agenda — fonte oficial)'];
-        if (aluno) linhas.push(`Aluno: ${aluno.pessoa?.nome || '?'} — matrícula ${aluno.matricula} — situação no GymFit: ${aluno.situacao?.descricao || '?'}.`);
+        if (aluno) linhas.push(`Aluno: ${aluno.pessoa?.nome || '?'} — matrícula ${matriculaParaAluno(aluno.matricula)} — situação no GymFit: ${aluno.situacao?.descricao || '?'}.`);
         if (alertas) linhas.push(alertas.length
             ? `Pendências abertas da equipe (esteiras do CRM): ${alertas.map(a => `${a.esteira}${a.fase ? ` (${a.fase})` : ''}`).join('; ')}.`
             : 'Pendências abertas da equipe no CRM: nenhuma.');
@@ -12348,6 +12362,94 @@ async function responderResponsavel(numLimpo, nomeContato, texto) {
 }
 
 // =====================================
+// ATUALIZAÇÃO CADASTRAL (CPF / E-MAIL) — a resposta do aluno vira cadastro no GymFit
+// =====================================
+// As mensagens "Atualização CPF" e "Atualização Email" pedem o dado ao aluno. Quando ele responde com um CPF / e-mail, o Chatboot grava no GymFit
+// (POST .../alunos/:matricula/cpf | /email) e o aluno sai da esteira "Alunos sem CPF" / "Alunos sem E-mail" sozinho. Só age quando um desses pedidos
+// saiu pra esse contato nos últimos 7 dias e ainda não foi respondido (a nossa confirmação "Seu CPF foi atualizado" fecha o pedido); o pedido é
+// reconhecido pelo texto ("informar/confirmar seu CPF", "seu e-mail" + "atualiza..."), então vale qualquer caminho de envio (Disparos, Automação,
+// GymFit, Bate Papo). O GymFit só PREENCHE o que está vazio. Conversa assumida por atendente: grava em silêncio (sem responder) e segue o fluxo normal.
+const PADRAO_PEDIDO_CPF = /(informar|confirmar|enviar|mandar|passar)\s+(o\s+)?seu\s+CPF/i;
+const PADRAO_PEDIDO_EMAIL = /(informar|confirmar|enviar|mandar|passar)\s+(o\s+)?seu\s+(endere[çc]o\s+de\s+)?e-?mail/i;
+const PADRAO_EMAIL_NO_TEXTO = /[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}/;
+const PEDIDOS_CADASTRAIS = {
+    cpf: { pedido: PADRAO_PEDIDO_CPF, respondido: /seu CPF foi atualizado|seu CPF já consta/i },
+    email: { pedido: PADRAO_PEDIDO_EMAIL, respondido: /seu e-mail foi atualizado|seu e-mail já consta/i },
+};
+// Quais pedidos (cpf/email) estão em aberto pra esse contato: o mais recente entre "pedido" e "respondido" decide.
+async function pedidosCadastraisEmAberto(numLimpo) {
+    const saidas = await db.all(`SELECT texto FROM conversas WHERE telefone = ? AND direcao = 'out' AND ts >= ? ORDER BY ts DESC, id DESC LIMIT 30`,
+        [numLimpo, new Date(Date.now() - 7 * 24 * 3600 * 1000).toISOString()]);
+    const abertos = new Set();
+    for (const [tipo, p] of Object.entries(PEDIDOS_CADASTRAIS)) {
+        for (const s of saidas) {
+            const t = s.texto || '';
+            if (p.respondido.test(t)) break;
+            if (p.pedido.test(t) && /atualiza/i.test(t)) { abertos.add(tipo); break; }
+        }
+    }
+    return abertos;
+}
+// Grava um dado no GymFit e devolve a frase pro aluno ({ texto, consultora }). Erro de rede / 404 / GymFit sem a rota sobe (quem chama segue o fluxo normal).
+async function gravarDadoCadastral(tipo, matricula, valor) {
+    const rotulo = tipo === 'cpf' ? 'CPF' : 'e-mail';
+    try {
+        await (tipo === 'cpf' ? atualizarCpfAluno(matricula, valor) : atualizarEmailAluno(matricula, valor));
+        return { texto: `Recebido! ✅ Seu ${rotulo} foi atualizado no cadastro. Obrigado pela colaboração! 💚`, gravou: true };
+    } catch (e) {
+        if (!(e instanceof GymfitErroDefinitivo)) throw e;
+        const motivo = e.detalhes?.motivo || (/outro aluno/i.test(e.message) ? 'cpf_de_outro_aluno' : /j[áa] tem/i.test(e.message) ? `ja_tem_${tipo}` : null);
+        if (e.status === 409 && motivo === 'cpf_de_outro_aluno') {
+            return { texto: 'Esse CPF já está cadastrado para outro aluno aqui na academia. Vou pedir para uma consultora conferir com você. 🙏', consultora: true };
+        }
+        if (e.status === 409) return { texto: `Obrigado! ✅ Seu ${rotulo} já consta no nosso cadastro.` };
+        if (e.status === 400) {
+            return { texto: tipo === 'cpf' ? 'Não consegui gravar esse CPF. Pode conferir os números e mandar de novo, por favor? 🙏' : 'Esse e-mail não parece válido. Pode conferir e mandar de novo, por favor? 🙏' };
+        }
+        throw e;
+    }
+}
+async function tratarRespostaAtualizacaoCadastral({ numLimpo, texto, nomeContato, silencioso = false }) {
+    try {
+        const achouCpf = (texto || '').match(PADRAO_CPF_NO_TEXTO);
+        const achouEmail = (texto || '').match(PADRAO_EMAIL_NO_TEXTO);
+        if (!achouCpf && !achouEmail) return false; // sem CPF nem e-mail na mensagem: nem consulta o histórico
+        const abertos = await pedidosCadastraisEmAberto(numLimpo);
+        const fazerCpf = !!achouCpf && abertos.has('cpf');
+        const fazerEmail = !!achouEmail && abertos.has('email');
+        if (!fazerCpf && !fazerEmail) return false;
+
+        const matricula = await resolverMatriculaContato(numLimpo);
+        if (!matricula) { console.log(`ℹ️ Atualização cadastral (${numLimpo}): contato sem matrícula vinculada — segue o fluxo normal.`); return false; }
+
+        const frases = [];
+        let chamarConsultora = false;
+        if (fazerCpf) {
+            const cpf = achouCpf[0].replace(/\D/g, '');
+            if (!cpfValidoBR(cpf)) frases.push('O CPF que você enviou não parece válido. Pode conferir os números e mandar de novo, por favor? 🙏');
+            else {
+                const r = await gravarDadoCadastral('cpf', matricula, cpf);
+                if (r.gravou) console.log(`🪪 CPF gravado no GymFit para a matrícula ${matricula} (via ${numLimpo}).`);
+                frases.push(r.texto); chamarConsultora = chamarConsultora || !!r.consultora;
+            }
+        }
+        if (fazerEmail) {
+            const email = achouEmail[0].toLowerCase();
+            const r = await gravarDadoCadastral('email', matricula, email);
+            if (r.gravou) console.log(`📧 E-mail gravado no GymFit para a matrícula ${matricula} (via ${numLimpo}).`);
+            frases.push(r.texto); chamarConsultora = chamarConsultora || !!r.consultora;
+        }
+        if (silencioso) { console.log(`ℹ️ Atualização cadastral (${numLimpo}): conversa com atendente — gravado sem resposta automática (${frases.join(' | ')}).`); return false; }
+        await responderResponsavel(numLimpo, nomeContato, frases.join('\n\n'));
+        if (chamarConsultora) await passarConversaParaHumano(numLimpo);
+        return true;
+    } catch (e) {
+        console.error(`❌ Atualização cadastral (${numLimpo}): ${e.message} — segue o fluxo normal.`);
+        return false;
+    }
+}
+
+// =====================================
 // LINK DE PAGAMENTO (Pix) — confirma quem é o aluno e gera o Pix da parcela no GymFit
 // =====================================
 // Fluxo (Vence Hoje, parcelas atrasadas, inadimplentes — qualquer mensagem nossa que ofereça "o link de pagamento"): o aluno responde "pode enviar" →
@@ -12419,7 +12521,7 @@ async function tratarFluxoPagamentoPix({ numLimpo, texto, nomeContato }) {
         if (!aluno?.pessoa?.nome) return false;
         if (!(await obterParcelasEmAberto(matricula)).length) return false;
         await db.run('INSERT OR REPLACE INTO pix_confirmacao_pendente (telefone, matricula, criado_em) VALUES (?, ?, ?)', [numLimpo, matricula, new Date().toISOString()]);
-        await responderFluxo(numLimpo, nomeContato, `Antes de gerar o link, preciso confirmar seus dados. 🔒\n\nVocê é o(a) aluno(a) *${aluno.pessoa.nome}*, matrícula *${aluno.matricula}*?\n\nResponda *sim* para eu gerar o link de pagamento.`);
+        await responderFluxo(numLimpo, nomeContato, `Antes de gerar o link, preciso confirmar seus dados. 🔒\n\nVocê é o(a) aluno(a) *${aluno.pessoa.nome}*, matrícula *${matriculaParaAluno(aluno.matricula)}*?\n\nResponda *sim* para eu gerar o link de pagamento.`);
         return true;
     } catch (e) {
         console.error(`❌ Fluxo de pagamento (${numLimpo}): ${e.message} — segue o fluxo normal.`);
@@ -12477,7 +12579,7 @@ async function tratarInteresseAvaliacaoFisica({ msg, numLimpo, texto, telefoneRe
         const agenda = await garantirAlunoNaAgenda({
             primeiroNome,
             nomeCompleto: nomeGymfit,
-            matricula,
+            matricula: matriculaParaAluno(matricula), // vira a senha da conta nova na Agenda: a mesma que vai na mensagem
             whatsapp: numLimpo.replace(/\D/g, ''),
             nascimento: aluno.pessoa?.datanasc ? String(aluno.pessoa.datanasc).slice(0, 10) : null,
         });
@@ -12485,7 +12587,7 @@ async function tratarInteresseAvaliacaoFisica({ msg, numLimpo, texto, telefoneRe
 
         const comDados = msgPers.texto
             .replace(/\[nome\]|{nome}/gi, agenda.nomeLogin)
-            .replace(/\[matricula\]|{matricula}/gi, agenda.matriculaLogin);
+            .replace(/\[matricula\]|{matricula}/gi, matriculaParaAluno(agenda.matriculaLogin)); // conta antiga com "006666" também entra com "6666" (o login da Agenda aceita com e sem zeros)
         const textoFinal = await substituirPlaceholdersPessoais(comDados, numLimpo);
         const sent = await enviarRespostaCanal(canal, msg, telefoneReal, textoFinal);
         if (!sent) return false;
@@ -12642,7 +12744,7 @@ async function processarComoRobo(msg, numLimpo, texto, telefoneReal, nomeContato
         ? nomeContato.split(' ')[0]
         : '';
     const nomeCompletoExibir = (nomeContato && nomeContato !== numLimpo) ? nomeContato : '';
-    const matriculaExibir = await resolverMatriculaContato(numLimpo);
+    const matriculaExibir = matriculaParaAluno(await resolverMatriculaContato(numLimpo));
     const textoFinal = regraAtiva.resposta
         .replace(/{saudacao}/g, saudacao)
         .replace(/\[nome\]/gi, nomeExibir || '')
