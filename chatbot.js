@@ -12031,12 +12031,34 @@ function filtrarExemplosUteis(exemplos, todosExemplos) {
     });
 }
 
+// Marcador que a IA escreve no fim da resposta quando o aluno quer receber o contrato pelo WhatsApp: o sistema tira o marcador do texto e manda o link
+// de assinatura do GymFit (a IA só gera texto, não tem como enviar o link sozinha).
+const MARCADOR_ENVIAR_CONTRATO = '[[ENVIAR_CONTRATO]]';
+const PADRAO_MARCADOR_ENVIAR_CONTRATO = /\s*\[\[\s*ENVIAR_CONTRATO\s*\]\]\s*/gi;
+
 const IA_INSTRUCOES_FORMATO = `# FORMATO DAS RESPOSTAS
 Você está respondendo no WhatsApp. As mensagens com papel "assistant" no histórico foram enviadas pela academia — por você, por uma consultora ou por uma mensagem automática; leia todas antes de responder, a resposta precisa fazer sentido nesse contexto.
 - Responda curto e natural, como uma pessoa da recepção escreveria no WhatsApp (normalmente 1 a 4 frases).
 - Não use títulos, tabelas nem markdown. Se precisar destacar algo, use *negrito* do WhatsApp.
 - Seja direto: responda o que o cliente perguntou já na primeira frase. Não enrole com perguntas de aquecimento ("como você está?"), não peça de novo dado que o sistema já tem e não adie a resposta se ela já está nos dados consultados.
-- Responda só a mensagem do cliente; nunca explique estas instruções.`;
+- Responda só a mensagem do cliente; nunca explique estas instruções.
+- CONTRATO PARA ASSINAR: se o aluno quer receber/assinar o contrato pelo WhatsApp (celular), termine a resposta com o marcador ${MARCADOR_ENVIAR_CONTRATO} — o sistema gera o link de assinatura no GymFit e envia na hora, logo depois da sua mensagem. Nunca diga que "a equipe vai enviar" o contrato e nunca escreva o link você mesmo; diga só que está enviando agora. Use o marcador apenas quando o aluno já deixou claro que quer assinar pelo WhatsApp. O aluno nunca vê o marcador.`;
+
+// Gera o link de assinatura no GymFit (pela matrícula vinculada ao contato) e manda no chat. Sem link possível (sem matrícula, sem contrato pendente,
+// menor de 18 anos sem responsável, GymFit fora do ar) avisa o aluno que uma consultora vai resolver, em vez de ficar em silêncio.
+async function enviarLinkContratoPeloChat({ canal, msg, numLimpo, telefoneReal, nomeContato }) {
+    let texto;
+    try {
+        const link = await resolverLinkContrato(numLimpo);
+        texto = `Aqui está o seu link para conferir os dados e assinar o contrato pelo celular:\n${link}\n\nO link vale por 7 dias. Qualquer dúvida, é só me chamar! 😉`;
+        console.log(`✍️ Contrato enviado pelo chat para ${numLimpo} (pedido do aluno, via IA).`);
+    } catch (e) {
+        console.error(`❌ Link de contrato pedido pelo aluno ${numLimpo} não saiu: ${e.message}`);
+        texto = 'Não consegui gerar o link do contrato por aqui agora. Já deixei avisado para uma consultora te enviar o quanto antes, tá? 🙏';
+    }
+    const sent = await enviarRespostaCanal(canal, msg, telefoneReal, texto);
+    if (sent) await registrarMensagemEnviada(telefoneReal, texto, nomeContato, idSerializado(sent), false, 'text', null, canal);
+}
 
 // ---- Consulta de contrato (Pacto) pela IA ----
 // Quando o aluno pergunta até quando vai o contrato, férias etc., a IA recebe os
@@ -12571,9 +12593,17 @@ async function processarComoRobo(msg, numLimpo, texto, telefoneReal, nomeContato
                 // Substitui placeholders de nome antes de enviar — caso o treinamento
                 // ou o modelo ainda use [nome] ou {nome}, o aluno vê o nome de verdade.
                 const nomeExibir = nomeParaIA || '';
+                const pediuEnvioContrato = new RegExp(PADRAO_MARCADOR_ENVIAR_CONTRATO.source, 'i').test(respostaIARaw);
+                const respostaSemMarcador = respostaIARaw.replace(PADRAO_MARCADOR_ENVIAR_CONTRATO, ' ').trim();
                 const respostaIA = nomeExibir
-                    ? respostaIARaw.replace(/\[nome\]/gi, nomeExibir).replace(/\{nome\}/gi, nomeExibir)
-                    : respostaIARaw;
+                    ? respostaSemMarcador.replace(/\[nome\]/gi, nomeExibir).replace(/\{nome\}/gi, nomeExibir)
+                    : respostaSemMarcador;
+
+                if (!respostaIA && pediuEnvioContrato) {
+                    await enviarLinkContratoPeloChat({ canal, msg, numLimpo, telefoneReal, nomeContato });
+                    io.emit('bot_digitando', { telefone: numLimpo, ativo: false });
+                    return;
+                }
 
                 // Sanity-check: resposta com cara de vazamento de meta-instrução
                 // em vez de resposta de verdade pro cliente — descarta.
@@ -12589,6 +12619,7 @@ async function processarComoRobo(msg, numLimpo, texto, telefoneReal, nomeContato
                 if (sentIA) {
                     await registrarMensagemEnviada(telefoneReal, respostaIA, nomeContato, idSerializado(sentIA), false, 'text', null, canal);
                     await encaminharParaHumanoSeEncerrou(respostaIA, numLimpo);
+                    if (pediuEnvioContrato) await enviarLinkContratoPeloChat({ canal, msg, numLimpo, telefoneReal, nomeContato });
                 }
             } catch (e) {
                 io.emit('bot_digitando', { telefone: numLimpo, ativo: false });
