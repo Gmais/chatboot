@@ -93,7 +93,7 @@ const OpenAI = require('openai');
 const Anthropic = require('@anthropic-ai/sdk').default;
 const moment = require('moment-timezone');
 // Tudo que era da Pacto agora vem do GymFit: consultas (aluno, parcelas, contratos, operações), matrícula de aluno novo e Pix de parcela.
-const { obterExAlunosParaReativar, registrarReativacaoAluno, atualizarResponsavelAluno, atualizarCpfAluno, atualizarEmailAluno, obterAlunosContratoSemAssinar, obterLinkAssinaturaContrato, buscarAlunoPorMatricula, obterParcelasEmAberto, obterContratosPorMatricula, obterDetalheContrato, obterOperacoesContrato, obterOrcamentoMatricula, matricularAlunoNovo, gerarPixParcela, obterAlertasCrm, GymfitErroDefinitivo } = require('./gymfit');
+const { obterExAlunosParaReativar, registrarReativacaoAluno, registrarRenovacaoAluno, atualizarResponsavelAluno, atualizarCpfAluno, atualizarEmailAluno, obterAlunosContratoSemAssinar, obterLinkAssinaturaContrato, buscarAlunoPorMatricula, obterParcelasEmAberto, obterContratosPorMatricula, obterDetalheContrato, obterOperacoesContrato, obterOrcamentoMatricula, matricularAlunoNovo, gerarPixParcela, obterAlertasCrm, GymfitErroDefinitivo } = require('./gymfit');
 const { enviarMensagemInstagram, obterNomeUsuarioInstagram, verificarAssinaturaWebhook } = require('./instagram');
 const { enviarMensagemWhatsappCloud, enviarTemplateWhatsappCloud, enviarBotoesWhatsappCloud, enviarArquivoWhatsappCloud, criarTemplateWhatsappCloud, listarTemplatesWhatsappCloud, copiarTemplateParaWabaWhatsappCloud, trocarCodigoPorAccessTokenWhatsappCloud, inscreverWebhookWabaWhatsappCloud, consultarStatusNumeroWhatsappCloud, listarNumerosWabaWhatsappCloud, baixarMidiaWhatsappCloud } = require('./whatsappCloudApi');
 const { consultarAlunoNaAgenda, agendaLogin, buscarAgendaDoDia, atualizarStatusAgendamento, buscarMQVsRecentes, buscarAgendamentosPorIds, garantirAlunoNaAgenda } = require('./agenda');
@@ -2632,6 +2632,8 @@ async function processarMensagemWhatsappCloud(mensagem, valor, { phoneNumberIdDe
     // Ex-aluno que recebeu a mensagem de reativação: depois da conversa assentar, a IA registra negociação, tratativa e interesse no CRM do GymFit
     // (vale também quando uma atendente assumiu a conversa).
     agendarAnaliseReativacao(numLimpo);
+    // Aluno com plano vencendo que recebeu o aviso do GymFit: registra o contato e agenda a análise da renovação (também com atendente na conversa).
+    agendarAnaliseRenovacao(numLimpo);
     if (assumidaPorHumano) return;
     if (estavaFinalizada) {
         console.log(`🔕 ${numLimpo} escreveu numa conversa finalizada — reaberta pro atendente, robô não responde.`);
@@ -3037,6 +3039,8 @@ app.post('/api/gymfit/enviar-mensagem', async (req, res) => {
         if (!algumPoolConectado && !isConnected && !(await cloudApiDisponivelParaDisparo())) {
             return res.status(503).json({ error: 'Nenhum número de disparo conectado no Chatboot.' });
         }
+        // Esteira "Plano vencendo": guarda o envio pra registrar o contato e analisar a resposta no CRM do GymFit (nunca bloqueia o envio).
+        await registrarEnvioRenovacao({ telefone, matricula: req.body?.matricula, esteira: req.body?.esteira });
         const dadosJob = montarJobDisparo({ body: { numeros: telefone, mensagem: msg.texto, categoria: msg.categoria || '', descricao: msg.nome, mensagemId: msg.id, delay_ms: 2000 } });
         const { listaNumeros, mensagem, delay_ms, delay_modo, delay_velocidade, categoria, mensagemId, descricaoFinal } = dadosJob;
         const { numerosPermitidosIds, templateWhatsapp, templateMediaPath } = await resolverRoteamentoETemplate(categoria, mensagemId);
@@ -9252,6 +9256,143 @@ async function montarContextoReativacaoIA(numLimpo) {
     }
 }
 
+// =====================================
+// RENOVAÇÃO — esteira "Plano vencendo" (GymFit)
+// =====================================
+// Aluno ATIVO cujo plano vence em 30, 20 ou 10 dias recebe do GymFit a mensagem "A Vencer N Dias" (/api/gymfit/enviar-mensagem, com matricula + esteira).
+// Guardamos o envio; quando o aluno responde, registra 1. Contato e a IA analisa a conversa (como na reativação) para registrar
+// 2. Negociação, 3. Tratativa e 4. Interesse no checklist do CRM do GymFit (POST /integrations/chatbot/alunos/:matricula/renovacao).
+const RENOVACAO_JANELA_RESPOSTA_DIAS = 14;
+const RENOVACAO_MAX_ANALISES = 8;
+const RENOVACAO_ESPERA_ANALISE_MS = 3 * 60 * 1000;
+const RENOVACAO_DIAS_POR_ESTEIRA = { vencer_30: 30, vencer_20: 20, vencer_10: 10 };
+
+let tabelaRenovacaoPronta = false;
+async function garantirTabelaRenovacao() {
+    if (tabelaRenovacaoPronta) return;
+    await db.run(`CREATE TABLE IF NOT EXISTS renovacao_alunos (
+        matricula INTEGER PRIMARY KEY,
+        telefone TEXT NOT NULL,
+        esteira TEXT NOT NULL,
+        enviado_em TEXT,
+        contato_registrado INTEGER NOT NULL DEFAULT 0,
+        analises INTEGER NOT NULL DEFAULT 0,
+        ultima_analise_em TEXT,
+        interesse TEXT,
+        tratativa_registrada INTEGER NOT NULL DEFAULT 0
+    )`);
+    tabelaRenovacaoPronta = true;
+}
+
+const buscarLinhaRenovacao = (numLimpo) => db.get('SELECT * FROM renovacao_alunos WHERE telefone = ? OR substr(telefone, -8) = substr(?, -8) ORDER BY enviado_em DESC LIMIT 1', [numLimpo, numLimpo]);
+
+// Guarda o envio "A Vencer N Dias" do GymFit. Um registro por matrícula: um envio novo substitui o anterior (zera contato e análises).
+// Nunca lança erro: o envio da mensagem não pode falhar por causa do controle da renovação.
+async function registrarEnvioRenovacao({ telefone, matricula, esteira }) {
+    try {
+        const mat = parseInt(String(matricula ?? '').replace(/\D/g, ''), 10);
+        if (!(mat > 0) || !RENOVACAO_DIAS_POR_ESTEIRA[esteira]) return;
+        await garantirTabelaRenovacao();
+        await db.run(`INSERT INTO renovacao_alunos (matricula, telefone, esteira, enviado_em) VALUES (?, ?, ?, ?)
+            ON CONFLICT(matricula) DO UPDATE SET telefone = excluded.telefone, esteira = excluded.esteira, enviado_em = excluded.enviado_em,
+            contato_registrado = 0, analises = 0, ultima_analise_em = NULL, interesse = NULL, tratativa_registrada = 0`,
+            [mat, telefone, esteira, new Date().toISOString()]);
+    } catch (e) {
+        console.error('⚠️ Renovação: envio não guardado:', e.message);
+    }
+}
+
+const REATIVACAO_PROMPT_RENOVACAO = `Você analisa a conversa de WhatsApp entre a academia Planeta Corpo Club+ e um ALUNO ATIVO cujo plano está perto de vencer; a academia mandou uma mensagem perguntando sobre a renovação. Devolva SOMENTE um JSON (sem markdown, sem texto extra) com os campos:
+{
+  "aluno_respondeu": true se o aluno escreveu alguma resposta de verdade (não só emoji/figurinha),
+  "interesse_em_renovar": true se o aluno demonstrou interesse em renovar, continuar, conhecer planos, valores ou promoções,
+  "planos_apresentados": true se a academia (robô ou atendente) JÁ apresentou os planos/valores na conversa,
+  "promocao_apresentada": true se a academia JÁ apresentou promoção/condição especial/campanha na conversa,
+  "resumo_planos": resumo curto de quais planos/valores foram apresentados (ou null),
+  "resumo_promocao": resumo curto da promoção apresentada (ou null),
+  "houve_negociacao": true se o aluno foi além de um simples "ok/oi": perguntou valores ou condições, falou de objeção (preço, tempo, mudança, saúde), pediu para pensar, aceitou ou recusou explicando o motivo. false se ele só respondeu algo vago ou não conversou,
+  "resumo_conversa": resumo objetivo, em português e na 3ª pessoa, de TODA a conversa até agora (o que o aluno disse, o que foi oferecido, objeções, combinados e próximo passo) — máximo 600 caracteres,
+  "nivel_interesse": "alto" (vai renovar, pediu link ou forma de pagamento, marcou data), "medio" (interessado mas indeciso, vai pensar, pediu valores) ou "baixo" (não quer renovar, sem interesse, sem resposta útil) — ou null se o aluno ainda não respondeu
+}
+Seja fiel ao que está escrito; não invente. A conversa pode ainda estar em andamento: avalie com o que existe até agora.`;
+
+// Lê a conversa do aluno desde o envio do aviso de vencimento e registra no checklist do GymFit o que já aconteceu (etapas 2, 3 e 4).
+async function analisarConversaRenovacao(matricula) {
+    const linha = await db.get('SELECT * FROM renovacao_alunos WHERE matricula = ?', matricula);
+    if (!linha || !linha.enviado_em || linha.analises >= RENOVACAO_MAX_ANALISES) return;
+    const rows = await db.all(
+        `SELECT direcao, texto, tipo FROM conversas WHERE (telefone = ? OR substr(telefone, -8) = substr(?, -8)) AND ts > datetime(?, '+3 seconds') ORDER BY ts, id LIMIT 80`,
+        [linha.telefone, linha.telefone, linha.enviado_em]);
+    const texto = (r) => (r.texto && r.texto.trim()) || (r.tipo && r.tipo !== 'text' ? `[${r.tipo}]` : '');
+    if (!rows.some(r => r.direcao === 'in' && texto(r))) return; // o aluno ainda não respondeu
+    const dias = RENOVACAO_DIAS_POR_ESTEIRA[linha.esteira];
+    const msgPers = await db.get('SELECT texto FROM mensagens_personalizadas WHERE nome = ?', `A Vencer ${dias} Dias`);
+    const transcricao = [`Academia (aviso de plano vencendo em ${dias} dias): ${(msgPers?.texto || '').replace(/[{[]\w+[\]}]/g, '…')}`,
+        ...rows.filter(r => texto(r)).map(r => `${r.direcao === 'in' ? 'Aluno' : 'Academia'}: ${texto(r)}`)].join('\n');
+
+    const bruto = await chamarIAParaTarefa(REATIVACAO_PROMPT_RENOVACAO, `Conversa:\n\n${transcricao}`);
+    const achado = (bruto || '').match(/\{[\s\S]*\}/);
+    if (!achado) throw new Error('a IA não devolveu o JSON da análise');
+    const r = JSON.parse(achado[0]);
+    if (!r.aluno_respondeu) return;
+
+    const cortar = (t, n) => (typeof t === 'string' && t.trim() ? t.trim().slice(0, n) : undefined);
+    const registrar = async (dados) => {
+        try { return await registrarRenovacaoAluno(matricula, dados); }
+        catch (e) { console.error(`⚠️ Renovação ${matricula}: etapa "${dados.etapa}" não registrada no GymFit: ${e.message}`); return null; }
+    };
+    const feitos = [];
+    await registrar({ etapa: 'contato' }); // sem efeito se já estava marcado; garante a ordem das etapas
+    if ((r.planos_apresentados || r.promocao_apresentada)
+        && await registrar({ etapa: 'negociacao', planos: r.planos_apresentados ? cortar(r.resumo_planos, 1900) : undefined, promocao: r.promocao_apresentada ? cortar(r.resumo_promocao, 1900) : undefined })) feitos.push('negociação');
+    let tratativa = !!linha.tratativa_registrada;
+    if (r.houve_negociacao && cortar(r.resumo_conversa, 3900) && await registrar({ etapa: 'tratativa', texto: cortar(r.resumo_conversa, 3900) })) { tratativa = true; feitos.push('tratativa'); }
+    const nivel = ['alto', 'medio', 'baixo'].includes(r.nivel_interesse) ? r.nivel_interesse : null;
+    let nivelRegistrado = null;
+    if (nivel && tratativa && await registrar({ etapa: 'interesse', nivel })) { nivelRegistrado = nivel; feitos.push(`interesse ${nivel}`); }
+    await db.run('UPDATE renovacao_alunos SET analises = analises + 1, ultima_analise_em = ?, tratativa_registrada = ?, interesse = COALESCE(?, interesse) WHERE matricula = ?',
+        [new Date().toISOString(), tratativa ? 1 : 0, nivelRegistrado, matricula]);
+    console.log(`🔁 Renovação: conversa de ${matricula} (plano vence em ${dias} dias) analisada — registrado no GymFit: ${feitos.length ? feitos.join(', ') : 'nada novo'}.`);
+}
+
+// Chamado a cada mensagem do aluno: registra o contato (primeira resposta) e agenda a análise da conversa depois que ela assentar.
+const renovacaoTimers = new Map();
+function agendarAnaliseRenovacao(numLimpo) {
+    (async () => {
+        await garantirTabelaRenovacao();
+        const linha = await buscarLinhaRenovacao(numLimpo);
+        if (!linha?.enviado_em) return;
+        if (moment().diff(moment(linha.enviado_em), 'days', true) > RENOVACAO_JANELA_RESPOSTA_DIAS) return;
+        if (!linha.contato_registrado) {
+            try {
+                await registrarRenovacaoAluno(linha.matricula, { etapa: 'contato' });
+                await db.run('UPDATE renovacao_alunos SET contato_registrado = 1 WHERE matricula = ?', linha.matricula);
+            } catch (e) {
+                console.error(`⚠️ Renovação ${linha.matricula}: contato não registrado no GymFit: ${e.message}`);
+            }
+        }
+        if (linha.analises >= RENOVACAO_MAX_ANALISES) return;
+        clearTimeout(renovacaoTimers.get(linha.matricula));
+        renovacaoTimers.set(linha.matricula, setTimeout(() => {
+            renovacaoTimers.delete(linha.matricula);
+            analisarConversaRenovacao(linha.matricula).catch(e => console.error(`❌ Análise da renovação de ${linha.matricula} falhou:`, e.message));
+        }, RENOVACAO_ESPERA_ANALISE_MS));
+    })().catch(e => console.error('❌ Renovação (agendar análise):', e.message));
+}
+
+// Contexto pra IA quando quem escreve é um aluno com o plano vencendo e já recebeu o aviso (dentro da janela).
+async function montarContextoRenovacaoIA(numLimpo) {
+    try {
+        await garantirTabelaRenovacao();
+        const linha = await buscarLinhaRenovacao(numLimpo);
+        if (!linha?.enviado_em || moment().diff(moment(linha.enviado_em), 'days', true) > RENOVACAO_JANELA_RESPOSTA_DIAS) return null;
+        const dias = RENOVACAO_DIAS_POR_ESTEIRA[linha.esteira];
+        return `# ALUNO COM PLANO VENCENDO\nEste contato é um aluno ATIVO cujo plano vence em cerca de ${dias} dias. A academia já mandou a mensagem "A Vencer ${dias} Dias" avisando do vencimento e convidando para renovar. Conduza a conversa para a renovação:\n- Se demonstrar interesse em renovar ou pedir valores/planos, APRESENTE na hora os planos e a promoção vigente (use o treinamento e a CAMPANHA DO MÊS) e convide a fechar; se aceitar, diga que uma consultora conclui a renovação.\n- Se tiver objeção (preço, tempo, mudança), responda com empatia e uma alternativa curta.\n- Se disser que não quer renovar, respeite, pergunte uma única vez o motivo e deixe a porta aberta. Não insista.`;
+    } catch (e) {
+        return null;
+    }
+}
+
 // Chamado pela varredura de hora em hora: deixa a coluna MQV da tela em dia
 // pra todo mundo da lista (a cobrança confere de novo antes de cada envio).
 async function atualizarMQVRespondidoDaLista() {
@@ -12665,6 +12806,8 @@ async function processarComoRobo(msg, numLimpo, texto, telefoneReal, nomeContato
             if (contextoAluno) partesDinamicas.push(contextoAluno);
             const contextoReativacao = await montarContextoReativacaoIA(numLimpo);
             if (contextoReativacao) partesDinamicas.push(contextoReativacao);
+            const contextoRenovacao = await montarContextoRenovacaoIA(numLimpo);
+            if (contextoRenovacao) partesDinamicas.push(contextoRenovacao);
             const systemDinamico = partesDinamicas.join('\n\n');
             const mensagens = await montarHistoricoConversaIA(numLimpo, textoOriginal);
 

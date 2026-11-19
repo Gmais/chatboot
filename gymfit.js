@@ -281,8 +281,16 @@ async function registrarReativacaoAluno(matricula, dados) {
     return gymfitRequest('POST', `/integrations/chatbot/alunos/${numero}/reativacao`, dados);
 }
 
+// Registra uma etapa do checklist da esteira "Plano vencendo" (aluno ATIVO, plano que vence): mesmas etapas da reativação.
+// { etapa: 'contato' } | { etapa: 'negociacao', planos, promocao } | { etapa: 'tratativa', texto } | { etapa: 'interesse', nivel }.
+// Lança GymfitErroDefinitivo: 409 = etapa fora de ordem ou aluno sem contrato ativo; 404 = matrícula inexistente.
+async function registrarRenovacaoAluno(matricula, dados) {
+    const numero = String(matricula ?? '').replace(/\D/g, '');
+    return gymfitRequest('POST', `/integrations/chatbot/alunos/${numero}/renovacao`, dados);
+}
+
 module.exports = {
-    obterExAlunosParaReativar, registrarReativacaoAluno,
+    obterExAlunosParaReativar, registrarReativacaoAluno, registrarRenovacaoAluno,
     atualizarResponsavelAluno,
     atualizarCpfAluno, atualizarEmailAluno,
     obterAlunosContratoSemAssinar,
