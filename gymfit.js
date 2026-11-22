@@ -237,7 +237,12 @@ async function obterLinkAssinaturaContrato(matricula) {
         const r = await gymfitRequest('POST', `/integrations/chatbot/alunos/${numero}/link-assinatura`);
         return r?.link || null;
     } catch (e) {
-        if (e instanceof GymfitErroDefinitivo && e.status === 404) return null;
+        // 404 do GymFit: "Aluno não encontrado" (matrícula inexistente) ou "não tem contrato ativo para assinar". Os dois viram null aqui,
+        // então o motivo exato é registrado no log para não ficar escondido atrás de uma mensagem genérica.
+        if (e instanceof GymfitErroDefinitivo && e.status === 404) {
+            console.error(`⚠️ GymFit link-assinatura da matrícula ${numero}: 404 — "${e.message}"`);
+            return null;
+        }
         throw e;
     }
 }

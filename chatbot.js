@@ -1536,9 +1536,9 @@ async function resolverMatriculaContato(telefone) {
 const PADRAO_LINK_CONTRATO = /[{[]link_contrato[\]}]/i;
 async function resolverLinkContrato(telefone) {
     const matricula = await resolverMatriculaContato(telefone.replace('@c.us', '').replace('@lid', ''));
-    if (!matricula) throw new Error('Contato sem matrícula vinculada — não dá pra gerar o link do contrato.');
+    if (!matricula) throw new Error(`Contato ${telefone} sem matrícula vinculada — não dá pra gerar o link do contrato.`);
     const link = await obterLinkAssinaturaContrato(matricula);
-    if (!link) throw new Error('Aluno sem contrato ativo pendente de assinatura — sem link pra enviar.');
+    if (!link) throw new Error(`Contato ${telefone} → matrícula ${matricula}: GymFit não devolveu link (ver o 404 acima).`);
     return link;
 }
 
