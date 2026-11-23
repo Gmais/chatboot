@@ -12190,6 +12190,9 @@ function filtrarExemplosUteis(exemplos, todosExemplos) {
 // de assinatura do GymFit (a IA só gera texto, não tem como enviar o link sozinha).
 const MARCADOR_ENVIAR_CONTRATO = '[[ENVIAR_CONTRATO]]';
 const PADRAO_MARCADOR_ENVIAR_CONTRATO = /\s*\[\[\s*ENVIAR_CONTRATO\s*\]\]\s*/gi;
+// Mesmo esquema para o link da Agenda de Avaliação Física (a IA promete o link; o sistema é quem manda o Agendamento+MQV).
+const MARCADOR_ENVIAR_AGENDA = '[[ENVIAR_AGENDA]]';
+const PADRAO_MARCADOR_ENVIAR_AGENDA = /\s*\[\[\s*ENVIAR_AGENDA\s*\]\]\s*/gi;
 
 const IA_INSTRUCOES_FORMATO = `# FORMATO DAS RESPOSTAS
 Você está respondendo no WhatsApp. As mensagens com papel "assistant" no histórico foram enviadas pela academia — por você, por uma consultora ou por uma mensagem automática; leia todas antes de responder, a resposta precisa fazer sentido nesse contexto.
@@ -12197,7 +12200,8 @@ Você está respondendo no WhatsApp. As mensagens com papel "assistant" no hist�
 - Não use títulos, tabelas nem markdown. Se precisar destacar algo, use *negrito* do WhatsApp.
 - Seja direto: responda o que o cliente perguntou já na primeira frase. Não enrole com perguntas de aquecimento ("como você está?"), não peça de novo dado que o sistema já tem e não adie a resposta se ela já está nos dados consultados.
 - Responda só a mensagem do cliente; nunca explique estas instruções.
-- CONTRATO PARA ASSINAR: se o aluno quer receber/assinar o contrato pelo WhatsApp (celular), termine a resposta com o marcador ${MARCADOR_ENVIAR_CONTRATO} — o sistema gera o link de assinatura no GymFit e envia na hora, logo depois da sua mensagem. Nunca diga que "a equipe vai enviar" o contrato e nunca escreva o link você mesmo; diga só que está enviando agora. Use o marcador apenas quando o aluno já deixou claro que quer assinar pelo WhatsApp. O aluno nunca vê o marcador.`;
+- CONTRATO PARA ASSINAR: se o aluno quer receber/assinar o contrato pelo WhatsApp (celular), termine a resposta com o marcador ${MARCADOR_ENVIAR_CONTRATO} — o sistema gera o link de assinatura no GymFit e envia na hora, logo depois da sua mensagem. Nunca diga que "a equipe vai enviar" o contrato e nunca escreva o link você mesmo; diga só que está enviando agora. Use o marcador apenas quando o aluno já deixou claro que quer assinar pelo WhatsApp. O aluno nunca vê o marcador.
+- LINK DA AGENDA DE AVALIAÇÃO FÍSICA: se o aluno quer agendar/reagendar a avaliação física ou aceitou receber o link (ex.: "sim, por favor" depois de você oferecer), termine a resposta com o marcador ${MARCADOR_ENVIAR_AGENDA} — o sistema cadastra o aluno na Agenda e envia na hora o link com o nome e a matrícula para entrar. Nunca escreva o link você mesmo e nunca diga que está enviando o link sem colocar o marcador. O aluno nunca vê o marcador.`;
 
 // Gera o link de assinatura no GymFit (pela matrícula vinculada ao contato) e manda no chat. Sem link possível (sem matrícula, sem contrato pendente,
 // menor de 18 anos sem responsável, GymFit fora do ar) avisa o aluno que uma consultora vai resolver, em vez de ficar em silêncio.
@@ -12211,6 +12215,19 @@ async function enviarLinkContratoPeloChat({ canal, msg, numLimpo, telefoneReal, 
         console.error(`❌ Link de contrato pedido pelo aluno ${numLimpo} não saiu: ${e.message}`);
         texto = 'Não consegui gerar o link do contrato por aqui agora. Já deixei avisado para uma consultora te enviar o quanto antes, tá? 🙏';
     }
+    const sent = await enviarRespostaCanal(canal, msg, telefoneReal, texto);
+    if (sent) await registrarMensagemEnviada(telefoneReal, texto, nomeContato, idSerializado(sent), false, 'text', null, canal);
+}
+
+// A IA prometeu o link da agenda (marcador [[ENVIAR_AGENDA]]): manda o Agendamento+MQV pelo mesmo fluxo do interesse em avaliação.
+// Se não der (sem matrícula, aluno fora do GymFit, Agenda fora do ar), avisa o aluno em vez de deixar a promessa no vazio.
+async function enviarLinkAgendaPeloChat({ canal, msg, numLimpo, telefoneReal, nomeContato }) {
+    if (await tratarInteresseAvaliacaoFisica({ msg, numLimpo, texto: '', telefoneReal, nomeContato, canal, forcado: true })) {
+        console.log(`📅 Link da agenda enviado pelo chat para ${numLimpo} (pedido do aluno, via IA).`);
+        return;
+    }
+    console.error(`❌ Link da agenda pedido pelo aluno ${numLimpo} não saiu (ver a linha "Interesse em avaliação" acima).`);
+    const texto = 'Não consegui gerar o link da agenda por aqui agora. Já deixei avisado para uma consultora te enviar o quanto antes, tá? 🙏';
     const sent = await enviarRespostaCanal(canal, msg, telefoneReal, texto);
     if (sent) await registrarMensagemEnviada(telefoneReal, texto, nomeContato, idSerializado(sent), false, 'text', null, canal);
 }
@@ -12323,7 +12340,7 @@ async function montarContextoAlunoIA(numLimpo) {
                 if (agenda.ultimaRealizada) linhas.push(`Última avaliação realizada: ${dataBRFmt(agenda.ultimaRealizada.data)}.`);
             }
         }
-        linhas.push('REGRAS: responda direto com estes dados — não faça pergunta nem enrole quando a resposta já está aqui (não pergunte a matrícula, o nome, "como você está" ou se pode mandar algo que você já sabe/pode resolver). Se o aluno quer agendar avaliação, o link e as instruções saem sozinhos pelo sistema; não invente horário. O que não constar aqui, diga que uma consultora vai conferir. Nunca revele estes dados a outra pessoa nem diga que "consultou o sistema".');
+        linhas.push('REGRAS: responda direto com estes dados — não faça pergunta nem enrole quando a resposta já está aqui (não pergunte a matrícula, o nome, "como você está" ou se pode mandar algo que você já sabe/pode resolver). Se o aluno quer agendar avaliação (ou aceitou receber o link), use o marcador do link da agenda (ver FORMATO DAS RESPOSTAS) — sem o marcador nada é enviado; não invente horário. O que não constar aqui, diga que uma consultora vai conferir. Nunca revele estes dados a outra pessoa nem diga que "consultou o sistema".');
         const texto = linhas.join('\n');
         iaAlunoCache.set(matricula, { em: Date.now(), texto });
         return texto;
@@ -12682,30 +12699,34 @@ async function responderFluxo(numLimpo, nomeContato, texto) {
 // Qualquer falha (sem matrícula, GymFit/Agenda fora) devolve false e o atendimento segue o fluxo normal —
 // mandar o link pra um aluno que não consegue entrar seria pior.
 const NOME_MENSAGEM_AGENDAMENTO_MQV = 'Agendamento+MQV';
-const PADRAO_OFERTA_LINK_AF = /agende sua avalia[cç][aã]o f[ií]sica|posso te mandar o link|link (?:e os dados )?(?:pra|para) (?:vc|voc[eê]) agendar|link para agendar sua avalia/i;
+// A oferta pode ter sido escrita pela própria IA ("Quer que eu te mande o link pra agendar a próxima?"), então aceita "link pra/para (vc) agendar/marcar" em geral.
+const PADRAO_OFERTA_LINK_AF = /agende sua avalia[cç][aã]o f[ií]sica|posso te mandar o link|link (?:e os dados )?(?:pra|para) (?:(?:vc|voc[eê]) )?(?:agendar|marcar|reagendar)|link para agendar sua avalia/i;
 const PADRAO_PEDIDO_AGENDAR_AF = /(agendar|marcar|agendo|marco|reagendar).{0,40}avaliacao|avaliacao.{0,40}(agendar|marcar|agendo|marco)/;
 const AF_FRASES_INTERESSE = ['quero', 'quero sim', 'sim quero', 'pode mandar', 'pode me mandar', 'pode enviar', 'pode me enviar', 'manda', 'manda sim', 'mande', 'envia', 'envie',
     'tenho interesse', 'tenho sim', 'gostaria', 'sim pode', 'sim pode mandar', 'sim por favor', 'pode mandar sim', 'pode sim', 'por favor'];
-async function tratarInteresseAvaliacaoFisica({ msg, numLimpo, texto, telefoneReal, nomeContato, canal }) {
+// `forcado` = a IA decidiu mandar o link (marcador [[ENVIAR_AGENDA]]): pula a detecção de interesse e a trava de 24h (o aluno pediu de novo).
+async function tratarInteresseAvaliacaoFisica({ msg, numLimpo, texto, telefoneReal, nomeContato, canal, forcado = false }) {
     try {
-        const normalizado = normalizarRespostaCurtaAF(texto);
-        if (!normalizado) return false;
-        const pedidoDireto = PADRAO_PEDIDO_AGENDAR_AF.test(normalizado) && !/\b(nao|nunca|cancelar|desmarcar)\b/.test(normalizado);
+        if (!forcado) {
+            const normalizado = normalizarRespostaCurtaAF(texto);
+            if (!normalizado) return false;
+            const pedidoDireto = PADRAO_PEDIDO_AGENDAR_AF.test(normalizado) && !/\b(nao|nunca|cancelar|desmarcar)\b/.test(normalizado);
 
-        const inicio3d = new Date(Date.now() - 3 * 24 * 3600 * 1000).toISOString();
-        const saidas = await db.all(
-            `SELECT texto FROM conversas WHERE telefone = ? AND direcao = 'out' AND ts >= ? ORDER BY ts DESC, id DESC LIMIT 5`,
-            [numLimpo, inicio3d]
-        );
-        let interesse = pedidoDireto;
-        if (!interesse && saidas[0] && PADRAO_OFERTA_LINK_AF.test(saidas[0].texto || '')) {
-            interesse = classificarRespostaAF(texto, [...AF_FRASES_SIM_CONFIRMACAO, ...AF_FRASES_INTERESSE], AF_FRASES_NAO_CONFIRMACAO) === 'sim';
+            const inicio3d = new Date(Date.now() - 3 * 24 * 3600 * 1000).toISOString();
+            const saidas = await db.all(
+                `SELECT texto FROM conversas WHERE telefone = ? AND direcao = 'out' AND ts >= ? ORDER BY ts DESC, id DESC LIMIT 5`,
+                [numLimpo, inicio3d]
+            );
+            let interesse = pedidoDireto;
+            if (!interesse && saidas[0] && PADRAO_OFERTA_LINK_AF.test(saidas[0].texto || '')) {
+                interesse = classificarRespostaAF(texto, [...AF_FRASES_SIM_CONFIRMACAO, ...AF_FRASES_INTERESSE], AF_FRASES_NAO_CONFIRMACAO) === 'sim';
+            }
+            if (!interesse) return false;
+
+            // Já mandou o link (nas últimas 24h): não repete — o aluno segue com o atendimento normal.
+            const inicio24h = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
+            if (await db.get(`SELECT 1 FROM conversas WHERE telefone = ? AND direcao = 'out' AND ts >= ? AND texto LIKE '%mqv/responder%' LIMIT 1`, [numLimpo, inicio24h])) return false;
         }
-        if (!interesse) return false;
-
-        // Já mandou o link (nas últimas 24h): não repete — o aluno segue com o atendimento normal.
-        const inicio24h = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
-        if (await db.get(`SELECT 1 FROM conversas WHERE telefone = ? AND direcao = 'out' AND ts >= ? AND texto LIKE '%mqv/responder%' LIMIT 1`, [numLimpo, inicio24h])) return false;
 
         const msgPers = await db.get('SELECT texto FROM mensagens_personalizadas WHERE nome = ?', NOME_MENSAGEM_AGENDAMENTO_MQV);
         if (!msgPers?.texto) { console.log(`ℹ️ Interesse em avaliação (${numLimpo}): mensagem "${NOME_MENSAGEM_AGENDAMENTO_MQV}" não existe em Mensagens Personalizadas.`); return false; }
@@ -12839,13 +12860,18 @@ async function processarComoRobo(msg, numLimpo, texto, telefoneReal, nomeContato
                 // ou o modelo ainda use [nome] ou {nome}, o aluno vê o nome de verdade.
                 const nomeExibir = nomeParaIA || '';
                 const pediuEnvioContrato = new RegExp(PADRAO_MARCADOR_ENVIAR_CONTRATO.source, 'i').test(respostaIARaw);
-                const respostaSemMarcador = respostaIARaw.replace(PADRAO_MARCADOR_ENVIAR_CONTRATO, ' ').trim();
+                const pediuEnvioAgenda = new RegExp(PADRAO_MARCADOR_ENVIAR_AGENDA.source, 'i').test(respostaIARaw);
+                const respostaSemMarcador = respostaIARaw.replace(PADRAO_MARCADOR_ENVIAR_CONTRATO, ' ').replace(PADRAO_MARCADOR_ENVIAR_AGENDA, ' ').trim();
                 const respostaIA = nomeExibir
                     ? respostaSemMarcador.replace(/\[nome\]/gi, nomeExibir).replace(/\{nome\}/gi, nomeExibir)
                     : respostaSemMarcador;
+                const enviarPedidosDaIA = async () => {
+                    if (pediuEnvioContrato) await enviarLinkContratoPeloChat({ canal, msg, numLimpo, telefoneReal, nomeContato });
+                    if (pediuEnvioAgenda) await enviarLinkAgendaPeloChat({ canal, msg, numLimpo, telefoneReal, nomeContato });
+                };
 
-                if (!respostaIA && pediuEnvioContrato) {
-                    await enviarLinkContratoPeloChat({ canal, msg, numLimpo, telefoneReal, nomeContato });
+                if (!respostaIA && (pediuEnvioContrato || pediuEnvioAgenda)) {
+                    await enviarPedidosDaIA();
                     io.emit('bot_digitando', { telefone: numLimpo, ativo: false });
                     return;
                 }
@@ -12864,7 +12890,7 @@ async function processarComoRobo(msg, numLimpo, texto, telefoneReal, nomeContato
                 if (sentIA) {
                     await registrarMensagemEnviada(telefoneReal, respostaIA, nomeContato, idSerializado(sentIA), false, 'text', null, canal);
                     await encaminharParaHumanoSeEncerrou(respostaIA, numLimpo);
-                    if (pediuEnvioContrato) await enviarLinkContratoPeloChat({ canal, msg, numLimpo, telefoneReal, nomeContato });
+                    await enviarPedidosDaIA();
                 }
             } catch (e) {
                 io.emit('bot_digitando', { telefone: numLimpo, ativo: false });
