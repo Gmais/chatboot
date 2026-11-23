@@ -606,7 +606,7 @@ async function carregarEstatisticas() {
 
         // ---- Conversas por status ----
         if (statusLista) {
-            const rotulos = { aberta: '🟢 Abertas', fechada: '⚪ Fechadas', aguardando: '🟡 Aguardando' };
+            const rotulos = { aberta: '🟢 Abertas', pendente: '🟠 Pendentes', fechada: '⚪ Fechadas', aguardando: '🟡 Aguardando' };
             const maxStatus = Math.max(1, ...s.atendimento.por_status.map(x => x.total));
             statusLista.innerHTML = s.atendimento.por_status.map(x => `
                 <div>
@@ -4112,6 +4112,8 @@ const CM = (() => {
     const badgeNaoLidas  = document.getElementById('badge-nao-lidas');
     const tabAbertas     = document.getElementById('tab-chat-abertas');
     const tabFechadas    = document.getElementById('tab-chat-fechadas');
+    const tabPendentes   = document.getElementById('tab-chat-pendentes'); // temporário: aba "Pendente"
+    const btnChatPendente = document.getElementById('btn-chat-pendente');
     const btnVolume      = document.getElementById('btn-chat-volume');
     const btnNovaConversa = document.getElementById('btn-chat-nova-conversa');
     const btnEmoji        = document.getElementById('btn-chat-emoji');
@@ -4211,7 +4213,7 @@ const CM = (() => {
         // por humano ou não, enquanto não estiver finalizada ela é "Abertas".
         return [...contacts.values()].filter(c => {
             const status = c.status || 'aberta';
-            const aba = status === 'fechada' ? 'fechada' : 'aberta';
+            const aba = status === 'fechada' || status === 'pendente' ? status : 'aberta';
             if (aba !== tab) return false;
             if (!searchQuery) return true;
             const q = searchQuery.toLowerCase();
@@ -4234,7 +4236,7 @@ const CM = (() => {
                 chatEmpty.style.display = 'block';
                 chatEmpty.textContent = activeTab === 'fechada'
                     ? 'Nenhuma conversa finalizada ainda.'
-                    : 'Nenhuma conversa encontrada.';
+                    : activeTab === 'pendente' ? 'Nenhuma conversa pendente.' : 'Nenhuma conversa encontrada.';
             }
             return;
         }
@@ -4357,7 +4359,37 @@ const CM = (() => {
         btnChatAssumir.textContent = assumida ? '🤖 Devolver ao Robô' : '🙋 Assumir Conversa';
         btnChatAssumir.className = assumida ? 'btn-danger' : 'btn-secondary';
         renderChatRoboButton();
+        renderChatPendenteButton();
     }
+
+    // ---- Temporário: "Marcar como Pendente" (aba Pendente). Finalizar tira a conversa de Pendente (o status vira "fechada"). ----
+    function renderChatPendenteButton() {
+        if (!btnChatPendente || !activePhone) return;
+        const pendente = contacts.get(activePhone)?.status === 'pendente';
+        btnChatPendente.textContent = pendente ? '↩️ Tirar de Pendente' : '⏳ Marcar como Pendente';
+        btnChatPendente.title = pendente ? 'Voltar esta conversa para a aba Abertas' : 'Mover esta conversa para a aba Pendente';
+    }
+
+    btnChatPendente?.addEventListener('click', async () => {
+        if (!activePhone) return;
+        const telefone = activePhone;
+        const novoStatus = contacts.get(telefone)?.status === 'pendente' ? 'aberta' : 'pendente';
+        try {
+            const r = await fetch(`/api/conversas/${encodeURIComponent(telefone)}/status`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ status: novoStatus })
+            });
+            if (!r.ok) throw new Error(`HTTP ${r.status}`);
+            upsertContact({ telefone, status: novoStatus });
+            renderChatPendenteButton();
+            renderContactList();
+            showToast(novoStatus === 'pendente' ? 'Conversa marcada como pendente' : 'Conversa de volta em Abertas',
+                novoStatus === 'pendente' ? 'Ela fica na aba Pendente até você tirar ou finalizar.' : '', 'success', 3000);
+        } catch (e) {
+            showToast('Erro', 'Não foi possível mudar a conversa de aba', 'error');
+        }
+    });
 
     // ---- Robô só nesta conversa (o "Ativar Robô" do topo vale pra todas) ----
     function renderChatRoboButton() {
@@ -4959,11 +4991,12 @@ const CM = (() => {
         // Abas Abertas / Fechadas
         function selecionarAba(aba) {
             activeTab = aba;
-            [tabAbertas, tabFechadas].forEach(btn => btn?.classList.remove('active'));
-            ({ aberta: tabAbertas, fechada: tabFechadas }[aba])?.classList.add('active');
+            [tabAbertas, tabPendentes, tabFechadas].forEach(btn => btn?.classList.remove('active'));
+            ({ aberta: tabAbertas, pendente: tabPendentes, fechada: tabFechadas }[aba])?.classList.add('active');
             renderContactList();
         }
         tabAbertas?.addEventListener('click', () => selecionarAba('aberta'));
+        tabPendentes?.addEventListener('click', () => selecionarAba('pendente'));
         tabFechadas?.addEventListener('click', () => selecionarAba('fechada'));
 
         // Volume das notificações (liga/desliga)
@@ -5054,6 +5087,7 @@ const CM = (() => {
             if (c) upsertContact({ ...c, status });
             updateGlobalBadge();
             renderContactList();
+            if (activePhone === telefone) renderChatPendenteButton();
         });
 
         socket.on('conversa_excluida', ({ telefone }) => {

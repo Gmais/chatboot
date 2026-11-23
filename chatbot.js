@@ -6759,9 +6759,9 @@ async function listarConversasComEtiquetas() {
         -- lista pro atendente mesmo tendo mensagem não lida de verdade (foi
         -- exatamente o bug relatado: com mais de 200 conversas no total, mais
         -- da metade sumia da tela a cada refresh/reconexão, aberta ou não).
-        SELECT * FROM base WHERE status = 'aberta'
+        SELECT * FROM base WHERE status IN ('aberta', 'pendente')
         UNION ALL
-        SELECT * FROM (SELECT * FROM base WHERE status != 'aberta' ORDER BY ultimo_ts DESC LIMIT 200)
+        SELECT * FROM (SELECT * FROM base WHERE status NOT IN ('aberta', 'pendente') ORDER BY ultimo_ts DESC LIMIT 200)
         ORDER BY ultimo_ts DESC
     `);
 
@@ -7161,7 +7161,8 @@ app.post('/api/conversas/:telefone/lida', async (req, res) => {
 app.post('/api/conversas/:telefone/status', async (req, res) => {
     const { telefone } = req.params;
     const { status } = req.body;
-    if (status !== 'aberta' && status !== 'fechada') return res.status(400).json({ error: 'status inválido.' });
+    // 'pendente' (temporário): aba própria no Bate Papo; não reabre sozinha nem desliga o robô — só sai pelo botão ou ao Finalizar.
+    if (!['aberta', 'pendente', 'fechada'].includes(status)) return res.status(400).json({ error: 'status inválido.' });
     try {
         await db.run(
             'INSERT INTO conversas_status (telefone, status, atualizado_em) VALUES (?, ?, CURRENT_TIMESTAMP) ON CONFLICT(telefone) DO UPDATE SET status = excluded.status, atualizado_em = CURRENT_TIMESTAMP',
@@ -12700,7 +12701,11 @@ async function responderFluxo(numLimpo, nomeContato, texto) {
 // mandar o link pra um aluno que não consegue entrar seria pior.
 const NOME_MENSAGEM_AGENDAMENTO_MQV = 'Agendamento+MQV';
 // A oferta pode ter sido escrita pela própria IA ("Quer que eu te mande o link pra agendar a próxima?"), então aceita "link pra/para (vc) agendar/marcar" em geral.
-const PADRAO_OFERTA_LINK_AF = /agende sua avalia[cç][aã]o f[ií]sica|posso te mandar o link|link (?:e os dados )?(?:pra|para) (?:(?:vc|voc[eê]) )?(?:agendar|marcar|reagendar)|link para agendar sua avalia/i;
+const PADRAO_OFERTA_LINK_AF = /agende sua avalia[cç][aã]o f[ií]sica|link (?:e os dados )?(?:pra|para) (?:(?:vc|voc[eê]) )?(?:agendar|marcar|reagendar)|link para agendar sua avalia/i;
+// "Posso te mandar o link?" sozinho é genérico (pode ser o link do contrato, do Pix...): só vale como oferta da agenda se a mesma mensagem fala de
+// avaliação/agendar e não de contrato/pagamento.
+const ehOfertaLinkAF = (t) => PADRAO_OFERTA_LINK_AF.test(t)
+    || (/posso te mandar o link/i.test(t) && /avalia[cç][aã]o|agend|marcar/i.test(t) && !/contrat|assin|pagamento|pix|boleto|parcela/i.test(t));
 const PADRAO_PEDIDO_AGENDAR_AF = /(agendar|marcar|agendo|marco|reagendar).{0,40}avaliacao|avaliacao.{0,40}(agendar|marcar|agendo|marco)/;
 const AF_FRASES_INTERESSE = ['quero', 'quero sim', 'sim quero', 'pode mandar', 'pode me mandar', 'pode enviar', 'pode me enviar', 'manda', 'manda sim', 'mande', 'envia', 'envie',
     'tenho interesse', 'tenho sim', 'gostaria', 'sim pode', 'sim pode mandar', 'sim por favor', 'pode mandar sim', 'pode sim', 'por favor'];
@@ -12718,7 +12723,7 @@ async function tratarInteresseAvaliacaoFisica({ msg, numLimpo, texto, telefoneRe
                 [numLimpo, inicio3d]
             );
             let interesse = pedidoDireto;
-            if (!interesse && saidas[0] && PADRAO_OFERTA_LINK_AF.test(saidas[0].texto || '')) {
+            if (!interesse && saidas[0] && ehOfertaLinkAF(saidas[0].texto || '')) {
                 interesse = classificarRespostaAF(texto, [...AF_FRASES_SIM_CONFIRMACAO, ...AF_FRASES_INTERESSE], AF_FRASES_NAO_CONFIRMACAO) === 'sim';
             }
             if (!interesse) return false;
