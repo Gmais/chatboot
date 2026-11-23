@@ -606,7 +606,7 @@ async function carregarEstatisticas() {
 
         // ---- Conversas por status ----
         if (statusLista) {
-            const rotulos = { aberta: '🟢 Abertas', pendente: '🟠 Pendentes', fechada: '⚪ Fechadas', aguardando: '🟡 Aguardando' };
+            const rotulos = { aberta: '🟢 Abertas', fechada: '⚪ Fechadas', aguardando: '🟡 Aguardando' };
             const maxStatus = Math.max(1, ...s.atendimento.por_status.map(x => x.total));
             statusLista.innerHTML = s.atendimento.por_status.map(x => `
                 <div>
@@ -4213,7 +4213,8 @@ const CM = (() => {
         // por humano ou não, enquanto não estiver finalizada ela é "Abertas".
         return [...contacts.values()].filter(c => {
             const status = c.status || 'aberta';
-            const aba = status === 'fechada' || status === 'pendente' ? status : 'aberta';
+            // Pendente é uma marca à parte (temporária): enquanto marcada, a conversa só aparece em Pendente, finalizada ou não.
+            const aba = c.pendente ? 'pendente' : status === 'fechada' ? 'fechada' : 'aberta';
             if (aba !== tab) return false;
             if (!searchQuery) return true;
             const q = searchQuery.toLowerCase();
@@ -4362,10 +4363,10 @@ const CM = (() => {
         renderChatPendenteButton();
     }
 
-    // ---- Temporário: "Marcar como Pendente" (aba Pendente). Finalizar tira a conversa de Pendente (o status vira "fechada"). ----
+    // ---- Temporário: "Marcar como Pendente" (aba Pendente). Só "Tirar de Pendente" tira: finalizar ou o cliente escrever não mexem na marca. ----
     function renderChatPendenteButton() {
         if (!btnChatPendente || !activePhone) return;
-        const pendente = contacts.get(activePhone)?.status === 'pendente';
+        const pendente = !!contacts.get(activePhone)?.pendente;
         btnChatPendente.textContent = pendente ? '↩️ Tirar de Pendente' : '⏳ Marcar como Pendente';
         btnChatPendente.title = pendente ? 'Voltar esta conversa para a aba Abertas' : 'Mover esta conversa para a aba Pendente';
     }
@@ -4373,19 +4374,20 @@ const CM = (() => {
     btnChatPendente?.addEventListener('click', async () => {
         if (!activePhone) return;
         const telefone = activePhone;
-        const novoStatus = contacts.get(telefone)?.status === 'pendente' ? 'aberta' : 'pendente';
+        const pendente = !contacts.get(telefone)?.pendente;
         try {
-            const r = await fetch(`/api/conversas/${encodeURIComponent(telefone)}/status`, {
+            const r = await fetch(`/api/conversas/${encodeURIComponent(telefone)}/pendente`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ status: novoStatus })
+                body: JSON.stringify({ pendente })
             });
             if (!r.ok) throw new Error(`HTTP ${r.status}`);
-            upsertContact({ telefone, status: novoStatus });
+            upsertContact({ telefone, pendente: pendente ? 1 : 0 });
             renderChatPendenteButton();
             renderContactList();
-            showToast(novoStatus === 'pendente' ? 'Conversa marcada como pendente' : 'Conversa de volta em Abertas',
-                novoStatus === 'pendente' ? 'Ela fica na aba Pendente até você tirar ou finalizar.' : '', 'success', 3000);
+            const status = contacts.get(telefone)?.status;
+            showToast(pendente ? 'Conversa marcada como pendente' : `Conversa tirada de Pendente`,
+                pendente ? 'Ela fica na aba Pendente até você clicar em "Tirar de Pendente", mesmo se for finalizada.' : `Voltou para a aba ${status === 'fechada' ? 'Fechadas' : 'Abertas'}.`, 'success', 3500);
         } catch (e) {
             showToast('Erro', 'Não foi possível mudar a conversa de aba', 'error');
         }
@@ -5086,6 +5088,13 @@ const CM = (() => {
             const c = contacts.get(telefone);
             if (c) upsertContact({ ...c, status });
             updateGlobalBadge();
+            renderContactList();
+            if (activePhone === telefone) renderChatPendenteButton();
+        });
+
+        socket.on('conversa_pendente', ({ telefone, pendente }) => {
+            const c = contacts.get(telefone);
+            if (c) upsertContact({ ...c, pendente: pendente ? 1 : 0 });
             renderContactList();
             if (activePhone === telefone) renderChatPendenteButton();
         });

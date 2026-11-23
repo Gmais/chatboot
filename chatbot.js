@@ -397,7 +397,7 @@ async function mesclarConversasDuplicadas() {
                     await db.run('UPDATE mensagens_enviadas SET telefone = ? WHERE telefone = ?', [canonico, variante]);
                     // Chave única em telefone — só migra se o canônico ainda não
                     // tiver linha; senão descarta a duplicata (mantém a do canônico).
-                    for (const tabela of ['conversas_status', 'conversas_humano', 'conversas_robo_ativo', 'vinculo_pacto']) {
+                    for (const tabela of ['conversas_status', 'conversas_humano', 'conversas_robo_ativo', 'conversas_pendentes', 'vinculo_pacto']) {
                         const existeCanonico = await db.get(`SELECT 1 FROM ${tabela} WHERE telefone = ?`, canonico);
                         if (existeCanonico) await db.run(`DELETE FROM ${tabela} WHERE telefone = ?`, variante);
                         else await db.run(`UPDATE ${tabela} SET telefone = ? WHERE telefone = ?`, [canonico, variante]);
@@ -1075,7 +1075,17 @@ async function initDB() {
         -- indexações em tempo real (registrarMensagemEnviada) deixam essa
         -- coluna NULL, e SQLite permite múltiplos NULL num índice único.
         CREATE UNIQUE INDEX IF NOT EXISTS idx_ia_exemplos_origem ON ia_exemplos_consultoras(origem_conversa_id) WHERE origem_conversa_id IS NOT NULL;
+        -- Temporário: marca "Pendente" do Bate Papo, independente do status (aberta/fechada). Só sai pelo botão "Tirar de Pendente".
+        CREATE TABLE IF NOT EXISTS conversas_pendentes (
+            telefone TEXT PRIMARY KEY,
+            marcado_em DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
     `);
+    // A primeira versão da aba gravava "pendente" como status da conversa: passa pra marca própria e devolve o status "aberta".
+    try {
+        await db.run("INSERT OR IGNORE INTO conversas_pendentes (telefone) SELECT telefone FROM conversas_status WHERE status = 'pendente'");
+        await db.run("UPDATE conversas_status SET status = 'aberta' WHERE status = 'pendente'");
+    } catch (e) { console.error('⚠️ Migração das conversas pendentes:', e.message); }
     try { await db.exec(`ALTER TABLE programacao_acoes ADD COLUMN intervalo_depois_segundos INTEGER DEFAULT 60`); } catch (e) { }
     // "automacao" = roda Importar Lista (sincroniza a fila com quem tem a
     // etiqueta agora); "disparo" = roda Disparar Mensagens (manda pra quem já
@@ -4848,6 +4858,7 @@ async function moverTodasTabelasDoTelefone(de, canonico) {
     await moverLinhaPkTelefone('conversas_humano', de, canonico);
     await moverLinhaPkTelefone('conversas_robo_ativo', de, canonico);
     await moverLinhaPkTelefone('conversas_status', de, canonico);
+    await moverLinhaPkTelefone('conversas_pendentes', de, canonico);
     await moverLinhaPkTelefone('pacto_inadimplentes', de, canonico);
     await moverLinhaPkTelefone('pacto_vencem_hoje', de, canonico);
     await moverLinhasChaveComposta('contato_etiquetas', 'etiqueta_id', de, canonico);
@@ -6735,6 +6746,7 @@ async function listarConversasComEtiquetas() {
                 (CASE WHEN ch.telefone IS NULL THEN 0 ELSE 1 END) AS assumida_humano,
                 (CASE WHEN ra.telefone IS NULL THEN 0 ELSE 1 END) AS robo_ativo,
                 COALESCE(cs.status, 'aberta') AS status,
+                (CASE WHEN cp.telefone IS NULL THEN 0 ELSE 1 END) AS pendente,
                 COALESCE(c.canal, 'whatsapp') AS canal
             FROM conversas c
             INNER JOIN (
@@ -6752,6 +6764,7 @@ async function listarConversasComEtiquetas() {
             LEFT JOIN conversas_humano ch ON ch.telefone = c.telefone
             LEFT JOIN conversas_robo_ativo ra ON ra.telefone = c.telefone
             LEFT JOIN conversas_status cs ON cs.telefone = c.telefone
+            LEFT JOIN conversas_pendentes cp ON cp.telefone = c.telefone
             GROUP BY c.telefone
         )
         -- O corte de 200 só vale pras conversas JÁ FECHADAS (histórico, menos
@@ -6759,9 +6772,10 @@ async function listarConversasComEtiquetas() {
         -- lista pro atendente mesmo tendo mensagem não lida de verdade (foi
         -- exatamente o bug relatado: com mais de 200 conversas no total, mais
         -- da metade sumia da tela a cada refresh/reconexão, aberta ou não).
-        SELECT * FROM base WHERE status IN ('aberta', 'pendente')
+        -- Pendentes também nunca ficam de fora (mesmo finalizadas, continuam na aba Pendente).
+        SELECT * FROM base WHERE status = 'aberta' OR pendente = 1
         UNION ALL
-        SELECT * FROM (SELECT * FROM base WHERE status NOT IN ('aberta', 'pendente') ORDER BY ultimo_ts DESC LIMIT 200)
+        SELECT * FROM (SELECT * FROM base WHERE status != 'aberta' AND pendente = 0 ORDER BY ultimo_ts DESC LIMIT 200)
         ORDER BY ultimo_ts DESC
     `);
 
@@ -7161,8 +7175,7 @@ app.post('/api/conversas/:telefone/lida', async (req, res) => {
 app.post('/api/conversas/:telefone/status', async (req, res) => {
     const { telefone } = req.params;
     const { status } = req.body;
-    // 'pendente' (temporário): aba própria no Bate Papo; não reabre sozinha nem desliga o robô — só sai pelo botão ou ao Finalizar.
-    if (!['aberta', 'pendente', 'fechada'].includes(status)) return res.status(400).json({ error: 'status inválido.' });
+    if (status !== 'aberta' && status !== 'fechada') return res.status(400).json({ error: 'status inválido.' });
     try {
         await db.run(
             'INSERT INTO conversas_status (telefone, status, atualizado_em) VALUES (?, ?, CURRENT_TIMESTAMP) ON CONFLICT(telefone) DO UPDATE SET status = excluded.status, atualizado_em = CURRENT_TIMESTAMP',
@@ -7195,6 +7208,21 @@ app.post('/api/conversas/:telefone/status', async (req, res) => {
     }
 });
 
+// Temporário: marca/desmarca a conversa como "Pendente" (aba própria no Bate Papo). A marca não depende do status: finalizar a conversa ou o
+// cliente escrever de novo não tira de Pendente — só o botão "Tirar de Pendente" (pendente: false).
+app.post('/api/conversas/:telefone/pendente', async (req, res) => {
+    const { telefone } = req.params;
+    const pendente = !!req.body?.pendente;
+    try {
+        if (pendente) await db.run('INSERT OR IGNORE INTO conversas_pendentes (telefone) VALUES (?)', telefone);
+        else await db.run('DELETE FROM conversas_pendentes WHERE telefone = ?', telefone);
+        io.emit('conversa_pendente', { telefone, pendente });
+        res.json({ success: true, pendente });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
 // Apaga todo o histórico de uma conversa — ação irreversível, usada com
 // moderação pelo botão "Excluir" no Bate Papo ao Vivo.
 app.delete('/api/conversas/:telefone', async (req, res) => {
@@ -7204,6 +7232,7 @@ app.delete('/api/conversas/:telefone', async (req, res) => {
         await db.run('DELETE FROM conversas_humano WHERE telefone = ?', telefone);
         await db.run('DELETE FROM conversas_robo_ativo WHERE telefone = ?', telefone);
         await db.run('DELETE FROM conversas_status WHERE telefone = ?', telefone);
+        await db.run('DELETE FROM conversas_pendentes WHERE telefone = ?', telefone);
         io.emit('conversa_excluida', { telefone });
         res.json({ success: true });
     } catch (err) {
