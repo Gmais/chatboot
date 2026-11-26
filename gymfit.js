@@ -201,6 +201,14 @@ async function obterOrcamentoMatricula() {
     return gymfitRequest('GET', `/integrations/chatbot/orcamento-matricula?${consultaPlano()}`);
 }
 
+// Planos ativos e vigentes HOJE no GymFit, uma linha por duração: [{ plano, meses, mensal_centavos, total_centavos, taxa_matricula_centavos,
+// taxa_rematricula_centavos, parcelamentos: [{ vezes, parcela_centavos, parcela_com_matricula_centavos, parcela_com_rematricula_centavos }] }].
+// parcelamentos vem com o valor de cada parcela já calculado pelo GymFit (mesma conta da venda, juros incluídos).
+async function obterPlanosVigentes() {
+    const { planos } = await gymfitGet('/integrations/chatbot/planos');
+    return planos || [];
+}
+
 // Cadastra o aluno e já lança o contrato de matrícula. Devolve { matricula, plano, inicio, fim, ... }. Erros: GymfitErroDefinitivo com
 // .status 409 (CPF já cadastrado; .detalhes.matricula) ou 400 (dado inválido, ex.: CPF).
 async function matricularAlunoNovo({ nome, celular, cpf, email, consultor }) {
@@ -303,6 +311,6 @@ module.exports = {
     buscarAlunoPorMatricula, buscarAlunoPorCodigo, obterParcelasEmAberto,
     obterContratosPorMatricula: obterContratosPorMatriculaComCache,
     obterDetalheContrato, obterOperacoesContrato,
-    obterOrcamentoMatricula, matricularAlunoNovo, gerarPixParcela, obterAlertasCrm,
+    obterOrcamentoMatricula, obterPlanosVigentes, matricularAlunoNovo, gerarPixParcela, obterAlertasCrm,
     GymfitErroDefinitivo
 };

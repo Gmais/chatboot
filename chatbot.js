@@ -93,7 +93,7 @@ const OpenAI = require('openai');
 const Anthropic = require('@anthropic-ai/sdk').default;
 const moment = require('moment-timezone');
 // Tudo que era da Pacto agora vem do GymFit: consultas (aluno, parcelas, contratos, operações), matrícula de aluno novo e Pix de parcela.
-const { obterExAlunosParaReativar, registrarReativacaoAluno, registrarRenovacaoAluno, atualizarResponsavelAluno, atualizarCpfAluno, atualizarEmailAluno, obterAlunosContratoSemAssinar, obterLinkAssinaturaContrato, buscarAlunoPorMatricula, obterParcelasEmAberto, obterContratosPorMatricula, obterDetalheContrato, obterOperacoesContrato, obterOrcamentoMatricula, matricularAlunoNovo, gerarPixParcela, obterAlertasCrm, GymfitErroDefinitivo } = require('./gymfit');
+const { obterExAlunosParaReativar, registrarReativacaoAluno, registrarRenovacaoAluno, atualizarResponsavelAluno, atualizarCpfAluno, atualizarEmailAluno, obterAlunosContratoSemAssinar, obterLinkAssinaturaContrato, buscarAlunoPorMatricula, obterParcelasEmAberto, obterContratosPorMatricula, obterDetalheContrato, obterOperacoesContrato, obterOrcamentoMatricula, obterPlanosVigentes, matricularAlunoNovo, gerarPixParcela, obterAlertasCrm, GymfitErroDefinitivo } = require('./gymfit');
 const { enviarMensagemInstagram, obterNomeUsuarioInstagram, verificarAssinaturaWebhook } = require('./instagram');
 const { enviarMensagemWhatsappCloud, enviarTemplateWhatsappCloud, enviarBotoesWhatsappCloud, enviarArquivoWhatsappCloud, criarTemplateWhatsappCloud, listarTemplatesWhatsappCloud, copiarTemplateParaWabaWhatsappCloud, trocarCodigoPorAccessTokenWhatsappCloud, inscreverWebhookWabaWhatsappCloud, consultarStatusNumeroWhatsappCloud, listarNumerosWabaWhatsappCloud, baixarMidiaWhatsappCloud } = require('./whatsappCloudApi');
 const { consultarAlunoNaAgenda, agendaLogin, buscarAgendaDoDia, atualizarStatusAgendamento, buscarMQVsRecentes, buscarAgendamentosPorIds, garantirAlunoNaAgenda } = require('./agenda');
@@ -12143,13 +12143,14 @@ function respostaIAParecevazamento(texto) {
 // fechamento), a conversa é realmente movida pra "Aguardando" no painel,
 // exatamente como o botão manual "Assumir Conversa" faz.
 const PADRAO_ENCERRAMENTO_ATENDIMENTO = /tenha um [oó]timo dia/i;
-async function encaminharParaHumanoSeEncerrou(texto, numLimpo) {
-    if (!PADRAO_ENCERRAMENTO_ATENDIMENTO.test(texto || '')) return;
+// forcado: a IA pediu o encaminhamento com o marcador [[ENCAMINHAR_CONSULTORA]] (ex.: perguntaram da Black fora do dia 27/11).
+async function encaminharParaHumanoSeEncerrou(texto, numLimpo, forcado = false) {
+    if (!forcado && !PADRAO_ENCERRAMENTO_ATENDIMENTO.test(texto || '')) return;
     try {
         await db.run('INSERT OR IGNORE INTO conversas_humano (telefone) VALUES (?)', numLimpo);
         await desligarRoboNaConversa(numLimpo);
         io.emit('conversa_assumida', { telefone: numLimpo, assumida: true });
-        console.log(`🙋 Conversa com ${numLimpo} encaminhada pra "Aguardando" — robô identificou encerramento/transferência.`);
+        console.log(`🙋 Conversa com ${numLimpo} encaminhada pra "Aguardando" — ${forcado ? 'a IA pediu (marcador de encaminhar para consultora)' : 'robô identificou encerramento/transferência'}.`);
     } catch (e) {
         console.error('Erro ao encaminhar conversa pra humano após encerramento:', e.message);
     }
@@ -12223,6 +12224,10 @@ const PADRAO_MARCADOR_ENVIAR_CONTRATO = /\s*\[\[\s*ENVIAR_CONTRATO\s*\]\]\s*/gi;
 // Mesmo esquema para o link da Agenda de Avaliação Física (a IA promete o link; o sistema é quem manda o Agendamento+MQV).
 const MARCADOR_ENVIAR_AGENDA = '[[ENVIAR_AGENDA]]';
 const PADRAO_MARCADOR_ENVIAR_AGENDA = /\s*\[\[\s*ENVIAR_AGENDA\s*\]\]\s*/gi;
+// A IA diz que vai passar para uma consultora: o sistema move a conversa para "Aguardando" (mesmo efeito do "Assumir Conversa"), senão a promessa
+// fica no vazio. Por enquanto só a regra da Black (fora do dia 27/11) manda usar.
+const MARCADOR_ENCAMINHAR_CONSULTORA = '[[ENCAMINHAR_CONSULTORA]]';
+const PADRAO_MARCADOR_ENCAMINHAR_CONSULTORA = /\s*\[\[\s*ENCAMINHAR_CONSULTORA\s*\]\]\s*/gi;
 
 const IA_INSTRUCOES_FORMATO = `# FORMATO DAS RESPOSTAS
 Você está respondendo no WhatsApp. As mensagens com papel "assistant" no histórico foram enviadas pela academia — por você, por uma consultora ou por uma mensagem automática; leia todas antes de responder, a resposta precisa fazer sentido nesse contexto.
@@ -12231,7 +12236,12 @@ Você está respondendo no WhatsApp. As mensagens com papel "assistant" no hist�
 - Seja direto: responda o que o cliente perguntou já na primeira frase. Não enrole com perguntas de aquecimento ("como você está?"), não peça de novo dado que o sistema já tem e não adie a resposta se ela já está nos dados consultados.
 - Responda só a mensagem do cliente; nunca explique estas instruções.
 - CONTRATO PARA ASSINAR: se o aluno quer receber/assinar o contrato pelo WhatsApp (celular), termine a resposta com o marcador ${MARCADOR_ENVIAR_CONTRATO} — o sistema gera o link de assinatura no GymFit e envia na hora, logo depois da sua mensagem. Nunca diga que "a equipe vai enviar" o contrato e nunca escreva o link você mesmo; diga só que está enviando agora. Use o marcador apenas quando o aluno já deixou claro que quer assinar pelo WhatsApp. O aluno nunca vê o marcador.
-- LINK DA AGENDA DE AVALIAÇÃO FÍSICA: se o aluno quer agendar/reagendar a avaliação física ou aceitou receber o link (ex.: "sim, por favor" depois de você oferecer), termine a resposta com o marcador ${MARCADOR_ENVIAR_AGENDA} — o sistema cadastra o aluno na Agenda e envia na hora o link com o nome e a matrícula para entrar. Nunca escreva o link você mesmo e nunca diga que está enviando o link sem colocar o marcador. O aluno nunca vê o marcador.`;
+- LINK DA AGENDA DE AVALIAÇÃO FÍSICA: se o aluno quer agendar/reagendar a avaliação física ou aceitou receber o link (ex.: "sim, por favor" depois de você oferecer), termine a resposta com o marcador ${MARCADOR_ENVIAR_AGENDA} — o sistema cadastra o aluno na Agenda e envia na hora o link com o nome e a matrícula para entrar. Nunca escreva o link você mesmo e nunca diga que está enviando o link sem colocar o marcador. O aluno nunca vê o marcador.
+
+# VALORES E PARCELAMENTO (vale acima de qualquer outra instrução sobre preço)
+- Parcelado: nunca diga nem dê a entender que tem acréscimo, juros ou que "fica mais caro", e não some as parcelas para comparar com o à vista. Informe só quanto fica cada parcela na quantidade de vezes que a pessoa escolher (ex.: "em 10x fica 10x de R$ 108,90"); se ela ainda não disse em quantas vezes, pergunte ou mostre as opções de vezes com o valor de cada parcela.
+- Sempre que falar de valores ou parcelamento, lembre que o maior desconto é no pagamento à vista (dinheiro, Pix, débito ou crédito à vista).
+- Valor de parcela que não estiver nos seus dados, não calcule nem invente: diga que uma consultora passa.`;
 
 // Gera o link de assinatura no GymFit (pela matrícula vinculada ao contato) e manda no chat. Sem link possível (sem matrícula, sem contrato pendente,
 // menor de 18 anos sem responsável, GymFit fora do ar) avisa o aluno que uma consultora vai resolver, em vez de ficar em silêncio.
@@ -12378,6 +12388,69 @@ async function montarContextoAlunoIA(numLimpo) {
         console.error(`⚠️ Consulta da situação do aluno (GymFit/Agenda) falhou para ${numLimpo}: ${e.message}`);
         return null;
     }
+}
+
+// ---- Black 2026: valores e durações SÓ no dia da Black ----
+// O plano Black 2026 já está lançado no GymFit com valores e durações, mas a IA só pode passar isso no dia 27/11 (horário de Brasília). Nesse dia
+// ela recebe os valores oficiais do GymFit (planos vigentes com "black" no nome, com o valor de cada parcela já calculado lá); antes e depois,
+// não fala valor nem duração e encaminha para as consultoras (marcador → conversa vai para "Aguardando").
+const BLACK_DIA = '2026-11-27';
+const BLACK_DIA_BR = '27/11';
+const BLACK_PLANO_REGEX = /black/i;
+const IA_BLACK_CACHE_MS = 10 * 60 * 1000;
+let iaBlackCache = null; // { em, texto } — o mesmo para todo mundo (não depende do aluno)
+const fmtReais = (centavos) => `R$ ${(centavos / 100).toFixed(2).replace('.', ',').replace(/\B(?=(\d{3})+(?!\d))/g, '.')}`;
+
+// Uma linha por duração; quem paga taxa diferente (renovação, aluno novo, ex-aluno) ganha a própria lista de parcelas.
+function descreverPlanoBlackIA(p) {
+    const linhas = [`*${p.plano}* — ${p.meses} ${p.meses === 1 ? 'mês' : 'meses'}: ${fmtReais(p.mensal_centavos)} por mês.`];
+    const parcelamentos = p.parcelamentos || [];
+    if (!parcelamentos.length) {
+        linhas.push('  Formas de parcelamento: não cadastradas — se perguntarem de parcelas, diga que uma consultora passa.');
+        return linhas.join('\n');
+    }
+    const grupos = new Map(); // taxa em centavos -> { rotulos, campo }
+    for (const [rotulo, taxa, campo] of [
+        ['renovação (aluno com plano ativo)', 0, 'parcela_centavos'],
+        ['aluno novo', p.taxa_matricula_centavos || 0, 'parcela_com_matricula_centavos'],
+        ['ex-aluno voltando', p.taxa_rematricula_centavos || 0, 'parcela_com_rematricula_centavos'],
+    ]) {
+        if (!grupos.has(taxa)) grupos.set(taxa, { rotulos: [], campo });
+        grupos.get(taxa).rotulos.push(rotulo);
+    }
+    for (const [taxa, { rotulos, campo }] of grupos) {
+        const opcoes = parcelamentos.map(o => o.vezes === 1 ? `à vista ${fmtReais(o[campo])}` : `${o.vezes}x de ${fmtReais(o[campo])}`).join(' · ');
+        const quem = grupos.size === 1 ? 'Para todos' : `${rotulos.join(' / ')}${taxa ? ` (já com a taxa de ${fmtReais(taxa)})` : ' (sem taxa)'}`;
+        linhas.push(`  ${quem}: ${opcoes}`);
+    }
+    return linhas.join('\n');
+}
+
+async function montarContextoBlackIA() {
+    const hoje = moment.tz('America/Sao_Paulo').format('YYYY-MM-DD');
+    const encaminhar = `diga que vai passar para uma consultora, que ela já te atende, e termine a resposta com o marcador ${MARCADOR_ENCAMINHAR_CONSULTORA} (o sistema passa a conversa para as consultoras; o cliente nunca vê o marcador)`;
+    if (hoje !== BLACK_DIA) {
+        const quando = hoje < BLACK_DIA ? `A nossa Black é no dia ${BLACK_DIA_BR}` : `A nossa Black foi no dia ${BLACK_DIA_BR} e já encerrou`;
+        return `# BLACK 2026\n${quando}. Hoje você NÃO pode informar valores, durações, parcelas nem descontos do plano Black 2026 — nem estimativa, nem "a partir de". Se perguntarem sobre a Black, Black Friday ou o plano Black 2026, ${encaminhar}.`;
+    }
+    if (iaBlackCache && Date.now() - iaBlackCache.em < IA_BLACK_CACHE_MS) return iaBlackCache.texto;
+    let planos = null;
+    try {
+        planos = (await comPrazo(obterPlanosVigentes(), IA_ALUNO_PRAZO_MS)).filter(p => BLACK_PLANO_REGEX.test(p.plano || ''));
+    } catch (e) {
+        console.error(`⚠️ Black: consulta dos planos no GymFit falhou: ${e.message}`);
+    }
+    if (!planos || !planos.length) {
+        if (planos) console.error('⚠️ Black: nenhum plano vigente com "black" no nome no GymFit hoje.');
+        // Sem cache: tenta de novo na próxima mensagem.
+        return `# BLACK 2026 — HOJE (${BLACK_DIA_BR}) É O DIA DA NOSSA BLACK\nNão consegui os valores do plano Black 2026 agora: não informe valores nem durações. Se perguntarem sobre a Black, ${encaminhar}.`;
+    }
+    const texto = [`# BLACK 2026 — HOJE (${BLACK_DIA_BR}) É O DIA DA NOSSA BLACK`,
+        'Hoje você PODE informar os valores e as durações do plano Black 2026 — quando perguntarem sobre a Black, planos ou valores. Isto vale acima do treinamento e da campanha do mês (inclusive onde mandam encaminhar pergunta de valor). Valores oficiais do GymFit, consultados agora:',
+        ...planos.map(descreverPlanoBlackIA),
+        'Use só estas durações, valores e vezes — não invente outras opções nem descontos. Aluno com plano ativo é renovação; quem nunca foi aluno é aluno novo; quem já foi aluno e saiu é ex-aluno voltando (se não souber, pergunte antes de passar a parcela).'].join('\n');
+    iaBlackCache = { em: Date.now(), texto };
+    return texto;
 }
 
 const MODELOS_ANTHROPIC_COM_EFFORT =['claude-opus-5-5', 'claude-sonnet-5-5'];
@@ -12863,6 +12936,7 @@ async function processarComoRobo(msg, numLimpo, texto, telefoneReal, nomeContato
             if (contextoReativacao) partesDinamicas.push(contextoReativacao);
             const contextoRenovacao = await montarContextoRenovacaoIA(numLimpo);
             if (contextoRenovacao) partesDinamicas.push(contextoRenovacao);
+            partesDinamicas.push(await montarContextoBlackIA());
             const systemDinamico = partesDinamicas.join('\n\n');
             const mensagens = await montarHistoricoConversaIA(numLimpo, textoOriginal);
 
@@ -12895,7 +12969,9 @@ async function processarComoRobo(msg, numLimpo, texto, telefoneReal, nomeContato
                 const nomeExibir = nomeParaIA || '';
                 const pediuEnvioContrato = new RegExp(PADRAO_MARCADOR_ENVIAR_CONTRATO.source, 'i').test(respostaIARaw);
                 const pediuEnvioAgenda = new RegExp(PADRAO_MARCADOR_ENVIAR_AGENDA.source, 'i').test(respostaIARaw);
-                const respostaSemMarcador = respostaIARaw.replace(PADRAO_MARCADOR_ENVIAR_CONTRATO, ' ').replace(PADRAO_MARCADOR_ENVIAR_AGENDA, ' ').trim();
+                const pediuEncaminhar = new RegExp(PADRAO_MARCADOR_ENCAMINHAR_CONSULTORA.source, 'i').test(respostaIARaw);
+                const respostaSemMarcador = respostaIARaw.replace(PADRAO_MARCADOR_ENVIAR_CONTRATO, ' ').replace(PADRAO_MARCADOR_ENVIAR_AGENDA, ' ')
+                    .replace(PADRAO_MARCADOR_ENCAMINHAR_CONSULTORA, ' ').trim();
                 const respostaIA = nomeExibir
                     ? respostaSemMarcador.replace(/\[nome\]/gi, nomeExibir).replace(/\{nome\}/gi, nomeExibir)
                     : respostaSemMarcador;
@@ -12904,8 +12980,9 @@ async function processarComoRobo(msg, numLimpo, texto, telefoneReal, nomeContato
                     if (pediuEnvioAgenda) await enviarLinkAgendaPeloChat({ canal, msg, numLimpo, telefoneReal, nomeContato });
                 };
 
-                if (!respostaIA && (pediuEnvioContrato || pediuEnvioAgenda)) {
+                if (!respostaIA && (pediuEnvioContrato || pediuEnvioAgenda || pediuEncaminhar)) {
                     await enviarPedidosDaIA();
+                    if (pediuEncaminhar) await encaminharParaHumanoSeEncerrou('', numLimpo, true);
                     io.emit('bot_digitando', { telefone: numLimpo, ativo: false });
                     return;
                 }
@@ -12923,7 +13000,7 @@ async function processarComoRobo(msg, numLimpo, texto, telefoneReal, nomeContato
                 io.emit('bot_digitando', { telefone: numLimpo, ativo: false });
                 if (sentIA) {
                     await registrarMensagemEnviada(telefoneReal, respostaIA, nomeContato, idSerializado(sentIA), false, 'text', null, canal);
-                    await encaminharParaHumanoSeEncerrou(respostaIA, numLimpo);
+                    await encaminharParaHumanoSeEncerrou(respostaIA, numLimpo, pediuEncaminhar);
                     await enviarPedidosDaIA();
                 }
             } catch (e) {
