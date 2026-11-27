@@ -12403,7 +12403,8 @@ const IA_BLACK_CACHE_MS = 10 * 60 * 1000;
 let iaBlackCache = null; // { em, texto } — o mesmo para todo mundo (não depende do aluno)
 const fmtReais = (centavos) => `R$ ${(centavos / 100).toFixed(2).replace('.', ',').replace(/\B(?=(\d{3})+(?!\d))/g, '.')}`;
 
-// Uma linha por duração; quem paga taxa diferente (renovação, aluno novo, ex-aluno) ganha a própria lista de parcelas.
+// Uma linha por duração. Na Black 2026 há isenção da taxa de matrícula (e de rematrícula): aluno novo, ex-aluno e renovação pagam a mesma
+// parcela — a sem taxa (parcela_centavos), mesmo que o plano no GymFit tenha taxa cadastrada.
 function descreverPlanoBlackIA(p) {
     const linhas = [`*${p.plano}* — ${p.meses} ${p.meses === 1 ? 'mês' : 'meses'}: ${fmtReais(p.mensal_centavos)} por mês.`];
     const parcelamentos = p.parcelamentos || [];
@@ -12411,29 +12412,19 @@ function descreverPlanoBlackIA(p) {
         linhas.push('  Formas de parcelamento: não cadastradas — se perguntarem de parcelas, diga que uma consultora passa.');
         return linhas.join('\n');
     }
-    const grupos = new Map(); // taxa em centavos -> { rotulos, campo }
-    for (const [rotulo, taxa, campo] of [
-        ['renovação (aluno com plano ativo)', 0, 'parcela_centavos'],
-        ['aluno novo', p.taxa_matricula_centavos || 0, 'parcela_com_matricula_centavos'],
-        ['ex-aluno voltando', p.taxa_rematricula_centavos || 0, 'parcela_com_rematricula_centavos'],
-    ]) {
-        if (!grupos.has(taxa)) grupos.set(taxa, { rotulos: [], campo });
-        grupos.get(taxa).rotulos.push(rotulo);
-    }
-    for (const [taxa, { rotulos, campo }] of grupos) {
-        const opcoes = parcelamentos.map(o => o.vezes === 1 ? `à vista ${fmtReais(o[campo])}` : `${o.vezes}x de ${fmtReais(o[campo])}`).join(' · ');
-        const quem = grupos.size === 1 ? 'Para todos' : `${rotulos.join(' / ')}${taxa ? ` (já com a taxa de ${fmtReais(taxa)})` : ' (sem taxa)'}`;
-        linhas.push(`  ${quem}: ${opcoes}`);
-    }
+    const opcoes = parcelamentos.map(o => o.vezes === 1 ? `à vista ${fmtReais(o.parcela_centavos)}` : `${o.vezes}x de ${fmtReais(o.parcela_centavos)}`).join(' · ');
+    linhas.push(`  Para todos (sem taxa de matrícula): ${opcoes}`);
     return linhas.join('\n');
 }
+const BLACK_ISENCAO_TAXA = 'Na Black 2026 tem ISENÇÃO DA TAXA DE MATRÍCULA: quem fechar o plano Black não paga taxa de matrícula (nem de rematrícula, para ex-aluno voltando). Pode e deve contar isso quando falarem da Black.';
 
 async function montarContextoBlackIA() {
     const hoje = moment.tz('America/Sao_Paulo').format('YYYY-MM-DD');
     const encaminhar = `diga que vai passar para uma consultora, que ela já te atende, e termine a resposta com o marcador ${MARCADOR_ENCAMINHAR_CONSULTORA} (o sistema passa a conversa para as consultoras; o cliente nunca vê o marcador)`;
     if (hoje !== BLACK_DIA) {
         const quando = hoje < BLACK_DIA ? `A nossa Black é no dia ${BLACK_DIA_BR}` : `A nossa Black foi no dia ${BLACK_DIA_BR} e já encerrou`;
-        return `# BLACK 2026\n${quando}. Hoje você NÃO pode informar valores, durações, parcelas nem descontos do plano Black 2026 — nem estimativa, nem "a partir de". Se perguntarem sobre a Black, Black Friday ou o plano Black 2026, ${encaminhar}.`;
+        const isencao = hoje < BLACK_DIA ? `\n${BLACK_ISENCAO_TAXA} (Isso você já pode contar; só valores e durações que não.)` : '';
+        return `# BLACK 2026\n${quando}. Hoje você NÃO pode informar valores, durações, parcelas nem descontos do plano Black 2026 — nem estimativa, nem "a partir de". Se perguntarem sobre a Black, Black Friday ou o plano Black 2026, ${encaminhar}.${isencao}`;
     }
     if (iaBlackCache && Date.now() - iaBlackCache.em < IA_BLACK_CACHE_MS) return iaBlackCache.texto;
     let planos = null;
@@ -12445,12 +12436,13 @@ async function montarContextoBlackIA() {
     if (!planos || !planos.length) {
         if (planos) console.error('⚠️ Black: nenhum plano vigente com "black" no nome no GymFit hoje.');
         // Sem cache: tenta de novo na próxima mensagem.
-        return `# BLACK 2026 — HOJE (${BLACK_DIA_BR}) É O DIA DA NOSSA BLACK\nNão consegui os valores do plano Black 2026 agora: não informe valores nem durações. Se perguntarem sobre a Black, ${encaminhar}.`;
+        return `# BLACK 2026 — HOJE (${BLACK_DIA_BR}) É O DIA DA NOSSA BLACK\n${BLACK_ISENCAO_TAXA}\nNão consegui os valores do plano Black 2026 agora: não informe valores nem durações. Se perguntarem sobre a Black, ${encaminhar}.`;
     }
     const texto = [`# BLACK 2026 — HOJE (${BLACK_DIA_BR}) É O DIA DA NOSSA BLACK`,
         'Hoje você PODE informar os valores e as durações do plano Black 2026 — quando perguntarem sobre a Black, planos ou valores. Isto vale acima do treinamento e da campanha do mês (inclusive onde mandam encaminhar pergunta de valor). Valores oficiais do GymFit, consultados agora:',
         ...planos.map(descreverPlanoBlackIA),
-        'Use só estas durações, valores e vezes — não invente outras opções nem descontos. Aluno com plano ativo é renovação; quem nunca foi aluno é aluno novo; quem já foi aluno e saiu é ex-aluno voltando (se não souber, pergunte antes de passar a parcela).'].join('\n');
+        BLACK_ISENCAO_TAXA,
+        'Use só estas durações, valores e vezes — não invente outras opções nem descontos. As parcelas acima já são as finais, sem taxa nenhuma, iguais para aluno novo, ex-aluno e renovação.'].join('\n');
     iaBlackCache = { em: Date.now(), texto };
     return texto;
 }
