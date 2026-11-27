@@ -3032,7 +3032,9 @@ app.post('/api/gymfit/aluno', async (req, res) => {
 // Envio de UMA Mensagem Personalizada pedido pelo GymFit (CRM > Pós Vendas: botões "WhatsApp" = Orientação e "Avaliação Física"/"MQV" = Agendamento+MQV; Faltosos: botão "Enviar Mensagem" = Mensagem Faltosos 2).
 // Só aceita os nomes da lista abaixo (a chave do GymFit não dispara qualquer mensagem). Mesmo caminho dos Disparos: pool, template aprovado, placeholders.
 const MENSAGENS_PERMITIDAS_GYMFIT = new Set(['Orientação', 'Agendamento+MQV', 'Apreciação', 'Mensagem faltosos 2', 'Mensagem Faltosos 2', 'A Vencer 30 Dias', 'A Vencer 20 Dias', 'A Vencer 10 Dias', 'A vencer 30 dias', 'A vencer 20 dias', 'A vencer 10 dias', 'Atualização do Responsável', 'Atualizacao do Responsavel',
-    'Atualização CPF', 'Atualização Email', 'Atualização de CPF', 'Atualização de E-mail']);
+    'Atualização CPF', 'Atualização Email', 'Atualização de CPF', 'Atualização de E-mail',
+    // Campanha Black 2026 (esteiras "Black 2026 Inativos" e "Black 2026 Ativos" do CRM do GymFit): uma vez por aluno, das 7h às 15h.
+    'Black 2026', 'Black 2026 Ativos']);
 // O GymFit chama as mensagens de atualização cadastral com "de" ("Atualização de CPF"); em Mensagens Personalizadas elas se chamam sem ("Atualização CPF").
 const NOMES_ALTERNATIVOS_GYMFIT = { 'Atualização de CPF': 'Atualização CPF', 'Atualização de E-mail': 'Atualização Email' };
 app.post('/api/gymfit/enviar-mensagem', async (req, res) => {
